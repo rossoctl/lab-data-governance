@@ -1,0 +1,196 @@
+---
+# Verdict service — the DG surface meant for workload namespaces.
+#
+# A Sentry gate in a workload's sidecar asks it for the governance verdict on
+# the exchange it is holding (GET /enforce/v1/verdicts/{trace_id}/{exchange_id},
+# Authorization: Bearer <dg-verdict-secret>). It runs as its own process
+# (`python -m data_governance.risk.api.verdict_app`) so the ingress below can
+# admit workload namespaces without admitting them to the full API (traces,
+# payloads, the UI), which stays platform-only (50-networkpolicy.yaml).
+#
+# It runs from the classification image: when a waited exchange's request payload
+# is not classified yet, it classifies it here through the classifier's own
+# write-once process_payload (priority classification) and names the interaction on
+# dg_priority_decision, so leg-ready computes it out of seq order. It never calls OPA
+# and never writes a risk record (leg-ready is the only OPA client and the only
+# risk writer), so it reads none of leg-ready's RISK_* settings.
+#
+# The shared secret identifies a gated sidecar, not a workload.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: data-governance-verdict
+  namespace: data-governance
+  labels:
+    app.kubernetes.io/name: data-governance-verdict
+    app.kubernetes.io/part-of: data-governance
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: data-governance-verdict
+  namespace: data-governance
+  labels:
+    app.kubernetes.io/name: data-governance-verdict
+    app.kubernetes.io/part-of: data-governance
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: data-governance-verdict
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP
+      appProtocol: http
+---
+# Two replicas: a gate refuses its egress while no replica answers, so one pod restart must not be an outage of every gated egress.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: data-governance-verdict
+  namespace: data-governance
+  labels:
+    app.kubernetes.io/name: data-governance-verdict
+    app.kubernetes.io/part-of: data-governance
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: data-governance-verdict
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: data-governance-verdict
+        app.kubernetes.io/part-of: data-governance
+    spec:
+      serviceAccountName: data-governance-verdict
+      automountServiceAccountToken: false
+      containers:
+        - name: verdict
+          image: data-governance/classification:latest
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "data_governance.risk.api.verdict_app"]
+          # DATABASE_URL after the POSTGRES_* entries it references (issue #40).
+          env:
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: data-governance-postgres
+                  key: POSTGRES_DB
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: data-governance-postgres
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: data-governance-postgres
+                  key: POSTGRES_PASSWORD
+            - name: DATABASE_URL
+              value: "postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@data-governance-postgres:5432/$(POSTGRES_DB)"
+            # The gate's bearer. Not optional: without the Secret the pod does
+            # not start (the kubelet retries until it exists), so a gate fails
+            # closed instead of a verdict being served without identity.
+            # `dg.sh component install` creates it when absent.
+            - name: VERDICT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: dg-verdict-secret
+                  key: secret
+            # Priority classification: classify a waited, unclassified request payload here.
+            # "off" waits for the cursor path alone.
+            - name: VERDICT_PRIORITY_CLASSIFICATION
+              value: "on"
+            # Name the waited interaction on dg_priority_decision (leg-ready's
+            # priority decision). Ignored when priority classification is off.
+            - name: VERDICT_PRIORITY_DECISION
+              value: "on"
+            # In-flight requests per pod; beyond it 503 verdict_busy at once.
+            - name: VERDICT_MAX_WAITERS
+              value: "64"
+            # One inference at a time: the workers share one detector.
+            - name: VERDICT_PRIORITY_CLASSIFICATION_CONCURRENCY
+              value: "1"
+            - name: VERDICT_READ_WORKERS
+              value: "4"
+            # = the read workers + the classification worker + 1: every DB user is a
+            # bounded worker pool, so no request waits on the pool.
+            - name: DB_POOL_MAX_SIZE
+              value: "6"
+            # A read must fail inside the gate's wait, not at the default 30 s.
+            - name: DB_POOL_TIMEOUT
+              value: "3"
+            # Two torch threads, for the CPU limit below.
+            - name: OMP_NUM_THREADS
+              value: "2"
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          # Stay up until the Service has stopped routing here: uvicorn refuses
+          # new connections at SIGTERM, and a gate refused is a request refused.
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", "5"]
+          # Ready only once the model is loaded and has classified the warm
+          # sample (/readyz); the load takes ~9 s under the CPU limit.
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 2
+            timeoutSeconds: 2
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+          # CPU: the limit lets a classification borrow idle cores, since a gate
+          # is holding the request meanwhile (a warm one measured 419 ms with the
+          # limit at 400m against 105 ms at 2). Memory is the classification
+          # Deployment's (the same model).
+          resources:
+            requests:
+              cpu: "400m"
+              memory: "1Gi"
+            limits:
+              cpu: "2"
+              memory: "3Gi"
+---
+# Workload namespaces (the platform labels them rossoctl-enabled=true) reach the
+# verdict port. The full API and the UI stay platform-only.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: data-governance-verdict-ingress
+  namespace: data-governance
+  labels:
+    app.kubernetes.io/name: data-governance-verdict
+    app.kubernetes.io/part-of: data-governance
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: data-governance-verdict
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              rossoctl-enabled: "true"
+      ports:
+        - port: 8080
+          protocol: TCP

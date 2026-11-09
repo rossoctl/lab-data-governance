@@ -19,7 +19,7 @@ import time
 import psycopg
 
 
-def _spawn(dsn: str | None) -> subprocess.Popen[str]:
+def _spawn(dsn: str | None, **extra_env: str) -> subprocess.Popen[str]:
     env = {
         "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
         "LOG_LEVEL": "INFO",
@@ -30,6 +30,7 @@ def _spawn(dsn: str | None) -> subprocess.Popen[str]:
         # does not collide on the default 9094.
         "LEG_READY_METRICS_PORT": "0",
     }
+    env.update(extra_env)
     if dsn is not None:
         env["DATABASE_URL"] = dsn
     return subprocess.Popen(
@@ -114,11 +115,23 @@ def _wait_for(predicate, timeout: float = 15.0) -> bool:
 
 def _draining_instances(dsn: str) -> int:
     """How many leg-ready processes are inside the drain loop: each one holds
-    a dedicated LISTEN connection for its wake-up (ADR-0015)."""
+    a dedicated LISTEN connection for its wake-up (ADR-0015). Priority decision's
+    own LISTEN session (its last statement names dg_priority_decision) is not
+    counted: it runs inside the same lock-holding process."""
     with psycopg.connect(dsn) as conn:
         (n,) = conn.execute(
             "SELECT count(*) FROM pg_stat_activity"
             " WHERE datname = current_database() AND query ILIKE 'LISTEN %%'"
+            " AND query NOT ILIKE '%%dg_priority_decision%%'"
+        ).fetchone()
+    return int(n)
+
+
+def _priority_decision_listeners(dsn: str) -> int:
+    with psycopg.connect(dsn) as conn:
+        (n,) = conn.execute(
+            "SELECT count(*) FROM pg_stat_activity"
+            " WHERE datname = current_database() AND query ILIKE 'LISTEN dg_priority_decision%%'"
         ).fetchone()
     return int(n)
 
@@ -133,11 +146,24 @@ def test_two_instances_never_drain_at_once(migrated_dsn: str) -> None:
         time.sleep(3.0)  # both past startup
         assert all(p.poll() is None for p in procs)
         assert _draining_instances(migrated_dsn) == 1, "both instances are draining"
+        assert _priority_decision_listeners(migrated_dsn) == 1, "priority decision runs only in the lock holder"
     finally:
         for proc in procs:
             if proc.poll() is None:
                 proc.send_signal(signal.SIGTERM)
                 proc.wait(timeout=10)
+
+
+def test_leg_ready_priority_decision_off_leaves_the_cursor_arm_alone(migrated_dsn: str) -> None:
+    proc = _spawn(migrated_dsn, LEG_READY_PRIORITY_DECISION="off")
+    try:
+        assert _wait_for(lambda: _draining_instances(migrated_dsn) == 1)
+        time.sleep(2.0)
+        assert _priority_decision_listeners(migrated_dsn) == 0
+    finally:
+        if proc.poll() is None:
+            proc.send_signal(signal.SIGTERM)
+            proc.wait(timeout=10)
 
 
 def test_a_second_instance_waits_for_the_first_to_exit(migrated_dsn: str) -> None:

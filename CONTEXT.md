@@ -617,7 +617,8 @@ carries no kind.
 The data-governance verdict on the sensitivity of one **Payload** — its
 document-level `sensitivity_level`, the regulatory tags it carries, whether it
 holds an identity bundle, and the set of **Findings** within its body text.
-Produced by **P-classification**, not by `P-interactions`. Keyed to the
+Produced by **P-classification**, not by `P-interactions`; the verdict service
+also writes it for a payload a Sentry gate is waiting on (the same write-once row). Keyed to the
 **Payload** by `content_hash`: one classification per content-addressed
 payload, so a body referenced by many **Interactions** or **Traces** is
 classified exactly once (dedup inherited from the payload's content

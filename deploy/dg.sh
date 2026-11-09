@@ -61,10 +61,13 @@ DG_ROLLOUT_DEPLOYMENTS=(
     data-governance-leg-ready
     data-governance-risk-trace-trigger
     data-governance-risk-alerts
+    data-governance-verdict
 )
 # The --keep-data teardown deletes these deployments individually while
 # preserving the Postgres PVC.
 DG_ALL_DEPLOYMENTS=("${DG_ROLLOUT_DEPLOYMENTS[@]}")
+# The verdict service's bearer, read by deploy/k8s/45-verdict.yaml.
+DG_VERDICT_SECRET="dg-verdict-secret"
 # The UI ingress edge lives partly in rossoctl-system (the HTTPRoute) and partly
 # in data-governance (the ReferenceGrant permitting the cross-namespace edge).
 DG_HTTPROUTE_NAME="data-governance-ui"
@@ -261,6 +264,31 @@ tee_is_wired() {
 
 # --- component install -----------------------------------------------------
 
+# ensure_verdict_secret: create the Secret (32 random bytes, hex) when absent.
+# Prints nothing; the value goes to kubectl on stdin, never on a command line.
+# Needs no python3 (component install runs it).
+ensure_verdict_secret() {
+    local out status=0 value
+    out="$(kubectl -n "${DG_NAMESPACE}" get secret "${DG_VERDICT_SECRET}" -o name 2>&1)" || status=$?
+    [[ "${status}" -ne 0 ]] || return 0
+    case "${out}" in
+        *NotFound*) ;;
+        *) die "could not read Secret ${DG_NAMESPACE}/${DG_VERDICT_SECRET}: ${out}" ;;
+    esac
+    # 64 hex digits with at least one letter (a digits-only value would read
+    # back from the YAML pipeline as a number; the chance is 1 in 10^13).
+    local tries=0
+    value=""
+    while [[ ! "${value}" =~ ^[0-9a-f]{64}$ || ! "${value}" =~ [a-f] ]]; do
+        (( tries++ < 5 )) || die "could not draw a random value for ${DG_NAMESPACE}/${DG_VERDICT_SECRET}"
+        value="$(LC_ALL=C tr -dc 'a-f0-9' < /dev/urandom | head -c 64)" || true
+    done
+    err ">> creating Secret ${DG_NAMESPACE}/${DG_VERDICT_SECRET} (the verdict service's bearer)"
+    printf '%s' "${value}" | kubectl -n "${DG_NAMESPACE}" create secret generic "${DG_VERDICT_SECRET}" \
+        --from-file=secret=/dev/stdin >/dev/null \
+        || die "could not create Secret ${DG_NAMESPACE}/${DG_VERDICT_SECRET}"
+}
+
 component_install() {
     local no_build=0 reuse_classification=0
     while [[ $# -gt 0 ]]; do
@@ -293,6 +321,9 @@ component_install() {
     err ">> component install: applying manifests (kubectl apply -f ${K8S_DIR}/)"
     kubectl apply -f "${K8S_DIR}/" \
         || die "kubectl apply -f ${K8S_DIR}/ failed; aborting install"
+    # 45-verdict.yaml reads it and does not start without it. Created once;
+    # never rotated here.
+    ensure_verdict_secret
 
     # 3. tee the platform collector to the receiver (idempotent).
     [[ -x "${PATCH_COLLECTOR}" ]] \
@@ -313,6 +344,8 @@ component_install() {
     for d in "${DG_ROLLOUT_DEPLOYMENTS[@]}"; do
         timeout=120s
         [[ "${d}" == data-governance-classification ]] && timeout=180s
+        # Loads the model under its CPU limit before it reports ready.
+        [[ "${d}" == data-governance-verdict ]] && timeout=300s
         kubectl -n "${DG_NAMESPACE}" rollout status "deployment/${d}" --timeout="${timeout}" \
             || die "rollout status deployment/${d} did not become ready"
     done

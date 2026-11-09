@@ -9,6 +9,7 @@ asserts the mock).
 from __future__ import annotations
 
 import threading
+import time
 
 import psycopg
 import pytest
@@ -298,6 +299,31 @@ class TestListen:
         (the injection vector) is refused before any SQL runs."""
         with pytest.raises(ValueError):
             with db.listen("bad; DROP TABLE spans", pg_dsn):
+                pass
+
+
+class TestListenPayloads:
+    """`db.listen_payloads()`: the same session, each notification's channel
+    and payload surfaced (priority decision's request names one interaction)."""
+
+    def test_payloads_are_surfaced_with_their_channel(self, pg_dsn: str) -> None:
+        with db.listen_payloads(("dg_test_a", "dg_test_b"), pg_dsn) as lst:
+            with psycopg.connect(pg_dsn, autocommit=True) as notifier:
+                notifier.execute("SELECT pg_notify('dg_test_a', 'one')")
+                notifier.execute("SELECT pg_notify('dg_test_b', 'two')")
+            notes = lst.wait(timeout=5.0)
+            deadline = time.monotonic() + 5.0
+            while len(notes) < 2 and time.monotonic() < deadline:
+                notes += lst.wait(timeout=1.0)
+            assert notes == [("dg_test_a", "one"), ("dg_test_b", "two")]
+
+    def test_timeout_returns_nothing(self, pg_dsn: str) -> None:
+        with db.listen_payloads("dg_test_chan", pg_dsn) as lst:
+            assert lst.wait(timeout=0.3) == []
+
+    def test_rejects_non_identifier_channel(self, pg_dsn: str) -> None:
+        with pytest.raises(ValueError):
+            with db.listen_payloads(("dg_ok", "bad; DROP TABLE spans"), pg_dsn):
                 pass
 
 

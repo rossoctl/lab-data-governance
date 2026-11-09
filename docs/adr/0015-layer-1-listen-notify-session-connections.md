@@ -47,6 +47,12 @@ holding a session-level advisory lock for its lifetime. Like `listen`, it knows
 nothing about what the name means; the leg-ready consumer uses it so that a
 replacement pod cannot drain beside one that is still exiting.
 
+*Amendment (priority decision):* `db.listen_payloads(channel, dsn)` is the same
+session connection with each notification's channel and payload surfaced. One
+consumer needs it: leg-ready's priority decision, which computes the one interaction a
+`dg_priority_decision` notification names. `db.listen` itself stays payload-blind,
+and the arm stays latency-only: a lost notification is delivered by the cursor.
+
 ## The helper
 
 - `db.listen(channel, dsn)` — context manager. Validates `channel` as a bare
