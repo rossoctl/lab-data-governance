@@ -8,6 +8,10 @@ a long poll; a larger value is refused, never clamped.
 The verdict is decided on what the record's rules saw of the request payload; `RISK_INHERITED_LABELS` is `off` in the
 shipped manifests, so that is the payload's own labels.
 
+To see it work end to end — a gate in front of an app, a verdict that refuses, the fail mode with the service down,
+a fail-mode table, observe mode — follow `deploy/enforcement-runbook/RUNBOOK.md`: every command with its output, from
+GitHub clones only, and `run-all.sh` runs the whole experiment and checks each step.
+
 ## The answer (HTTP 200)
 
 | field | when | what |

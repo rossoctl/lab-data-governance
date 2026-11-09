@@ -1,0 +1,1 @@
+{"rows": [{"destination": "demand-forecast.example", "fallback": "allow"}, {"destination": "Demand-Forecast.example", "fallback": "deny"}]}
