@@ -32,6 +32,14 @@ turn span, so pipeline reconciliation alone is insufficient.
 5. The command verifies the live hot-reloaded pipeline. It does not inject or
    replace a sidecar.
 
+> **Amended (#326).** Admission rebuilds the per-workload ConfigMap from the
+> namespace `authbridge-runtime-config` on every pod admission, so lineage
+> written into it was lost at the next roll or scale-up. Points 2, 4 and 5 now
+> apply to the namespace ConfigMap: it is checked in preflight, reconciled after
+> the application rollouts (by a namespace-wide run only, since Rossoctl may roll
+> every workload in the namespace when it changes), and each workload is then
+> verified as admitted with the pipeline. The lineage entry names no `self_id`.
+
 The preflight is namespace-transactional: all validation and image builds finish
 before the first Deployment or ConfigMap mutation.
 
