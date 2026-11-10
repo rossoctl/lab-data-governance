@@ -23,6 +23,7 @@ from collections.abc import Mapping, Sequence
 
 from data_governance.interaction_order import LegOrderEvent, LegOrderKey, leg_positions
 from data_governance.processors.classification.projection import project
+from data_governance.processors.data_lineage import memory
 from data_governance.processors.data_lineage.traversal import Entity, Leg, inbound_sets
 
 from .find import Finder
@@ -79,6 +80,7 @@ def derive(trace_input: TraceInput, finder: Finder) -> Derivation:
         raise ValueError("priors from other conversations are not read in one conversation")
     ordered = wire_order(trace_input.legs)
     inbound = inbound_sets(ordered, dict(trace_input.entities), pair_responses=True)
+    inbound = with_invocation_scope(ordered, inbound, trace_input.entities)
     texts = {h: project(c) for h, c in trace_input.payloads.items()}
     held: dict[LegKey, tuple[Occurrence, ...]] = {}
     summaries: dict[LegKey, LegSummary] = {}
@@ -153,3 +155,38 @@ def _nests_in(c: Occurrence, d: Occurrence) -> bool:
     if c.span is None or c.span == d.span or c.unit.entity_type != d.unit.entity_type:
         return False
     return d.span[0] <= c.span[0] and c.span[1] <= d.span[1]
+
+
+def with_invocation_scope(ordered: Sequence[WireLeg], inbound: Mapping[LegKey, tuple[LegKey, ...]],
+                          entities: Mapping[str, Entity]) -> dict[LegKey, tuple[LegKey, ...]]:
+    """A memoryless responder's answer may carry what it received from the services
+    it called while answering.
+
+    ``inbound_sets(pair_responses=True)`` answers a memoryless entity's response with
+    its own request only, so a tool that calls a service and returns what the service
+    said has no inbound for that value, although every leg is on the wire (teaching
+    flag 2026-10-24; the paper's "invocation scope", P14). Here the response of every
+    child interaction (``parent_interaction_id`` = this interaction) that arrived
+    before the answer is added to the answer's inbound set. Accumulating entities are
+    untouched: their memory node already holds every prior. Data lineage is untouched:
+    this runs on label lineage's copy of the sets only.
+    """
+    position = {(leg.interaction_id, leg.leg_type): i for i, leg in enumerate(ordered)}
+    children: dict[str, list[LegKey]] = {}
+    for leg in ordered:
+        if leg.leg_type == "response" and leg.parent_interaction_id:
+            children.setdefault(leg.parent_interaction_id, []).append((leg.interaction_id, "response"))
+    out = dict(inbound)
+    for leg in ordered:
+        if leg.leg_type != "response":
+            continue
+        producer = entities.get(leg.callee_entity_id)
+        if producer is None or memory.accumulates(producer):
+            continue
+        key = (leg.interaction_id, "response")
+        have = tuple(out.get(key, ()))
+        extra = tuple(k for k in children.get(leg.interaction_id, ())
+                      if position[k] < position[key] and k not in have)
+        if extra:
+            out[key] = have + extra
+    return out
