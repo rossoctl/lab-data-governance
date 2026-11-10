@@ -39,7 +39,7 @@ from starlette.responses import PlainTextResponse, Response
 from starlette.routing import Route
 
 from data_governance import db
-from data_governance.api.live import ChangeHub
+from data_governance.change_hub import ChangeHub
 from data_governance.db.schema_version import SchemaVersionMismatch, check_schema_version
 from data_governance.risk.api import verdict_routes
 from data_governance.risk.api.verdict_routes import PriorityClassifier, Settings, VerdictService
