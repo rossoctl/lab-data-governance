@@ -6,7 +6,7 @@ export NS=${NS:-pharmacy}                                      # the namespace o
 [ "$(kubectl config current-context)" = "$EXPECT_CONTEXT" ] || { echo "STOP: kubectl is on $(kubectl config current-context), not $EXPECT_CONTEXT"; return 9 2>/dev/null || exit 9; }
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 LABDG=$(cd "$HERE/../.." && pwd)                               # this lab-data-governance checkout
-RUN=${RUN:-${TMPDIR:-/tmp}/enforcement-runbook/$(date +%Y%m%d-%H%M%S)}; mkdir -p "$RUN"   # outputs, outside the repo
+export RUN=${RUN:-${TMPDIR:-/tmp}/enforcement-runbook/$(date +%Y%m%d-%H%M%S)}; mkdir -p "$RUN"   # outputs, outside the repo; exported so call.sh writes into the same one
 DG() { (cd "$LABDG" && bash deploy/dg.sh "$@"); }
 rv() { kubectl -n "$NS" get cm authbridge-runtime-config -o jsonpath='{.metadata.resourceVersion}'; }
 verdict() {  # verdict <replicas>: scale the verdict service and wait

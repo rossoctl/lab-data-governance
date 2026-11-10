@@ -5,10 +5,12 @@ take the verdict service away and see what the fail mode does, shape it with a f
 mode first. Every command, in order, with what it prints. A person or an agent follows it top to bottom.
 
 Conventions: `$` lines are typed; the `→` line after one is what to expect. Every `→` line is a real output from the run
-of 2026-11-08 on a kind cluster (lab-data-governance `230f4ab` = PRs #344 + #345 + #352, cortex fork `sentry` with s-and-p-team/cortex#187
-`610fa556`); ids, ms and revisions are that run's. One cluster, one terminal. The whole of §§ 2–7 is also one command,
+of 2026-11-08 on a kind cluster (lab-data-governance `2c29889` = PRs #344 + #345 + #352, cortex fork `sentry` with s-and-p-team/cortex#187
+`610fa556`), except the `gate-report` lines of §§ 5–6 and § 8's done line, which are from the 2026-11-10 run below; ids, ms
+and revisions are that run's. One cluster, one terminal. The whole of §§ 2–7 is also one command,
 `run-all.sh` (§ 8), which checks every step against the outcome written here. It was run again from this folder on
-2026-11-09 with a gate image built by § 0's `gate-image.sh` from the fork's `sentry` at `6820b399`: 16 PASS, 0 FAIL.
+2026-11-09 with a gate image built by § 0's `gate-image.sh` from the fork's `sentry` at `6820b399`: 16 PASS, 0 FAIL; and on
+2026-11-10, with every dg.sh step also checked on its exit status: 28 PASS, 0 FAIL.
 
 What the pieces are, in one paragraph: the app's sidecars carry two plugins on the outbound chain, `lineage-telemetry`
 (records the request and stamps it) and `sentry-gate` after it. The gate holds each outbound request and asks the
@@ -41,7 +43,8 @@ sidecar whose image has no gate, and only a pod created after step 3 gets the ne
 | | the app's sidecars on the gate image | step 3 before step 4 | `kubectl -n pharmacy get pod -l app.kubernetes.io/name=report-dispense -o jsonpath='{.items[0].spec.containers[?(@.name=="authbridge-proxy")].image}'` | the image of step 3 (here `localhost/authbridge:gate-610fa556`) |
 
 `env.sh` finds the lab-data-governance checkout itself (this folder's repository) and writes every run's outputs
-outside it, under `$TMPDIR/enforcement-runbook/<time>` (`RUN=` overrides). Export `KUBECONFIG`, `EXPECT_CONTEXT`
+outside it, under `$TMPDIR/enforcement-runbook/<time>`, one directory for the terminal that sources it (`RUN=` set before sourcing overrides it) and
+one of its own for every `run-all.sh`, named on its first line. Export `KUBECONFIG`, `EXPECT_CONTEXT`
 (default `kind-rossoctl`) or `NS` (default `pharmacy`) first if yours differ, then:
 
 ```sh
@@ -193,20 +196,24 @@ $ ./call.sh 5.8 schedule-delivery clean demand-forecast.example:8000   → deny/
 $ ./call.sh 5.9 report-dispense clean sms-gateway.example:8000         → deny/fallback_deny, fail_mode_source + fail_mode_destination (the pair row)
 $ ./call.sh 5.10 report-dispense clean copay-assist.example:8000       → allow/fallback_allow, fail_mode_source=report-dispense
 $ DG namespace pharmacy gate-report
-→ gate-report namespace=pharmacy since=all held until=2026-11-08T15:30:05Z mode=enforce revision=520c21748aca
+→ gate-report namespace=pharmacy since=all held until=2026-11-10T16:49:16Z mode=enforce revision=520c21748aca
 → source             destination              refused  fallback_allow  would_refuse  body_cut  body_not_captured
 → report-dispense    copay-assist.example     0        1               0             0         0
 → report-dispense    demand-forecast.example  0        1               0             0         0
 → report-dispense    sms-gateway.example      1        0               0             0         0
 → schedule-delivery  demand-forecast.example  1        0               0             0         0
 → by reason:
-→   report-dispense    sms-gateway.example      fallback_deny  1
-→   schedule-delivery  demand-forecast.example  fallback_deny  1
+→   report-dispense    copay-assist.example     fallback_allow  row source=report-dispense                                  520c21748aca  1
+→   report-dispense    demand-forecast.example  fallback_allow  row source=report-dispense                                  520c21748aca  1
+→   report-dispense    sms-gateway.example      fallback_deny   row source=report-dispense destination=sms-gateway.example  520c21748aca  1
+→   schedule-delivery  demand-forecast.example  fallback_deny   default                                                     520c21748aca  1
 → revisions seen: 520c21748aca 4 (current 520c21748aca)
 ```
 
 Per key the most specific row wins: pair > destination > source > the gate's own value. `gate-report` counts, per source
-and destination, what was refused, what the fallback let through, and what observe mode would have refused; it reads
+and destination, what was refused, what the fallback let through, and what observe mode would have refused, and under
+it each outcome with the row (or `default`; `-` for a fault or a marked body, which no row decides) and the revision
+it ran with; it reads
 the sidecars' own records, so a pod roll empties it.
 
 ## 6. Observe first
@@ -222,7 +229,7 @@ $ DG namespace pharmacy gate-report
 → … mode=observe revision=520c21748aca
 → schedule-delivery  demand-forecast.example  0        0               1             0         0
 → by reason:
-→   schedule-delivery  demand-forecast.example  fallback_deny shadow  1
+→   schedule-delivery  demand-forecast.example  fallback_deny shadow  default  520c21748aca  1
 ```
 
 ## 7. Reset
@@ -245,11 +252,11 @@ before.yaml` and roll the sidecars).
 
 ```sh
 $ ./run-all.sh                     # §§ 2–7, ~25 min; one PASS/FAIL line per step, ends in § 7's state
-→ === done 2026-11-09 13:19:59: 16 PASS, 0 FAIL                 (21 min)
+→ === done 2026-11-10 18:55:32: 28 PASS, 0 FAIL                 (19 min)
 ```
 
 One run at a time per namespace: two runs flip the same gate and each reads the other's state (the script refuses a
-second run while one holds its lock). `$RUN/summary.txt` holds the lines, `$RUN/rows.jsonl` the evidence (the caller's reply and the sidecar's own records per
+second run while one holds its lock). Its first line names its directory (`run=`, its `$RUN`): `summary.txt` there holds the lines, `$RUN/rows.jsonl` the evidence (the caller's reply and the sidecar's own records per
 call), `$RUN/*.out` every dg.sh output. Exit code 0 only when every step matched.
 
 ## 9. When something is off
@@ -257,7 +264,7 @@ call), `$RUN/*.out` every dg.sh output. Exit code 0 only when every step matched
 | symptom | cause | fix |
 |---|---|---|
 | `instrument --enforce` refuses "the gate lacks …" before writing | the sidecar image has no gate, or predates its keys (`fallback`, `fail_mode`, `sources`, `fail_mode_revision`) | § 0 step 3 from the fork's `sentry` branch (at or after s-and-p-team/cortex#187), then recreate the app's pods (`kubectl -n pharmacy delete pod --all`) |
-| every call `deny/verdict_pending` near `wait_ms` | DG has not decided in time: classification is an LLM call; first calls after an idle DG are slow | retry; check `kubectl -n data-governance logs deploy/data-governance-verdict`; raise `--wait-ms` (max 3000) |
+| every call `deny/verdict_pending` near `wait_ms` | DG has not decided in time: classification is an LLM call; first calls after an idle DG are slow. Or DG's database is not answering: a read still waiting at `wait_ms` is answered `pending` too | retry; check `kubectl -n data-governance logs deploy/data-governance-verdict` and that the DG database pod is Running; raise `--wait-ms` (max 3000) |
 | every call `deny/verdict_error`, `error_kind=transport` | the verdict service is down or unreachable | `kubectl -n data-governance get deploy data-governance-verdict`; § 4 is this on purpose |
 | `deny/verdict_error`, `error_kind` other than `transport` | a setup fault (wrong URL, secret, TLS): never a fallback | the record's `error` field names it |
 | a delivered call ends in `wire=502` | the destination does not resolve (see § 1, `sms-gateway`) | not the gate; check the host |
