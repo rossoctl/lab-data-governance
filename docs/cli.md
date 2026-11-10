@@ -294,7 +294,9 @@ did with the requests that got no verdict, per source workload and destination:
 The source is the `self_id` lineage wrote into its record of the same request, the name a fail-mode row's
 `source` matches (the gate's record names none), else the workload whose sidecar the record was read from; the
 destination is the request's host, port stripped, case-folded and without a trailing dot, as the gate matches a row. Below the table
-are the refusals by reason (a marked body under its cause and its mark, `shadow` for an observed one), and the
+is every record by reason (a marked body under its cause and its mark, `shadow` for an observed one), with the setting
+that decided it (for a fallback, the fail-mode row the gate names or `default`, the namespace's own; `-` for a fault
+or a marked body, which no setting decides) and the revision it ran with; then the
 revisions the records name, beside the namespace's current one, also on the header line. A refusal by a
 verdict is not counted here; it is the verdict service's.
 
@@ -311,12 +313,13 @@ source  destination        refused  fallback_allow  would_refuse  body_cut  body
 desk    partner.example    1        1               1             1         0
 desk    slow-tool.example  1        0               1             0         1
 by reason:
-  desk  partner.example    fallback_deny shadow             1
-  desk  partner.example    no_lineage_stamp                 1
-  desk  partner.example    verdict_error body_cut           1
-  desk  slow-tool.example  fallback_deny                    1
-  desk  slow-tool.example  verdict_busy body_not_captured   1
-  desk  slow-tool.example  verdict_pending body_cut shadow  1
+  desk  partner.example    fallback_allow                   default                            1a2b3c4d5e6f  1
+  desk  partner.example    fallback_deny shadow             row destination=partner.example    1a2b3c4d5e6f  1
+  desk  partner.example    no_lineage_stamp                 -                                  9f86d081884c  1
+  desk  partner.example    verdict_error body_cut           -                                  9f86d081884c  1
+  desk  slow-tool.example  fallback_deny                    row destination=slow-tool.example  9f86d081884c  1
+  desk  slow-tool.example  verdict_busy body_not_captured   -                                  9f86d081884c  1
+  desk  slow-tool.example  verdict_pending body_cut shadow  -                                  9f86d081884c  1
 revisions seen: 1a2b3c4d5e6f 2, 9f86d081884c 5 (current 9f86d081884c)
 ```
 

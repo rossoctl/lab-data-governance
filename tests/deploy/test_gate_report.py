@@ -123,8 +123,9 @@ def rows_of(out: str) -> list[list[str]]:
 
 def test_the_report_counts_per_source_and_destination(reporting) -> None:
     """D17: two pods, one paged back over two pages: the counts per source and destination (the host port-stripped
-    and case-folded), the shadow records in would_refuse, the marked bodies by mark, the refusals by reason, the
-    revisions seen against the current one on the header line; a pod with no records reads as 0; read-only."""
+    and case-folded), the shadow records in would_refuse, the marked bodies by mark, every record by reason with
+    the setting that decided it (none for a fault or a marked body) and its revision, the revisions seen against
+    the current one on the header line; a pod with no records reads as 0; read-only."""
     current = revision_of(document(*ROWS))
     canned(reporting, current)
     result = reporting.run("namespace", "travel-advisor", "gate-report")
@@ -141,13 +142,15 @@ def test_the_report_counts_per_source_and_destination(reporting) -> None:
         ["travel-advisor", "slow.example", "1", "0", "1", "0", "1"],
     ]
     by_reason = out.split("by reason:\n", 1)[1].split("revisions seen:", 1)[0]
+    old, cur = OLD[:12], current[:12]
     assert [re.split(r"\s{2,}", line.strip()) for line in by_reason.splitlines()] == [
-        ["travel-advisor", "peer.example", "fallback_deny shadow", "1"],
-        ["travel-advisor", "peer.example", "no_lineage_stamp", "1"],
-        ["travel-advisor", "peer.example", "verdict_error body_cut", "1"],
-        ["travel-advisor", "slow.example", "fallback_deny", "1"],
-        ["travel-advisor", "slow.example", "verdict_busy body_not_captured", "1"],
-        ["travel-advisor", "slow.example", "verdict_pending body_cut shadow", "1"],
+        ["travel-advisor", "peer.example", "fallback_allow", "default", old, "1"],
+        ["travel-advisor", "peer.example", "fallback_deny shadow", "row destination=peer.example", old, "1"],
+        ["travel-advisor", "peer.example", "no_lineage_stamp", "-", cur, "1"],
+        ["travel-advisor", "peer.example", "verdict_error body_cut", "-", cur, "1"],
+        ["travel-advisor", "slow.example", "fallback_deny", "row destination=slow.example", cur, "1"],
+        ["travel-advisor", "slow.example", "verdict_busy body_not_captured", "-", cur, "1"],
+        ["travel-advisor", "slow.example", "verdict_pending body_cut shadow", "-", cur, "1"],
     ]
     seen = ", ".join(f"{rev} {n}" for rev, n in sorted({OLD[:12]: 2, current[:12]: 5}.items()))
     assert out.splitlines()[-1] == f"revisions seen: {seen} (current {current[:12]})"

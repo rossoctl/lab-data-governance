@@ -20,7 +20,10 @@ the workload whose pod the record was read from; the destination the request's h
 port stripped, case-folded and without a trailing dot, as the gate matches a row. The columns: ``refused``
 (``fallback_deny`` and the faults), ``fallback_allow``, ``would_refuse`` (the shadow records:
 what enforcing would have refused), ``body_cut`` and ``body_not_captured`` (the marked-body
-refusals by mark). Under it the refusals by reason, and the revisions the records name. The
+refusals by mark). Under it every record by reason, with the setting that decided it (for a
+fallback, the fail-mode row the gate names or ``default``; ``-`` for a fault or a marked body,
+which no setting decides) and the revision it ran with; then the revisions
+the records name. The
 header line has the namespace, the window and the namespace's current revision. A refusal by a
 verdict is the verdict service's to report, not this tool's.
 
@@ -127,6 +130,17 @@ def outcome(inv: dict) -> str | None:
     return mark or "refused"
 
 
+def setting(inv: dict) -> str:
+    """What decided a fallback: the fail-mode row the gate names, or ``default`` (the namespace's
+    own). ``-`` for a fault or a marked body, which the gate refuses whatever the setting (and names
+    no row for)."""
+    if inv.get("reason") not in ("fallback_allow", "fallback_deny"):
+        return "-"
+    details = inv.get("details") or {}
+    keys = [f"{k}={details[f'fail_mode_{k}']}" for k in ("source", "destination") if details.get(f"fail_mode_{k}")]
+    return "row " + " ".join(keys) if keys else "default"
+
+
 def no_verdict_records(source: str, events: list[dict], since: datetime | None) -> list[dict]:
     """The gate's records of requests with no verdict on the outbound events at or after ``since``."""
     records = []
@@ -144,6 +158,7 @@ def no_verdict_records(source: str, events: list[dict], since: datetime | None) 
             mark = next((m for m in MARKS if details.get(m) == "true"), "")
             records.append({"source": self_id or source, "destination": host_only(event.get("host") or ""), "column": column,
                             "reason": " ".join(filter(None, (inv.get("reason"), mark, "shadow" if inv.get("shadow") else ""))),
+                            "setting": setting(inv),
                             "revision": details.get("fail_mode_revision") or ""})
     return records
 
@@ -166,9 +181,9 @@ def report(namespace: str, gate: dict, records: list[dict], sidecars: list[str],
     out += table([["source", "destination", *COLUMNS]]
                  + [[s, d, *(str(cells[(s, d, c)]) for c in COLUMNS)] for s, d in edges])
     out.append("by reason:")
-    reasons = Counter((r["source"], r["destination"], r["reason"]) for r in records if r["column"] != "fallback_allow")
-    out += ["  " + line for line in table([[s, d, reason, str(n)] for (s, d, reason), n in sorted(reasons.items())])] \
-        if reasons else ["  none"]
+    reasons = Counter((r["source"], r["destination"], r["reason"], r["setting"], r["revision"][:SHORT] or "none")
+                      for r in records)
+    out += ["  " + line for line in table([[*key, str(n)] for key, n in sorted(reasons.items())])]
     seen = Counter(r["revision"][:SHORT] or "none" for r in records)
     out.append(f"revisions seen: {', '.join(f'{rev} {n}' for rev, n in sorted(seen.items()))} (current {current})")
     return "\n".join(out) + "\n"
