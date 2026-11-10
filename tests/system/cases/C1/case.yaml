@@ -1,0 +1,22 @@
+id: C1
+title: quiet
+cell: trunk/one/quiet
+line: U>A[-], A>L[-], L>A[-], A>T1[-], T1>V1[-]⚑, V1>T1[-], T1>A[-], A>L[-], L>A[-], A>T2[-], T2>V2[-], V2>T2[-], T2>A[-],
+  A>L[-], L>A[-], A>U[-]
+units:
+  s1: SSN
+  s2: MRN
+  s3: DOB
+  s4: DIS
+expect:
+  verdict:
+    'on': allow
+    'off': allow
+  edges: []
+  cannot: null
+  pending: null
+classifier:
+  must_see: {}
+  must_miss: {}
+  authored: false
+notes: No route. Nothing sensitive is on the wire; the control for the rule and the harness.

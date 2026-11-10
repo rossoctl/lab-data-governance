@@ -1,0 +1,36 @@
+id: K0
+title: reborn, nothing
+cell: trunk/cross
+line: U>A[-], A>L[-], L>A[-], A>T1[-], ..V1.., T1>A[s1 s2 s3 -], A>L[s1 s2 s3 -], L>A[s1 s2 s3 -], A>T2[s1 s2 s3 -], T2>V2[s1
+  s2 s3 -], V2>T2[-], T2>A[-], A>L[-], L>A[-], A>U[-] ~10min> U>A[-], A>L[-], L>A[-], A>T2[-], T2>V2[-], V2>T2[-], T2>A[-],
+  A>L[-], L>A[-], A>T3[-], T3>V3[-]⚑, V3>T3[-], T3>A[-], A>L[-], L>A[-], A>U[-]
+units:
+  s1: SSN
+  s2: MRN
+  s3: DOB
+  s4: DIS
+expect:
+  verdict:
+    'on': allow
+    'off': allow
+  edges:
+  - s1 7>8
+  - s1 8>9
+  - s1 9>10
+  - s1 10>11
+  - s2 7>8
+  - s2 8>9
+  - s2 9>10
+  - s2 10>11
+  - s3 7>8
+  - s3 8>9
+  - s3 9>10
+  - s3 10>11
+  cannot: null
+  pending: null
+classifier:
+  must_see: {}
+  must_miss: {}
+  authored: false
+notes: 'Conversation 2 is C5''s shape; V2 returns nothing (neighbourhood —). The classifier labels nothing in conversation
+  2, so only a crossing from conversation 1 can produce the alert at V3. Wanted under person-anchored: allow.'

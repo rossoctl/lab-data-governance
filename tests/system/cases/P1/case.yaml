@@ -1,0 +1,44 @@
+id: P1
+title: one call, two partners
+cell: trunk/control/one-call-two-partners
+line: U>A[s1 -], A>T1[s1 -], T1>V1[s1 -], V1>T1[s2 -], T1>V2[s1@subject s2@account -]⚑, V2>T1[-], T1>A[s1@subject s2@account
+  -], A>U[-]
+units:
+  s1: SSN
+  s2: MRN
+  s3: DOB
+  s4: DIS
+expect:
+  verdict:
+    'on': block
+    'off': allow
+  edges:
+  - s1 1>2
+  - s1 2>3
+  - s1 2>5
+  - s1 2>7
+  - s2 4>5
+  - s2 4>7
+  cannot: null
+  pending: null
+classifier:
+  must_see:
+    '1':
+    - s1
+    '2':
+    - s1
+    '3':
+    - s1
+    '4':
+    - s2
+  must_miss:
+    '5':
+    - s1
+    - s2
+    '7':
+    - s1
+    - s2
+  authored: true
+notes: 'Picture 1 of #348. Inside A''s call, T1 asks V1, then asks V2 with what V1 returned, then answers A. T1''s second
+  request inherits from the call that opened it (s1 2>5) and from V1''s answer inside the call (s2 4>5); its answer carries
+  both (2>7, 4>7). Before #348 the fold drew s2 4>5 only.'

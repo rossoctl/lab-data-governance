@@ -1,0 +1,118 @@
+{
+ "model_dir": "classification/model/20260304",
+ "model_version": 2,
+ "calibrated_at": "2026-11-10T15:42:48+00:00",
+ "by_text": {
+  "{\"note\": \"please process at the usual priority\"}": [],
+  "{\"note\": \"no further action needed\"}": [],
+  "{\"note\": \"forwarded for fulfilment\"}": [],
+  "{\"note\": \"acknowledged\"}": [],
+  "{\"dob\": \"1961-03-14\", \"mrn\": \"4471820\", \"note\": \"please process at the usual priority\", \"ssn\": \"123-45-6789\"}": [
+   [
+    9,
+    19,
+    "DOB"
+   ],
+   [
+    30,
+    37,
+    "MRN"
+   ],
+   [
+    96,
+    107,
+    "SSN"
+   ]
+  ],
+  "{\"account\": \"4471820\", \"note\": \"no further action needed\", \"ref\": \"1961-03-14\", \"subject\": \"123-45-6789\"}": [],
+  "{\"account\": \"4471820\", \"note\": \"forwarded for fulfilment\", \"ref\": \"1961-03-14\", \"subject\": \"123-45-6789\"}": [],
+  "{\"account\": \"4471820\", \"note\": \"acknowledged\", \"ref\": \"1961-03-14\", \"subject\": \"123-45-6789\"}": [],
+  "{\"account\": \"4471820\", \"note\": \"batch job window 02:00\", \"ref\": \"1961-03-14\", \"subject\": \"123-45-6789\"}": [],
+  "{\"note\": \"routine refill request received\"}": []
+ },
+ "summary": {
+  "{\"note\": \"please process at the usual priority\"}": {
+   "sensitivity_level": "PUBLIC",
+   "regulatory_tags": [],
+   "identity_bundle": false,
+   "findings": []
+  },
+  "{\"note\": \"no further action needed\"}": {
+   "sensitivity_level": "PUBLIC",
+   "regulatory_tags": [],
+   "identity_bundle": false,
+   "findings": []
+  },
+  "{\"note\": \"forwarded for fulfilment\"}": {
+   "sensitivity_level": "PUBLIC",
+   "regulatory_tags": [],
+   "identity_bundle": false,
+   "findings": []
+  },
+  "{\"note\": \"acknowledged\"}": {
+   "sensitivity_level": "PUBLIC",
+   "regulatory_tags": [],
+   "identity_bundle": false,
+   "findings": []
+  },
+  "{\"dob\": \"1961-03-14\", \"mrn\": \"4471820\", \"note\": \"please process at the usual priority\", \"ssn\": \"123-45-6789\"}": {
+   "sensitivity_level": "RESTRICTED",
+   "regulatory_tags": [
+    "PHI",
+    "PI",
+    "PII"
+   ],
+   "identity_bundle": false,
+   "findings": [
+    [
+     "DOB",
+     "1961-03-14"
+    ],
+    [
+     "MRN",
+     "4471820"
+    ],
+    [
+     "SSN",
+     "123-45-6789"
+    ]
+   ]
+  },
+  "{\"account\": \"4471820\", \"note\": \"no further action needed\", \"ref\": \"1961-03-14\", \"subject\": \"123-45-6789\"}": {
+   "sensitivity_level": "PUBLIC",
+   "regulatory_tags": [],
+   "identity_bundle": false,
+   "findings": []
+  },
+  "{\"account\": \"4471820\", \"note\": \"forwarded for fulfilment\", \"ref\": \"1961-03-14\", \"subject\": \"123-45-6789\"}": {
+   "sensitivity_level": "PUBLIC",
+   "regulatory_tags": [],
+   "identity_bundle": false,
+   "findings": []
+  },
+  "{\"account\": \"4471820\", \"note\": \"acknowledged\", \"ref\": \"1961-03-14\", \"subject\": \"123-45-6789\"}": {
+   "sensitivity_level": "PUBLIC",
+   "regulatory_tags": [],
+   "identity_bundle": false,
+   "findings": []
+  },
+  "{\"account\": \"4471820\", \"note\": \"batch job window 02:00\", \"ref\": \"1961-03-14\", \"subject\": \"123-45-6789\"}": {
+   "sensitivity_level": "PUBLIC",
+   "regulatory_tags": [],
+   "identity_bundle": false,
+   "findings": []
+  },
+  "{\"note\": \"routine refill request received\"}": {
+   "sensitivity_level": "PUBLIC",
+   "regulatory_tags": [],
+   "identity_bundle": false,
+   "findings": []
+  }
+ },
+ "authored": {
+  "{\"account\": \"4471820\", \"note\": \"no further action needed\", \"ref\": \"1961-03-14\", \"subject\": \"123-45-6789\"}": 3,
+  "{\"account\": \"4471820\", \"note\": \"forwarded for fulfilment\", \"ref\": \"1961-03-14\", \"subject\": \"123-45-6789\"}": 3,
+  "{\"account\": \"4471820\", \"note\": \"acknowledged\", \"ref\": \"1961-03-14\", \"subject\": \"123-45-6789\"}": 3,
+  "{\"account\": \"4471820\", \"note\": \"batch job window 02:00\", \"ref\": \"1961-03-14\", \"subject\": \"123-45-6789\"}": 3
+ }
+}

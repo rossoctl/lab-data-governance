@@ -1,0 +1,56 @@
+id: C2
+title: seen throughout
+cell: trunk/one/root-to-left-leaf
+line: U>A[s1 s2 s3 s4 -], A>L[s1 s2 s3 -], L>A[s1 s2 s3 -], A>T1[s1 s2 s3 -], T1>V1[s1 s2 s3 -]⚑, V1>T1[-], T1>A[-], A>L[-],
+  L>A[-], A>T2[-], T2>V2[-], V2>T2[-], T2>A[-], A>L[-], L>A[-], A>U[-]
+units:
+  s1: SSN
+  s2: MRN
+  s3: DOB
+  s4: DIS
+expect:
+  verdict:
+    'on': block
+    'off': block
+  edges:
+  - s1 1>2
+  - s1 2>3
+  - s1 3>4
+  - s1 4>5
+  - s2 1>2
+  - s2 2>3
+  - s2 3>4
+  - s2 4>5
+  - s3 1>2
+  - s3 2>3
+  - s3 3>4
+  - s3 4>5
+  cannot: null
+  pending: null
+classifier:
+  must_see:
+    '1':
+    - s1
+    - s2
+    - s3
+    - s4
+    '2':
+    - s1
+    - s2
+    - s3
+    '3':
+    - s1
+    - s2
+    - s3
+    '4':
+    - s1
+    - s2
+    - s3
+    '5':
+    - s1
+    - s2
+    - s3
+  must_miss: {}
+  authored: false
+notes: Root to the left leaf, U>A>T1>V1. The classifier labels the three on every leg; lineage draws the chain, the classifier
+  alone already decides.

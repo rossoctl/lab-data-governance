@@ -1,0 +1,122 @@
+{
+ "model_dir": "classification/model/20260304",
+ "model_version": 2,
+ "calibrated_at": "2026-11-10T13:40:48+00:00",
+ "by_text": {
+  "{\"note\": \"please process at the usual priority\", \"ssn\": \"123-45-6789\"}": [
+   [
+    57,
+    68,
+    "SSN"
+   ]
+  ],
+  "{\"note\": \"no further action needed\", \"ssn\": \"123-45-6789\"}": [
+   [
+    45,
+    56,
+    "SSN"
+   ]
+  ],
+  "{\"note\": \"forwarded for fulfilment\", \"ssn\": \"123-45-6789\"}": [
+   [
+    45,
+    56,
+    "SSN"
+   ]
+  ],
+  "{\"mrn\": \"4471820\", \"note\": \"acknowledged\"}": [
+   [
+    9,
+    16,
+    "MRN"
+   ]
+  ],
+  "{\"account\": \"4471820\", \"note\": \"batch job window 02:00\", \"subject\": \"123-45-6789\"}": [],
+  "{\"note\": \"routine refill request received\"}": [],
+  "{\"account\": \"4471820\", \"note\": \"please process at the usual priority\", \"subject\": \"123-45-6789\"}": [],
+  "{\"note\": \"no further action needed\"}": []
+ },
+ "summary": {
+  "{\"note\": \"please process at the usual priority\", \"ssn\": \"123-45-6789\"}": {
+   "sensitivity_level": "RESTRICTED",
+   "regulatory_tags": [
+    "PII"
+   ],
+   "identity_bundle": false,
+   "findings": [
+    [
+     "SSN",
+     "123-45-6789"
+    ]
+   ]
+  },
+  "{\"note\": \"no further action needed\", \"ssn\": \"123-45-6789\"}": {
+   "sensitivity_level": "RESTRICTED",
+   "regulatory_tags": [
+    "PII"
+   ],
+   "identity_bundle": false,
+   "findings": [
+    [
+     "SSN",
+     "123-45-6789"
+    ]
+   ]
+  },
+  "{\"note\": \"forwarded for fulfilment\", \"ssn\": \"123-45-6789\"}": {
+   "sensitivity_level": "RESTRICTED",
+   "regulatory_tags": [
+    "PII"
+   ],
+   "identity_bundle": false,
+   "findings": [
+    [
+     "SSN",
+     "123-45-6789"
+    ]
+   ]
+  },
+  "{\"mrn\": \"4471820\", \"note\": \"acknowledged\"}": {
+   "sensitivity_level": "RESTRICTED",
+   "regulatory_tags": [
+    "PHI",
+    "PII"
+   ],
+   "identity_bundle": false,
+   "findings": [
+    [
+     "MRN",
+     "4471820"
+    ]
+   ]
+  },
+  "{\"account\": \"4471820\", \"note\": \"batch job window 02:00\", \"subject\": \"123-45-6789\"}": {
+   "sensitivity_level": "PUBLIC",
+   "regulatory_tags": [],
+   "identity_bundle": false,
+   "findings": []
+  },
+  "{\"note\": \"routine refill request received\"}": {
+   "sensitivity_level": "PUBLIC",
+   "regulatory_tags": [],
+   "identity_bundle": false,
+   "findings": []
+  },
+  "{\"account\": \"4471820\", \"note\": \"please process at the usual priority\", \"subject\": \"123-45-6789\"}": {
+   "sensitivity_level": "PUBLIC",
+   "regulatory_tags": [],
+   "identity_bundle": false,
+   "findings": []
+  },
+  "{\"note\": \"no further action needed\"}": {
+   "sensitivity_level": "PUBLIC",
+   "regulatory_tags": [],
+   "identity_bundle": false,
+   "findings": []
+  }
+ },
+ "authored": {
+  "{\"account\": \"4471820\", \"note\": \"batch job window 02:00\", \"subject\": \"123-45-6789\"}": 2,
+  "{\"account\": \"4471820\", \"note\": \"please process at the usual priority\", \"subject\": \"123-45-6789\"}": 2
+ }
+}
