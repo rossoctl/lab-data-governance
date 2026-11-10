@@ -78,3 +78,4 @@ tests/live/pins.*.local.yaml
 # Demo tooling output (demos/*/*/runs/ — turn transcripts, pod logs, the keep list).
 demos/*/*/runs/*
 !demos/*/*/runs/.gitkeep
+tests/system/REPORT-*.md
