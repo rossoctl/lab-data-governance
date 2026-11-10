@@ -4,9 +4,10 @@ to the next by a finder. Pure: a :class:`TraceInput` in, a
 
 At each payload-bearing leg, in :func:`wire_order`:
 
-1. **inputs** — the leg's inbound legs (``traversal.inbound_sets`` with responses
-   paired to their own request); each contributes the occurrences it holds after
-   its own fold. A leg with no payload is routed but holds nothing.
+1. **inputs** — the leg's inbound legs (``traversal.inbound_sets``; a tool or an
+   LLM routed by the call it is answering, :func:`with_invocation_scope`); each
+   contributes the occurrences it holds after its own fold. A leg with no payload
+   is routed but holds nothing.
 2. **find** — the finder, once per input, returns candidate occurrences here.
 3. **attribute** — one owner per span (:func:`attribute`).
 4. **summarize** — the leg's edges become its :class:`~.summary.LegSummary`.
@@ -63,8 +64,8 @@ def wire_order(legs: Sequence[WireLeg]) -> list[WireLeg]:
     """The shared trace-local causal order (ADR-0035), using recorded parents.
 
     Observed times order otherwise ready legs; ingestion ``seq`` breaks ties.
-    The fold still routes absent payloads and pairs memoryless responses with
-    their own requests.
+    The fold still routes absent payloads and routes a memoryless entity by the
+    call each leg belongs to.
     """
     positions = leg_positions(
         LegOrderEvent(leg.interaction_id, leg.leg_type, leg.parent_interaction_id,
@@ -159,34 +160,40 @@ def _nests_in(c: Occurrence, d: Occurrence) -> bool:
 
 def with_invocation_scope(ordered: Sequence[WireLeg], inbound: Mapping[LegKey, tuple[LegKey, ...]],
                           entities: Mapping[str, Entity]) -> dict[LegKey, tuple[LegKey, ...]]:
-    """A memoryless responder's answer may carry what it received from the services
-    it called while answering.
+    """A tool or an LLM keeps one memory per call it receives (#348).
 
-    ``inbound_sets(pair_responses=True)`` answers a memoryless entity's response with
-    its own request only, so a tool that calls a service and returns what the service
-    said has no inbound for that value, although every leg is on the wire (teaching
-    flag 2026-10-24; the paper's "invocation scope", P14). Here the response of every
-    child interaction (``parent_interaction_id`` = this interaction) that arrived
-    before the answer is added to the answer's inbound set. Accumulating entities are
-    untouched: their memory node already holds every prior. Data lineage is untouched:
-    this runs on label lineage's copy of the sets only.
+    What a memoryless entity sends inside a call (its requests to others and its
+    answer) inherits from the request that opened the call and from the responses it
+    received inside the call before it; nothing crosses from one call to another.
+    The call a leg belongs to: a response's own interaction; a request's
+    ``parent_interaction_id``, when that interaction's request is present and was
+    received by the same entity. ``inbound_sets`` routes a memoryless entity by time
+    instead (a request inherits the latest leg it received, from whichever call; a
+    response its own request only), so its sets are replaced here. A request whose
+    call is unknown keeps them. Accumulating entities are untouched: one memory for
+    all calls (#349). ``inbound_sets`` itself is untouched.
     """
     position = {(leg.interaction_id, leg.leg_type): i for i, leg in enumerate(ordered)}
+    receiver = {leg.interaction_id: leg.callee_entity_id for leg in ordered if leg.leg_type == "request"}
     children: dict[str, list[LegKey]] = {}
     for leg in ordered:
         if leg.leg_type == "response" and leg.parent_interaction_id:
             children.setdefault(leg.parent_interaction_id, []).append((leg.interaction_id, "response"))
     out = dict(inbound)
     for leg in ordered:
-        if leg.leg_type != "response":
-            continue
-        producer = entities.get(leg.callee_entity_id)
+        key = (leg.interaction_id, leg.leg_type)
+        if leg.leg_type == "response":
+            sender, call = leg.callee_entity_id, leg.interaction_id
+            have = tuple(out.get(key, ()))
+        else:
+            sender, call = leg.caller_entity_id, leg.parent_interaction_id
+            opener = (call, "request")
+            if call is None or receiver.get(call) != sender or position[opener] > position[key]:
+                continue
+            have = (opener,)
+        producer = entities.get(sender)
         if producer is None or memory.accumulates(producer):
             continue
-        key = (leg.interaction_id, "response")
-        have = tuple(out.get(key, ()))
-        extra = tuple(k for k in children.get(leg.interaction_id, ())
-                      if position[k] < position[key] and k not in have)
-        if extra:
-            out[key] = have + extra
+        out[key] = have + tuple(k for k in children.get(call, ())
+                                if position[k] < position[key] and k not in have)
     return out
