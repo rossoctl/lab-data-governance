@@ -7,9 +7,9 @@ import { NO_HOP_LINKS, hopText, otherTraceHref, type HopLinks } from '../lib/hop
 
 /**
  * The lineage of one labelled value on a leg: for each origin label lineage
- * reached it from, every chain the value travelled — the payload where the
- * classifier found it (the excerpt, unit highlighted), each carrier, and this
- * leg — in seq order. The first chain of each origin is open; the rest fold
+ * reached it from, the chains the read lists (one shortest route per previous
+ * hop) — the payload where the classifier found it (the excerpt, unit
+ * highlighted), each carrier, and this leg — in seq order. The first chain of each origin is open; the rest fold
  * under a count. Rendered on both pages that show a leg's labels.
  *
  * Facts only: a chain says where the value was, never that it caused a decision.

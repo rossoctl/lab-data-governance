@@ -97,18 +97,22 @@ the value took from the payload where the classifier found it to this leg, one h
 callee, the span at that payload (the unit on the origin) and its `trace_id`. The walk follows the
 edges' `from_*` back from the leg, each next hop read at the payload the edge was derived from
 (`from_payload_hash`), so a chain is a chain of payloads; only the leg read is pinned to its current
-payload. A value that reached the leg two ways (the edges form a DAG) has two chains, every complete
-route, shortest first. The walk crosses into other traces through `from_trace_id` / `origin_trace_id`
-(no finder writes them yet; the read already follows them). A cycle stops at the repeated edge, the
-depth is capped (`MAX_CHAIN_DEPTH`, logged when hit), and a walk that ends before the origin is kept
-as a chain whose first hop is a `hop`, never shown as the origin. The origin hop carries an `excerpt`
-of its payload's projected text around the unit.
+payload. A value reaches a leg along many routes (the edges form a DAG with fan-in: an agent keeps
+every earlier holding, every LLM round trip echoes the value back), and their number multiplies along
+the fan-in while the number of edges does not; so the read never lists them. It reads the sub-graph of
+edges behind the leg once (a set union, linear in edges) and derives one shortest route per edge into
+the leg, shortest first, and `route_count`, how many routes there are in all. The walk crosses into
+other traces through `from_trace_id` / `origin_trace_id` (no finder writes them yet; the read already
+follows them). A cycle ends where the walk meets itself, and a route that ends before the origin is
+kept as a chain whose first hop is a `hop`, never shown as the origin. The origin hop carries an
+`excerpt` of its payload's projected text around the unit.
 
 The UI keeps the Classification tab the classifier's (label lineage there is one more source of labels)
 and adds a tab per leg titled **Data lineage** (`LabelLineageTable`): one block per carried-in value with
 its **origin** (where the classifier found it) and the **previous** hop(s) at distance 1, each a
-link to that interaction, and "Show chains" for the full routes (`LabelLineage`: origin, then each
-carrier, then the **current** leg; the first chain open, the rest folded under a count). The
+link to that interaction, and "Show chains" for the routes the read lists, one shortest per previous hop
+(`LabelLineage`: origin, then each carrier, then the **current** leg; the first chain open, the rest
+folded under a count). The
 risk layer's decision card opens the same view from its "Carried in" row, under the fired rules'
 criteria. A hop links to its interaction on the trace page (`?iid=`), a hop in
 another trace is marked and links to that trace's flow view, and a hop under the pointer lights its

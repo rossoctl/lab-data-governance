@@ -7,10 +7,10 @@ import { HopHoverContext } from './flow/hopHover';
 import type { LegLabel, LineageHop } from '../types';
 
 /**
- * The chains of a live booking trace's partner request (trace 98134844…),
- * as the labels read serves them: the PID born at create-booking's response
- * reached notify-partner's request twice, straight and through the LLM, and the
- * partner request from there.
+ * The chains of a live booking trace (trace 98134844…), in the shape the labels
+ * read serves for notify-partner's request: the PID born at create-booking's
+ * response reached it twice, straight and through the LLM, one chain per
+ * arrival; the hops are then carried on to the partner request.
  */
 const T = '98134844c66d7a7996303b049d6fc350';
 

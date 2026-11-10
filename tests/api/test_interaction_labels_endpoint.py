@@ -105,6 +105,7 @@ def test_labels_wire_shape(seeded, api_server):
                  "caller": "booking-agent", "callee": "create-booking",
                  "text": "BK-2850EB", "start": 16, "end": 25, "role": "here", "excerpt": None},
             ]],
+            "route_count": 1,
         }],
     }
     assert (opid["entity_type"], opid["found_here"], opid["carried_in"]) == ("OPID", True, [])

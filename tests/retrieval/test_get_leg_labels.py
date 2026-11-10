@@ -13,7 +13,6 @@ pin what only the SQL decides: pinning to the current payload, where the origin'
 from __future__ import annotations
 
 import json
-import logging
 
 import psycopg
 import pytest
@@ -228,8 +227,9 @@ def test_before_the_interactions_migration_empty(seeded: str, configured_db: str
 # From the live edges: every edge into 83053 comes from 82049 (notify-partner's
 # request); into 82049 the PID comes twice, from create-booking's response 80565
 # (the origin) and from the LLM response 82082, which got it from the LLM request
-# 80603, which got it from 80565. So the PID has two chains, the OPID (born at
-# 82082) one.
+# 80603, which got it from 80565. So the PID has two routes, the OPID (born at
+# 82082) one; the read lists one shortest route per edge into the leg and counts
+# them all.
 
 _B12 = "98134844c66d7a7996303b049d6fc350"
 _P = "02ef1eb2"      # notify-partner → partner (83053 request, 83054 response)
@@ -320,17 +320,19 @@ def _route(chain) -> list[tuple]:
     return [(h.seq, h.role) for h in chain]
 
 
-def test_the_partner_request_pid_has_two_chains_shortest_first(booking_trace: str) -> None:
+def test_the_partner_request_pid_has_one_shortest_chain_and_counts_two_routes(booking_trace: str) -> None:
     req = _legs(retrieval.get_leg_labels(booking_trace, _P))["request"]
     pid, opid = req.labels
     assert (pid.entity_type, pid.found_here, opid.entity_type, opid.found_here) == (
         "PID", False, "OPID", True)
     (origin,) = pid.carried_in
     assert origin.origin_seq == 80565
+    # One edge into 83053, so one chain: the shortest route. The route via the
+    # LLM (80603 → 82082) is counted, not listed.
     assert [_route(c) for c in origin.chains] == [
         [(80565, "origin"), (82049, "hop"), (83053, "here")],
-        [(80565, "origin"), (80603, "hop"), (82082, "hop"), (82049, "hop"), (83053, "here")],
     ]
+    assert origin.route_count == 2
     born = origin.chains[0][0]
     assert (born.interaction_id, born.leg_type, born.trace_id) == (_CB, "response", booking_trace)
     assert (born.caller, born.callee) == ("booking-agent", "create-booking")
@@ -339,9 +341,6 @@ def test_the_partner_request_pid_has_two_chains_shortest_first(booking_trace: st
     # re-based into it; this payload is short, so no ellipsis.
     assert born.excerpt.text == _CB_TEXT
     assert born.excerpt.text[born.excerpt.start:born.excerpt.end] == "BK-83CE5F"
-    # Carriers show the span the finder matched at THEIR payload.
-    llm_req = origin.chains[1][1]
-    assert (llm_req.text, llm_req.start, llm_req.end, llm_req.excerpt) == ("BK-83CE5F", 2396, 2405, None)
     here = origin.chains[0][-1]
     assert (here.interaction_id, here.leg_type, here.start, here.end) == (_P, "request", 16, 25)
 
@@ -351,6 +350,7 @@ def test_the_partner_request_opid_born_at_the_llm_has_one_chain(booking_trace: s
     (origin,) = req.labels[1].carried_in
     assert origin.origin_seq == 82082
     assert [_route(c) for c in origin.chains] == [[(82082, "origin"), (82049, "hop"), (83053, "here")]]
+    assert origin.route_count == 1
     # The LLM response has no stored payload here: the hop stands, the excerpt does not.
     assert origin.chains[0][0].excerpt is None
 
@@ -364,7 +364,8 @@ def test_the_partner_response_found_here_only_leg_gains_nothing(booking_trace: s
 
 def test_two_edges_of_one_origin_into_one_leg_are_one_origin_with_both_chains(
         booking_trace: str, configured_db: str) -> None:
-    # Into 82049 the PID arrives twice (direct and via the LLM): one origin, two chains.
+    # Into 82049 the PID arrives twice (direct and via the LLM): one origin, one
+    # chain per edge into the leg, two routes.
     req = _legs(retrieval.get_leg_labels(booking_trace, _NP))["request"]
     (origin,) = req.labels[0].carried_in
     assert req.labels[0].entity_type == "PID" and req.carried.origin_count == 2
@@ -372,6 +373,10 @@ def test_two_edges_of_one_origin_into_one_leg_are_one_origin_with_both_chains(
         [(80565, "origin"), (82049, "here")],
         [(80565, "origin"), (80603, "hop"), (82082, "hop"), (82049, "here")],
     ]
+    # Carriers show the span the finder matched at THEIR payload.
+    llm_req = origin.chains[1][1]
+    assert (llm_req.text, llm_req.start, llm_req.end, llm_req.excerpt) == ("BK-83CE5F", 2396, 2405, None)
+    assert origin.route_count == 2
 
 
 def test_a_long_excerpt_is_cut_around_the_unit(booking_trace: str, configured_db: str) -> None:
@@ -446,7 +451,7 @@ def test_the_one_hop_cross_trace_chain(two_traces) -> None:
 
 
 # Guards: edges run from earlier to later seq, so a cycle cannot exist; the walk
-# must still end, and a run past the cap must stop and say so.
+# must still end, and the route count must stay a count, never a listing.
 
 
 def test_a_cycle_ends_the_walk_as_a_truncated_chain(configured_db: str) -> None:
@@ -468,23 +473,45 @@ def test_a_cycle_ends_the_walk_as_a_truncated_chain(configured_db: str) -> None:
         ("ix-a", "hop"), ("ix-b", "hop"), ("ix-a", "hop"), ("ix-z", "here")]
 
 
-def test_the_depth_cap_stops_the_walk_and_logs(configured_db: str, monkeypatch, caplog) -> None:
-    from data_governance.retrieval import labels as mod
-    monkeypatch.setattr(mod, "MAX_CHAIN_DEPTH", 3)
+def test_the_walk_stops_at_the_origin_whatever_leads_into_it(configured_db: str) -> None:
+    # A data fault: two edges of the unit lead INTO the origin leg itself. The
+    # walk ends at the origin and counts one route, never what lies behind it.
     with psycopg.connect(configured_db) as conn:
-        legs = [(f"ix-{i}", "request", f"h{i}") for i in range(6)]
+        legs = [(f"ix-{n}", "request", n) for n in ("o", "p", "q", "z")]
         for i, (ix, lt, h) in enumerate(legs):
-            _interaction(conn, ix, "t-deep", "e-a", "e-b", [(lt, h, 10 + i)])
-        k = dict(origin=legs[0], unit=(0, 9), entity_type="PID", tags=["PII"], level="RESTRICTED")
-        for i in range(1, 6):
-            _edge2(conn, eid=f"e{i}", trace="t-deep", to=legs[i], frm=legs[i - 1], span=(0, 9), **k)
+            _interaction(conn, ix, "t-behind", "e-a", "e-b", [(lt, h, 10 + i)])
+        o, p, q, z = legs
+        k = dict(origin=o, unit=(0, 9), entity_type="PID", tags=["PII"], level="RESTRICTED")
+        _edge2(conn, eid="z-o", trace="t-behind", to=z, frm=o, span=(0, 9), **k)
+        _edge2(conn, eid="o-p", trace="t-behind", to=o, frm=p, span=(0, 9), **k)
+        _edge2(conn, eid="o-q", trace="t-behind", to=o, frm=q, span=(0, 9), **k)
         conn.commit()
-    with caplog.at_level(logging.WARNING, logger="data_governance.retrieval.labels"):
-        (origin,) = _legs(retrieval.get_leg_labels("t-deep", "ix-5"))["request"].labels[0].carried_in
-    (chain,) = origin.chains
-    assert [h.interaction_id for h in chain] == ["ix-2", "ix-3", "ix-4", "ix-5"]
-    assert chain[0].role == "hop"
-    assert any("stopped at depth 3" in r.message for r in caplog.records)
-    monkeypatch.setattr(mod, "MAX_CHAIN_DEPTH", 32)
-    (origin,) = _legs(retrieval.get_leg_labels("t-deep", "ix-5"))["request"].labels[0].carried_in
-    assert [h.role for h in origin.chains[0]] == ["origin", "hop", "hop", "hop", "hop", "here"]
+    (origin,) = _legs(retrieval.get_leg_labels("t-behind", "ix-z"))["request"].labels[0].carried_in
+    assert origin.route_count == 1
+    assert [_route(c) for c in origin.chains] == [[(10, "origin"), (13, "here")]]
+
+
+def test_routes_are_counted_not_listed_when_fan_in_multiplies_them(configured_db: str) -> None:
+    # A ladder where every payload holds the value from the two before it (an
+    # agent that remembers, echoed once per step): routes to rung n are the n-th
+    # Fibonacci number. Enumerating them (the read before this one) is 832,040
+    # walks for 30 rungs; the sub-graph is 57 edges.
+    with psycopg.connect(configured_db) as conn:
+        legs = [(f"ix-{i}", "request", f"h{i}") for i in range(30)]
+        for i, (ix, lt, h) in enumerate(legs):
+            _interaction(conn, ix, "t-fib", "e-a", "e-b", [(lt, h, 10 + i)])
+        k = dict(origin=legs[0], unit=(0, 9), entity_type="PID", tags=["PII"], level="RESTRICTED")
+        for i in range(1, 30):
+            for back in (1, 2):
+                if i - back >= 0:
+                    _edge2(conn, eid=f"e{i}-{back}", trace="t-fib", to=legs[i], frm=legs[i - back],
+                           span=(0, 9), **k)
+        conn.commit()
+    req = _legs(retrieval.get_leg_labels("t-fib", "ix-29"))["request"]
+    (origin,) = req.labels[0].carried_in
+    assert origin.route_count == 832040
+    # One chain per edge into the leg (from ix-28 and from ix-27), each the
+    # shortest route from the origin through that hop: 15 steps of two rungs.
+    assert len(origin.chains) == 2
+    assert [h.role for h in origin.chains[0]] == ["origin", *["hop"] * 14, "here"]
+    assert origin.chains[0][0].interaction_id == "ix-0"

@@ -136,11 +136,13 @@ export interface LabelOrigin {
   /** The origin's trace when it is another one; `null` for this trace. */
   origin_trace_id: string | null;
   /**
-   * Every route the value took from this origin to the leg read, shortest
+   * One shortest route from this origin per edge into the leg read, shortest
    * first, each a list of hops in seq order (origin → carriers → here). Absent
    * from a server that predates the walk; the UI then shows the origin alone.
    */
   chains?: LineageHop[][];
+  /** How many routes there are in all; `chains` lists the shortest of them. Absent from an older server. */
+  route_count?: number | null;
 }
 
 /**
