@@ -194,6 +194,29 @@ def test_no_record_waits_then_pending(serve) -> None:
     assert 0.55 <= elapsed < 2.0
 
 
+def test_a_slow_first_read_does_not_outlast_wait_ms(serve, monkeypatch) -> None:
+    """#339: the answer comes within wait_ms even when the first read is slow or queued
+    (eight requests, four readers, 200 ms reads, wait_ms=50)."""
+    real = verdict_routes._read_states
+    monkeypatch.setattr(verdict_routes, "_read_states", lambda *a: time.sleep(0.2) or real(*a))
+    with serve(read_workers=4) as (base, _app):
+        elapsed: list[float] = []
+        bodies: list[dict] = []
+
+        def one() -> None:
+            started = time.monotonic()
+            bodies.append(_get(base, 50).json())
+            elapsed.append(time.monotonic() - started)
+
+        threads = [threading.Thread(target=one) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+    assert [b["state"] for b in bodies] == ["pending"] * 8
+    assert max(elapsed) < 0.15, elapsed
+
+
 def test_record_written_during_the_wait_answers_promptly(serve, configured_db) -> None:
     _seed(configured_db)
     with serve() as (base, _app):
@@ -259,6 +282,17 @@ def test_the_latest_record_evidencing_the_request_leg_answers(serve, configured_
     with serve() as (base, _app):
         body = _get(base, 100).json()
     assert (body["verdict"], body["version"]) == ("block", 2)
+
+
+def test_a_later_record_that_does_not_evidence_the_request_leg_leaves_the_one_that_does(serve, configured_db) -> None:
+    """Not "latest, then filter": v1 judged the request, v2 only the response. The gate
+    is holding the request, so v1 is the answer."""
+    _seed(configured_db, response_leg=True)
+    _write_record(configured_db, enforcement="block", legs="{request}")
+    _write_record(configured_db, enforcement="allow", legs="{response}")
+    with serve() as (base, _app):
+        body = _get(base, 100).json()
+    assert (body["state"], body["verdict"], body["version"]) == ("decided", "block", 1)
 
 
 # --- unjudged -------------------------------------------------------------------
@@ -695,6 +729,18 @@ def test_priority_decision_off_classifies_but_names_nothing(serve, configured_db
             assert _get(base, 600).json()["state"] == "pending"
         assert decision_listener.wait(0.5) == []
     assert _classified(configured_db, "h-nw")
+
+
+def test_a_zero_wait_read_names_nothing_for_decision(serve, configured_db) -> None:
+    """wait_ms=0 is one read with nobody waiting on the answer, so it does not ask for
+    a decision ahead of the pipeline's order; the same request with a wait does."""
+    _seed(configured_db, payload_hash="h-zero")
+    with db.listen_payloads(verdict_routes.PRIORITY_DECISION_CHANNEL, configured_db) as decision_listener:
+        with serve(priority_classification=False, priority_decision=True) as (base, _app):
+            assert _get(base, 0).json()["state"] == "pending"
+            assert decision_listener.wait(0.5) == []
+            assert _get(base, 200).json()["state"] == "pending"
+        assert (verdict_routes.PRIORITY_DECISION_CHANNEL, _IID) in decision_listener.wait(2.0)
 
 
 def test_a_payload_nobody_waits_on_does_not_run_ahead_of_a_live_gate(serve, configured_db) -> None:

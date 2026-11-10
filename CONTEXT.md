@@ -970,7 +970,9 @@ risk record is the governance-facing rollup, one grain up from both.
 _Avoid_: reading `interaction_risk_records` directly with inline SQL — the
 **Risk retrieval** seam exists to keep the latest-version reduction and filter
 ordering (filter *after* picking latest, never before — see AC-DAS-016) in one
-place instead of re-derived per caller.
+place instead of re-derived per caller. The one read that filters first, the
+verdict service's (`get_request_risk`: the latest version that evidences the
+request leg), lives in the seam too.
 
 **Current version** (risk records):
 The single **Interaction risk record** or **Trace risk record** a reader means

@@ -13,7 +13,9 @@ Leg-ready stays its only writer; this module only reads it and asks for it.
 The request is a read with no body; the key is the path, so it is a plain GET,
 safe and idempotent, and a gate may repeat it. ``wait_ms`` (0..:data:`MAX_WAIT_MS`,
 larger is refused, never clamped) turns it into a long poll: the answer comes as
-soon as the exchange's record is decided, or at ``wait_ms`` with ``state: pending``.
+soon as the exchange's record is decided, or at ``wait_ms`` with ``state: pending``;
+the first read counts against ``wait_ms`` too, so a database still not answering at
+``wait_ms`` gives ``pending`` as well. ``wait_ms=0`` is one read.
 
 **Decided.** The latest record that evidences the request leg — the gate is
 holding the request, so that record is the complete answer to "may this request
@@ -62,8 +64,9 @@ it the answer is 503 ``verdict_busy`` at once, never a queue.
 one dispatcher subscribed to the change hub (``dg_legs_inserted``,
 ``dg_interaction_risk_written``; the notifies carry no payload). On every wake, and
 at least every :data:`BACKSTOP_SECONDS` while anyone waits, the dispatcher runs ONE
-read for every waited interaction (:data:`_STATE_SQL`) and resolves only the
-answered ones. A new waiter registers first and then reads its own state once, so a
+batched read for every waited interaction (the records through Risk retrieval's
+:func:`~data_governance.retrieval.get_request_risk`, then the leg facts, :data:`_STATE_SQL`)
+and resolves only the answered ones. A new waiter registers first and then reads its own state once, so a
 write landing between the two is seen by one of them. Every DB user is a bounded
 executor (reads, priority classification), so no request waits on the pool: 64 waiters cost 64
 first reads and then one read per wake.
@@ -106,7 +109,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import BaseRoute, Route
 
-from data_governance import db
+from data_governance import db, retrieval
 from data_governance.processors.classification.projection import project
 from data_governance.processors.interactions.procedure import _interaction_id
 
@@ -204,25 +207,16 @@ class Settings:
         return self.read_workers + (self.priority_classification_concurrency if self.priority_classification else 0) + 1
 
 
-# One row per waited interaction: its answering record (see the module docstring),
-# its request leg's payload state for priority classification, and what its request span says
-# about the body. The span is the exchange's own: its span id is the exchange id.
+# One row per waited interaction: its request leg's payload state for priority
+# classification, and what its request span says about the body. The span is the
+# exchange's own: its span id is the exchange id. The answering record comes from
+# Risk retrieval (:func:`data_governance.retrieval.get_request_risk`).
 _STATE_SQL = """
-SELECT w.id, r.version, r.enforcement_type, r.triggered_rule_ids, l.interaction_id IS NOT NULL, l.payload_hash,
+SELECT w.id, l.interaction_id IS NOT NULL, l.payload_hash,
        p.content_hash IS NOT NULL, pc.content_hash IS NOT NULL,
        s.attributes->>'http.request.body.size',
        right(s.attributes->>'input.value', %s) = %s
   FROM unnest(%s::text[], %s::text[], %s::text[]) AS w(id, trace_id, exchange_id)
-  LEFT JOIN LATERAL (
-        SELECT rr.version, rr.enforcement_type, rr.triggered_rule_ids
-          FROM interaction_risk_records rr
-         WHERE rr.interaction_id = w.id
-           AND ('request' = ANY(rr.legs_evidenced)
-                OR NOT EXISTS (SELECT 1 FROM interaction_legs x
-                                WHERE x.interaction_id = w.id AND x.leg_type = 'request'))
-         ORDER BY rr.version DESC
-         LIMIT 1
-       ) r ON true
   LEFT JOIN interaction_legs l ON l.interaction_id = w.id AND l.leg_type = 'request'
   LEFT JOIN interaction_payloads p ON p.content_hash = l.payload_hash
   LEFT JOIN payload_classifications pc ON pc.content_hash = l.payload_hash
@@ -330,18 +324,26 @@ def _redacted_payload(interaction_id: str, content: Any, findings: Any) -> str |
 
 def _read_states(keys: list[_Key], notify_undecided: bool = False) -> dict[str, _State]:
     """The state of every waited exchange in one read; with *notify_undecided*, name
-    each undecided one on the priority decision channel in the same transaction."""
+    each undecided one on the priority decision channel in the same transaction.
+
+    The record comes from Risk retrieval in its own transaction, before the leg facts,
+    so a leg landing between the two is not in the record's pick. For a held exchange
+    that changes nothing: its request leg is derived before any record of it (a record
+    is computed from legs, and the response leg cannot exist while the request is held),
+    so the pick's no-request-leg arm never fires for it."""
     ids, traces, exchanges = (list(column) for column in zip(*keys, strict=True))
     params = (len(_TRUNCATED_SUFFIX), _TRUNCATED_SUFFIX, ids, traces, exchanges)
     exchange_of = {key[0]: key[2] for key in keys}
     states: dict[str, _State] = {}
+    risk = retrieval.get_request_risk(ids)
     with db.transaction() as tx:
-        for (iid, version, enforcement, rules, has_leg, payload_hash, payload_present, classified,
+        for (iid, has_leg, payload_hash, payload_present, classified,
              body_size, truncated) in tx.fetch_all(_STATE_SQL, params):
             record = None
-            if version is not None:
-                record = {"state": "decided", "verdict": enforcement, "exchange_id": exchange_of[iid],
-                          "version": version, "rules": list(rules or []), "labels": []}
+            if iid in risk:
+                r = risk[iid]
+                record = {"state": "decided", "verdict": r.enforcement_type, "exchange_id": exchange_of[iid],
+                          "version": r.version, "rules": r.triggered_rule_ids, "labels": []}
                 reason = _unread_body(has_leg, payload_hash, body_size, truncated)
                 if reason is not None:
                     record.update(state="unjudged", reason=reason)
@@ -515,13 +517,15 @@ class VerdictService:
         self._waiters.setdefault(interaction_id, set()).add(waiter)
         self._nonempty.set()
         try:
-            self._apply(await self._read([key], self.settings.priority_decision and wait_ms > 0))
-            remaining = wait_ms / 1000 - (time.monotonic() - started)
-            if not waiter.future.done() and remaining > 0:
+            if wait_ms:
+                # The whole read-and-wait answers within wait_ms (#339): a slow or queued
+                # first read is abandoned at the deadline, as the wait is.
                 try:
-                    await asyncio.wait_for(asyncio.shield(waiter.future), timeout=remaining)
+                    await asyncio.wait_for(self._read_then_wait(key, waiter, True), timeout=wait_ms / 1000)
                 except TimeoutError:
                     pass
+            else:
+                await self._read_then_wait(key, waiter, False)
             waited_ms = int((time.monotonic() - started) * 1000)
             if waiter.future.done():
                 return {**waiter.future.result(), "waited_ms": waited_ms}, waiter
@@ -532,6 +536,12 @@ class VerdictService:
                 peers.discard(waiter)
                 if not peers:
                     del self._waiters[interaction_id]
+
+    async def _read_then_wait(self, key: _Key, waiter: _Waiter, wait: bool) -> None:
+        """Read the exchange's state once; with *wait*, then wait for the dispatcher to answer it."""
+        self._apply(await self._read([key], self.settings.priority_decision and wait))
+        if wait:
+            await asyncio.shield(waiter.future)
 
     def _apply(self, states: dict[str, _State]) -> None:
         for interaction_id, state in states.items():

@@ -30,7 +30,7 @@ GitHub clones only, and `run-all.sh` runs the whole experiment and checks each s
   says (wire contract §5). A size above 0 beside no `input.value` is `body_not_captured` (`capture_io` off, a body that
   is not text or not whole, a parser that reduced it to nothing); so is neither a value nor a size, from a sidecar older
   than contract v1.8. A value ending `…[truncated]` is `body_truncated`. The answer comes at once, with no wasted wait.
-- **`pending`:** `wait_ms` passed with no record.
+- **`pending`:** `wait_ms` passed with no record, or before the read of it came back.
 
 **What the gate does with `unjudged`.** It refuses the answer unless its verdict is one it denies anyway, with one
 exception: with `capture_io` off it lets a `body_not_captured` body through, because whoever turned capture off gave up
@@ -52,8 +52,9 @@ the body. What a parser leaves out of it no record judges, and no span fact says
 tell. Plain HTTP carries the whole text body.
 
 Errors: 400 (`bad_key`, `bad_wait_ms`, `wait_ms_too_large`), 401 `unauthorized`, 503 `verdict_busy` (the per-process
-waiter cap, never a queue), 500 `verdict_unavailable` (the database did not answer, within the manifest's
-`DB_POOL_TIMEOUT` of 3 s). The gate treats anything else as no verdict. A `pending` or `verdict_busy` answer, a 5xx, a
+waiter cap, never a queue), 500 `verdict_unavailable` (the database failed, or did not answer within the manifest's
+`DB_POOL_TIMEOUT` of 3 s, before `wait_ms` ran out; a read still waiting at `wait_ms` is answered `pending`, as an
+undecided exchange is). The gate treats anything else as no verdict. A `pending` or `verdict_busy` answer, a 5xx, a
 `decided` answer naming no verdict and no answer at all are a slow or dead service, which the gate's `fallback` decides (`deny` by default, set by `instrument
 --fallback`, and per destination host, per source workload or per pair by a row of the namespace's fail-mode
 document, which can also set the wait,

@@ -14,7 +14,8 @@ This slice (issue #109) covers both the interaction-risk half
 :func:`get_trace_risk_history`), and the trace forest read
 (:func:`get_trace_risk_detail`), which joins the risk tables against the
 derived flow forest (:mod:`.interactions`'s ``interactions`` /
-``interaction_legs`` / ``interaction_spans``, migrations 0004/0009).
+``interaction_legs`` / ``interaction_spans``, migrations 0004/0009); and the
+verdict service's read (:func:`get_request_risk`).
 
 Both tables are insert-only and versioned (a recompute never mutates a row —
 it inserts a new ``version``), so every read here reduces to "latest version
@@ -22,7 +23,9 @@ per key" via ``DISTINCT ON (key) ... ORDER BY key, version DESC`` — the same
 convention :mod:`.interactions` and ``risk/engine/*`` already use. Filtering
 happens strictly AFTER that reduction: filtering the raw table first could
 surface a superseded version that happens to match while the current version
-does not (AC-DAS-016).
+does not (AC-DAS-016). The one exception is :func:`get_request_risk`, which
+picks among the versions that evidence the request leg on purpose (its
+docstring says why).
 
 Pagination is DB-level keyset (a cursor carries the last-seen row's actual
 sort-key values, not a numeric offset) — an offset cursor is wrong for a
@@ -60,7 +63,7 @@ encoding behaviour for a risk-endpoint-specific reason.
 from __future__ import annotations
 
 import datetime as dt
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any
@@ -85,6 +88,7 @@ __all__ = [
     "ForestInteractionView",
     "TraceRiskDetail",
     "get_trace_risk_detail",
+    "get_request_risk",
 ]
 
 SORT_COMPUTED_AT_DESC = "computed_at_desc"
@@ -520,6 +524,36 @@ def get_interaction_risk(interaction_id: str) -> InteractionRiskView | None:
             (interaction_id,),
         )
     return _row_to_view(row) if row is not None else None
+
+
+# ---------------------------------------------------------------------------
+# get_request_risk
+# ---------------------------------------------------------------------------
+
+
+def get_request_risk(interaction_ids: Sequence[str]) -> dict[str, InteractionRiskView]:
+    """The record that answers "may this request leave", for each interaction that has
+    one (the verdict service's read, batched): the latest version that evidences the
+    request leg. When the interaction has no request leg at all, its latest version —
+    a derivation that never writes the request leg (the graph algorithm's request-less
+    call) would otherwise never be answered.
+
+    Unlike "latest, then filter" (AC-DAS-016) this picks among the versions that saw
+    the request: a held request is answered by a record that judged it."""
+    if not interaction_ids:
+        return {}
+    with db.transaction() as tx:
+        rows = tx.fetch_all(
+            f"SELECT DISTINCT ON (interaction_id) {_SELECT_COLS} "
+            "FROM interaction_risk_records rr "
+            "WHERE interaction_id = ANY(%s) "
+            "AND ('request' = ANY(rr.legs_evidenced) "
+            "     OR NOT EXISTS (SELECT 1 FROM interaction_legs x "
+            "                     WHERE x.interaction_id = rr.interaction_id AND x.leg_type = 'request')) "
+            "ORDER BY interaction_id, version DESC",
+            (list(interaction_ids),),
+        )
+    return {view.interaction_id: view for view in map(_row_to_view, rows)}
 
 
 # ---------------------------------------------------------------------------

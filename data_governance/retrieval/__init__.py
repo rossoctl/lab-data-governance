@@ -44,9 +44,11 @@ derivation stays behind the interface (ADR-0005):
   / ``get_interaction_risk_history`` and their trace-grain counterparts
   ``list_trace_risk`` / ``get_trace_risk`` / ``get_trace_risk_history``, plus the
   trace forest read ``get_trace_risk_detail`` (the trace risk record joined against
-  the :mod:`.interactions` derived forest). Both risk tables are write-once
-  and versioned, so every read reduces to latest-version-per-key, filtered strictly
-  after that reduction (AC-DAS-016). Pagination is DB-level keyset, not the bounded
+  the :mod:`.interactions` derived forest), and the verdict service's batched
+  ``get_request_risk``. Both risk tables are write-once and versioned, so every read
+  reduces to latest-version-per-key, filtered strictly after that reduction
+  (AC-DAS-016) — except ``get_request_risk``, which picks the latest version that
+  evidences the request leg (its docstring says why). Pagination is DB-level keyset, not the bounded
   in-memory ``http.paginate`` — see the module docstring for why an offset cursor is
   wrong here.
 - :mod:`.alerts` — the read path over ``alerts`` (issue #110's read half):
@@ -134,6 +136,7 @@ from data_governance.retrieval.risk import (
     TraceRiskView,
     get_interaction_risk,
     get_interaction_risk_history,
+    get_request_risk,
     get_trace_risk,
     get_trace_risk_detail,
     get_trace_risk_history,
@@ -216,6 +219,7 @@ __all__ = [
     "TraceRiskView",
     "get_interaction_risk",
     "get_interaction_risk_history",
+    "get_request_risk",
     "get_trace_risk",
     "get_trace_risk_detail",
     "get_trace_risk_history",
