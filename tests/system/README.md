@@ -34,8 +34,8 @@ and refuses:
 
 The loader refuses an unknown or duplicated key anywhere, an `id` that is not its directory's name, a
 case without `expect.edges`, an edge naming an undeclared unit or a leg the line lacks, an expected
-edge between legs that do not both carry its unit, and a classifier premise that leaves a present unit
-unstated. A leg the derivation never produced (no interaction, leg row or stored payload) is red.
+edge between legs that do not both carry its unit, a pending block that disagrees with `expect.edges`,
+and a classifier premise that leaves a present unit unstated. A leg the derivation never produced (no interaction, leg row or stored payload) is red.
 
 ## Run
 
@@ -86,7 +86,8 @@ on where one model happens to miss. The real-model cases (C1, C2, K0) keep the p
 
 `trunk_cases.py` writes them: one conversation of sixteen payloads (`U>A`, `A>L`, `L>A`, `A>T1`,
 `T1>V1`, `V1>T1`, `T1>A`, `A>L`, `L>A`, `A>T2`, `T2>V2`, `V2>T2`, `T2>A`, `A>L`, `L>A`, `A>U`) and
-six routes on it, C1–C6; K0, two conversations of one agent in which nothing crosses; and three
+six routes on it, C1–C6; K0–K7, two conversations of one agent, ten minutes apart, in which the
+partner of conversation 2 returns nothing (K0) or some of conversation 1's values (K1–K7); and three
 controls on the memoryless rule of #348, P1–P3: a tool that calls two partners inside one call, two
 callers of one tool in flight, and the same with one value in both calls (`T1(A1)>V1` names the call a
 request belongs to). Each case's `notes` says what it proves; the `cell` groups them.
@@ -112,7 +113,12 @@ renderer refuses a flagged exchange whose response carries a unit, and the judge
 model labelled, so the verdict rests on the request alone.
 
 - **GREEN**: the verdict pair matches `expect.verdict` and the drawn edges are exactly `expect.edges`.
-- **RED**: anything else, and always when the rows cannot be read (a leg not derived, an edge with an
+- **PENDING**: the case states, in `expect.pending`, a reason and exactly what this branch gets wrong
+  (`missing` and `extra` edges, `verdict` modes), and the run differs in exactly that. A pending case
+  that passes, or differs in any other way, is RED. K1–K3 and K5–K7 are pending: they need the
+  cross-trace fold (#273) and the risk engine forwarding an origin from another trace; the
+  conversation-2 edges they state are a proposal that work will settle.
+- **RED**: anything else, and always (pending or not) when the rows cannot be read (a leg not derived, an edge with an
   end on no line leg, an edge carrying a type its unit does not list or evidence that is not a whole
   match of its value, no risk record or disagreeing ones at the flagged leg, a labelled response in the
   flagged exchange), when the classifier premise is broken in either run, or when the on and off runs

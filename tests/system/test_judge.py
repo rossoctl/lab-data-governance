@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from . import caseline as cl
-from .cases import CASES_DIR, Case, load_case
+from .cases import CASES_DIR, Case, Pending, load_case
 from .classify import check_authored
 from .engine import LegRows, Observation, flagged_response_problems, resolve_edges, verdict_at
 from .grid import render_grid
@@ -23,7 +23,7 @@ MRN = "4471820"   # s1's bytes as an MRN
 
 def _case(**over) -> Case:
     base = dict(id="J", title="", cell="", line_text=LINE, line=cl.parse(LINE), units={"s1": "MRN"},
-                verdict={"on": "block", "off": "allow"}, edges=set(EDGES),
+                verdict={"on": "block", "off": "allow"}, edges=set(EDGES), pending=None,
                 must_see={}, must_miss={}, authored=False, notes="", dir=Path("."))
     base.update(over)
     base.setdefault("accepts", {u: frozenset({t}) for u, t in base["units"].items()})
@@ -104,6 +104,44 @@ def test_on_and_off_runs_that_draw_different_edges_are_red():
 def test_a_problem_reading_the_rows_is_red():
     out = _judge(_case(), problems=["edge s1 1>None (MRN) has an end on no line leg"])
     assert out.status == "RED" and out.reasons == ["on: edge s1 1>None (MRN) has an end on no line leg"]
+
+
+# --- a pending case is excused for exactly what it states -----------------------------------------------------
+
+WAITS = Pending("waits", missing=frozenset({("s1", 2, 3)}), verdict=frozenset({"on"}))
+
+
+def test_a_pending_case_that_fails_exactly_as_stated_is_pending():
+    out = _judge(_case(pending=WAITS), on_edges={("s1", 1, 2)}, on="allow")
+    assert out.status == "PENDING" and out.reasons[0] == "pending: waits"
+
+
+def test_a_pending_case_that_fails_otherwise_is_red():
+    out = _judge(_case(pending=WAITS), on_edges=set(), on="allow")   # 1>2 is missing too, which pending does not state
+    assert out.status == "RED" and out.reasons[0].startswith("differs from what pending states")
+
+
+def test_a_pending_case_that_passes_is_red():
+    out = _judge(_case(pending=WAITS))
+    assert out.status == "RED" and out.reasons[0].startswith("passes while marked pending")
+
+
+def test_a_problem_reading_the_rows_is_red_even_for_a_pending_case():
+    out = _judge(_case(pending=WAITS), on_edges={("s1", 1, 2)}, on="allow",
+                 problems=["edge s1 1>None (MRN) has an end on no line leg"])
+    assert out.status == "RED" and out.reasons[0] == "on: edge s1 1>None (MRN) has an end on no line leg"
+
+
+@pytest.mark.parametrize("pending, error", [
+    ("waits", "states reason and exactly what it gets wrong"),
+    ("{reason: a, verdict: [both]}", "verdict lists modes 'on'/'off'"),
+    ("{reason: a, missing: [s1 2>3]}", "pending missing edges that expect.edges does not list"),
+    ("{reason: a, extra: [s1 1>2]}", "pending extra edges that expect.edges lists"),
+])
+def test_pending_must_state_exactly_what_it_excuses(tmp_path: Path, pending, error):
+    with pytest.raises(ValueError, match=re.escape(error)):
+        load_case(_yaml(tmp_path, "expect:\n  verdict: {'on': block, 'off': allow}\n  edges: [s1 1>2]\n"
+                                  f"  pending: {pending}\nclassifier:\n  must_see: {{1: [s1], 2: [s1], 3: [s1]}}\n"))
 
 
 # --- the classifier premise -------------------------------------------------------------------------------------
@@ -367,8 +405,11 @@ def test_a_leg_the_derivation_never_produced_is_a_problem():
     assert ok == []
     gone = next(x for x in r.rendered if x.leg.index == 2)
     for broken, what in (({**ix_of, gone.request_span_id: None}, "interaction"),):
+        iid = ix_of[gone.request_span_id]
         assert map_legs(r.rendered, {k: v for k, v in broken.items() if v}, hash_of, payloads)[2] == [
-            f"leg 2 (A>T1) was not derived: no {what}", f"leg 5 (T1>A) was not derived: no {what}"]  # one exchange
+            f"leg 2 (A>T1) was not derived: no {what}", f"leg 5 (T1>A) was not derived: no {what}",   # one exchange
+            f"a derived request row of interaction {iid} sits on no line leg",
+            f"a derived response row of interaction {iid} sits on no line leg"]
     row = (ix_of[gone.request_span_id], gone.role)
     assert map_legs(r.rendered, ix_of, {k: v for k, v in hash_of.items() if k != row}, payloads)[2] == [
         "leg 2 (A>T1) was not derived: no leg row"]
@@ -420,3 +461,45 @@ def test_the_flagged_exchange_response_must_carry_no_finding():
         "the flagged exchange's response (leg 4) has no classification row"]
     assert flagged_response_problems(r.rendered, {4: _at(4, ("DATE", "02:00"))}, 3) == [
         "the flagged exchange's response (leg 4) was labelled [('DATE', '02:00')]; the exchange's verdict would rest on it"]
+
+
+def test_derived_rows_and_line_legs_map_one_to_one():
+    from .engine import map_legs
+    r = render("Y", {"s1": "MRN"}, cl.parse(LINE))
+    ix_of = {x.request_span_id: f"i{x.request_span_id}" for x in r.rendered}
+    hash_of = {(ix_of[x.request_span_id], x.role): f"h{x.leg.index}" for x in r.rendered}
+    orphan = {**hash_of, ("i-elsewhere", "request"): "h99"}
+    assert map_legs(r.rendered, ix_of, orphan, set(orphan.values()))[2] == [
+        "a derived request row of interaction i-elsewhere sits on no line leg"]
+    one = next(x for x in r.rendered if x.leg.index == 2)
+    two = next(x for x in r.rendered if x.leg.index == 3)
+    merged = {**ix_of, two.request_span_id: ix_of[one.request_span_id]}   # legs 3 and 6 fold into 2 and 5's rows
+    assert "legs 2 and 3 land on one derived request row" in map_legs(r.rendered, merged, hash_of, set(hash_of.values()))[2]
+
+
+@pytest.mark.parametrize("body, error", [
+    ("expect:\n" + VERDICT + "  edges: [s1 1>2, s1 1>2]\n" + SEE_ALL, "expect.edges lists edges twice"),
+    ("expect:\n" + VERDICT + "  edges: [s1 2>1]\n" + SEE_ALL, "edges that do not run forward"),
+    ("expect:\n" + VERDICT + "  edges: []\nclassifier:\n  must_see: {1: [s1], '1': [s1], 2: [s1], 3: [s1]}\n",
+     "classifier.must_see names leg 1 twice"),
+    ("expect:\n" + VERDICT + "  edges: []\nclassifier:\n  must_see: {1: [s1, s1], 2: [s1], 3: [s1]}\n",
+     "lists a unit twice at leg 1"),
+    ("expect:\n" + VERDICT + "  edges: []\n" + SEE_ALL + "  authored: 'false'\n", "classifier.authored is true or false"),
+])
+def test_the_loader_refuses_what_it_would_have_to_merge(tmp_path: Path, body, error):
+    with pytest.raises(ValueError, match=re.escape(error)):
+        load_case(_yaml(tmp_path, body))
+
+
+@pytest.mark.parametrize("line, error", [
+    ("U>A[-], A>T1[-], ..Q.., T1>A[-], A>U[-]", "unknown party 'Q'"),
+    ("U>A[-], A>T1[-], T1>V1[-], T1>A[-], V1>T1[-], A>U[-]", "T1 answers while its call 3 T1>V1 is still open"),
+])
+def test_the_line_grammar_refuses_what_cannot_happen(line, error):
+    with pytest.raises(ValueError, match=re.escape(error)):
+        render("Y", {"s1": "MRN"}, cl.parse(line))
+
+
+def test_a_tool_may_answer_one_caller_while_serving_another():
+    line = ("U>A1[-], U>A2[-], A1>T1[-], A2>T1[-], T1(A2)>V2[-], T1>A1[s1 -], V2>T1[-], T1>A2[-], A1>U[-], A2>U[-]")
+    assert len(render("Y", {"s1": "MRN"}, cl.parse(line)).rendered) == 10

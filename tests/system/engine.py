@@ -115,11 +115,13 @@ def flagged_response_problems(rendered: list[Rendered], legs: dict[int, "LegRows
 
 def map_legs(rendered: list[Rendered], ix_of: dict[str, str], hash_of: dict[tuple[str, str], str],
              payloads: set[str]):
-    """line leg -> (interaction, leg_type) and back. Every leg the line put on the wire must have been derived:
-    its interaction, its leg row and its stored payload; a leg missing any of them is a problem."""
+    """line leg -> (interaction, leg_type) and back, one to one. Every leg the line put on the wire must have been
+    derived (its interaction, its leg row and its stored payload), every derived leg row must sit on one line leg,
+    and no two line legs may land on one row; anything else is a problem."""
     key_of_leg: dict[int, tuple[str, str]] = {}
     leg_of_key: dict[tuple[str, str], int] = {}
     problems: list[str] = []
+    claimed = {(ix_of[r.request_span_id], r.role) for r in rendered if r.request_span_id in ix_of}
     for r in rendered:
         iid = ix_of.get(r.request_span_id)
         missing = ("interaction" if iid is None else "leg row" if (iid, r.role) not in hash_of
@@ -127,8 +129,13 @@ def map_legs(rendered: list[Rendered], ix_of: dict[str, str], hash_of: dict[tupl
         if missing:
             problems.append(f"leg {r.leg.index} ({r.leg.label()}) was not derived: no {missing}")
             continue
+        if (iid, r.role) in leg_of_key:
+            problems.append(f"legs {leg_of_key[(iid, r.role)]} and {r.leg.index} land on one derived {r.role} row")
+            continue
         key_of_leg[r.leg.index] = (iid, r.role)
         leg_of_key[(iid, r.role)] = r.leg.index
+    problems += [f"a derived {role} row of interaction {iid} sits on no line leg"
+                 for iid, role in sorted(set(hash_of) - claimed)]
     return key_of_leg, leg_of_key, problems
 
 

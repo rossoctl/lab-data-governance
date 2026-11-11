@@ -126,6 +126,7 @@ def parse(line: str) -> CaseLine:
         for raw in _split_legs(text):
             inv = _INVISIBLE.match(raw)
             if inv:
+                kind_of(inv.group(1))   # an unknown party letter is refused here too
                 index += 1
                 legs.append(Leg(index, last_to or "?", inv.group(1), (), invisible=True))
                 index += 1          # the hop is two payloads (there and back): it keeps the trunk's numbering

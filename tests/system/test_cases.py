@@ -1,5 +1,5 @@
 """One test per case: the case through the real system, with inherited labels on
-and off, judged against the case's expectations; GREEN passes, RED fails. Each
+and off, judged against the case's expectations; GREEN and PENDING pass, RED fails. Each
 run writes the case's ``result.md``; its timings go to the test output."""
 
 from __future__ import annotations
@@ -26,4 +26,4 @@ def test_case(case, otlp_harness: OtlpHarness, trunk_opa) -> None:
     print("\n" + report.case_markdown(outcome))
     for obs in (on, off):
         print(f"timing ({obs.mode}): " + ", ".join(f"{k} {v}" for k, v in obs.timings.items()))
-    assert outcome.status == "GREEN", outcome.reasons
+    assert outcome.status != "RED", outcome.reasons

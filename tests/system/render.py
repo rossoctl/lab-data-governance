@@ -180,6 +180,7 @@ class Renderer:
         req_id: str
         echo_id: str | None
         protocol: str
+        serving: "Renderer._Open | None" = None   # the call this request was sent inside
 
     def _proto_attrs(self, protocol: str, to: str) -> dict[str, Any]:
         if protocol == "mcp":
@@ -264,6 +265,10 @@ class Renderer:
                     if leg.sink:
                         raise ValueError(f"{self.case_id} leg {leg.index}: ⚑ marks a request; {leg.label()} is a response")
                     ex = answering[0]
+                    pending_calls = [o for o in open_ if o.serving is ex]
+                    if pending_calls:
+                        raise ValueError(f"{self.case_id} leg {leg.index}: {leg.frm} answers while its call "
+                                         f"{pending_calls[-1].leg.index} {pending_calls[-1].leg.label()} is still open")
                     if ex.leg.sink and leg.units:
                         raise ValueError(f"{self.case_id} leg {leg.index}: the flagged exchange's response carries "
                                          f"{' '.join(leg.units)}; the verdict is the exchange's risk record, so it "
@@ -281,6 +286,7 @@ class Renderer:
                                          f"no call; only the user starts one")
                     ex = self.open_exchange(trace_id=trace_id, leg=leg, frm=leg.frm, to=leg.to, req=body, at=at,
                                             parent=call.echo_id if call else None)
+                    ex.serving = call
                     open_.append(ex)
                     self.rendered.append(Rendered(leg, trace_id, ex.req_id, "request", body, values))
                 at = at + dt.timedelta(seconds=2)

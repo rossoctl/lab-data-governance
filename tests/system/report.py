@@ -14,7 +14,7 @@ class Outcome:
     case: Case
     on: Observation | None
     off: Observation | None
-    status: str                    # GREEN | RED
+    status: str                    # GREEN | RED | PENDING
     reasons: list[str]
     edge_diff: tuple[set, set]     # (missing vs expected, extra vs expected)
     classifier_notes: list[str]
@@ -48,12 +48,15 @@ def premise(case: Case, on: Observation) -> list[str]:
 
 
 def judge(case: Case, on: Observation, off: Observation) -> Outcome:
-    """Exact: GREEN when the observation is what the case states, RED otherwise. Problems reading the rows, a
-    broken classifier premise and on/off runs that drew different edges are red too."""
+    """Exact: GREEN when the observation is what the case states. Problems reading the rows, a broken classifier
+    premise and on/off runs that drew different edges are RED whatever the case says; a pending case is PENDING
+    only when it differs in exactly what it states, and RED when it differs otherwise or passes."""
+    wrong_verdict: set[str] = set()
     reasons: list[str] = []
     if case.line.sink is not None:
         for mode, obs in (("on", on), ("off", off)):
             if obs.verdict != case.verdict[mode]:
+                wrong_verdict.add(mode)
                 reasons.append(f"verdict {mode}: want {case.verdict[mode]}, got {obs.verdict}")
     missing = case.edges - on.edges
     extra = on.edges - case.edges
@@ -68,8 +71,23 @@ def judge(case: Case, on: Observation, off: Observation) -> Outcome:
                     f"off only {_edges(off.edges - on.edges) or '-'}")
     notes = [f"{mode}: {n}" for mode, obs in (("on", on), ("off", off)) for n in premise(case, obs)]
     hard += [f"classifier premise, {n}" for n in notes]
-    reasons = hard + reasons
-    status = "RED" if reasons else "GREEN"
+
+    p = case.pending
+    diff = (frozenset(missing), frozenset(extra), frozenset(wrong_verdict))
+    if hard:
+        status, reasons = "RED", hard + reasons
+    elif p is None:
+        status = "RED" if reasons else "GREEN"
+    elif not any(diff):
+        status = "RED"
+        reasons.insert(0, f"passes while marked pending ({p.reason}): drop the pending block")
+    elif diff == (p.missing, p.extra, p.verdict):
+        status = "PENDING"
+        reasons.insert(0, f"pending: {p.reason}")
+    else:
+        status = "RED"
+        reasons.insert(0, f"differs from what pending states (missing {_edges(p.missing) or '-'}; "
+                          f"extra {_edges(p.extra) or '-'}; verdict {sorted(p.verdict) or '-'})")
     return Outcome(case, on, off, status, reasons, (missing, extra), notes)
 
 

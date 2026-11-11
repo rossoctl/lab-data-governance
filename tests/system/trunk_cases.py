@@ -1,4 +1,4 @@
-"""Write the trunk cases (C1–C6, K0) and the #348 controls (P1–P3) as case.yaml files. Run once; the files
+"""Write the trunk cases (C1–C6, K0–K7) and the #348 controls (P1–P3) as case.yaml files. Run once; the files
 are the record, this script is how they were produced.
 
     .venv/bin/python -m tests.system.trunk_cases
@@ -20,6 +20,9 @@ UNITS = {"s1": "SSN", "s2": "MRN", "s3": "DOB", "s4": "DIS"}
 SEEN = "s1 s2 s3"                               # keys the model recognises: ssn, mrn, dob
 MISS = "s1@subject s2@account s3@ref"           # keys the model must not recognise
 THREE = ["s1", "s2", "s3"]
+PENDING = ("cross-conversation lineage not on this branch: the cross-trace fold (#273), and the risk engine forwarding "
+           "a cross-trace origin (labels.forwarded keeps same-trace origins only); the conversation-2 edges stated here "
+           "are a proposal that work will settle")
 
 
 def legs(spec: dict[int, str], flag: int | None = None) -> str:
@@ -45,10 +48,11 @@ def held_earlier(at: int, to: int, units=THREE) -> list[str]:
     return [f"{u} {at}>{to}" for u in units]
 
 
-def case(id_, title, line, *, verdict, edges, must_see, must_miss, notes, cell, authored=False) -> None:
+def case(id_, title, line, *, verdict, edges, must_see, must_miss, notes, cell, pending=None,
+         authored=False) -> None:
     d = {
         "id": id_, "title": title, "cell": cell, "line": line, "units": UNITS,
-        "expect": {"verdict": verdict, "edges": edges},
+        "expect": {"verdict": verdict, "edges": edges, **({"pending": pending} if pending else {})},
         "classifier": {"must_see": {str(k): v for k, v in must_see.items()},
                        "must_miss": {str(k): v for k, v in must_miss.items()}, "authored": authored},
         "notes": notes,
@@ -109,6 +113,37 @@ def main() -> None:
          must_see={i: THREE for i in range(7, 12)}, must_miss={},
          notes="Two conversations of one agent, ten minutes apart; the second carries no value. Nothing crosses: "
                "no edge reaches conversation 2 and V3 is allowed.")
+
+    # K1-K7: conversation 2 is the same, but partner V2 returns some of conversation 1's values (under keys the model
+    # does not recognise), so only a crossing from conversation 1 can produce the alert at V3.
+    ks = {
+        "K1": (["s1", "s2", "s3"], "reborn, all three", "block"),
+        "K2": (["s1"], "reborn, the SSN alone", "block"),
+        "K3": (["s2"], "reborn, the MRN alone", "block"),
+        "K4": (["s3"], "reborn, the birthdate alone", "allow"),
+        "K5": (["s1", "s2"], "reborn, SSN and MRN", "block"),
+        "K6": (["s1", "s3"], "reborn, SSN and birthdate", "block"),
+        "K7": (["s2", "s3"], "reborn, MRN and birthdate", "block"),
+    }
+    miss_key = {"s1": "s1@subject", "s2": "s2@account", "s3": "s3@ref"}
+    for id_, (k, title, want) in ks.items():
+        body = " ".join(miss_key[u] for u in k) + " -"
+        conv2 = (f"U>A[-], A>L[-], L>A[-], A>T2[-], T2>V2[-], V2>T2[{body}], T2>A[{body}], A>L[{body}], L>A[{body}], "
+                 f"A>T3[{body}], T3>V3[{body}]⚑, V3>T3[-], T3>A[-], A>L[-], L>A[-], A>U[-]")
+        edges = chain([7, 8, 9, 10, 11]) + held_earlier(7, 10)
+        pending = None
+        if want == "block":
+            # within conversation 2: 22 -> 23 -> ... -> 27; the crossing attaches at T2's answer (23), one hop late,
+            # from T2's last holding in conversation 1 (11). This branch draws none of them and does not block.
+            conv2_edges = chain([22, 23, 24, 25, 26, 27], units=k) + [f"{u} 11>23" for u in k]
+            edges += conv2_edges
+            pending = {"reason": PENDING, "missing": conv2_edges, "verdict": ["on"]}
+        case(id_, title, f"{conv1} ~10min> {conv2}", cell="trunk/cross", verdict={"on": want, "off": "allow"},
+             edges=edges, must_see={i: THREE for i in range(7, 12)}, must_miss={i: list(k) for i in range(22, 28)},
+             pending=pending, authored=True,
+             notes=f"K0 with V2 returning {' '.join(k)} in conversation 2. The classifier labels nothing in conversation "
+                   f"2, so only a crossing from conversation 1 can produce the alert at V3. Wanted under "
+                   f"person-anchored: {want}.")
 
     # P: the two pictures of #348 as controls on the memoryless rule (a tool keeps one memory per call).
     p1 = ("U>A[s1 -], A>T1[s1 -], T1>V1[s1 -], V1>T1[s2 -], T1>V2[s1@subject s2@account -]⚑, V2>T1[-], "
