@@ -5,7 +5,7 @@ receiver and the real processors (interactions, data lineage, classification, la
 leg-ready with the risk observer) against a real Postgres and a real OPA loaded with the suite's one
 rule (T-SENS, `rules.py`: a PII label, own or inherited, to an external destination is blocked), and
 the result is read back from the tables. Each case runs twice, with
-`RISK_INHERITED_LABELS` on and off, in about two seconds. No cluster, no live app, no mock of the
+`RISK_INHERITED_LABELS` on and off, in about two seconds per run. No cluster, no live app, no mock of the
 system: the only stand-in is the classifier's own recorded output, replayed through its own seam.
 
 ```
@@ -28,7 +28,8 @@ export TESTCONTAINERS_RYUK_DISABLED=true
 .venv/bin/pytest tests/system -m opa                 # all cases; writes tests/system/REPORT.md and cases/*/result.md
                                                      # a subset (-k, -x) or SYSTEM_REPORT_TAG=x writes REPORT-partial.md / REPORT-x.md only
 .venv/bin/pytest tests/system -m opa -k C1           # one case
-LABEL_CROSS_TRACE_WINDOW_HOURS=0.25 ...              # window for cross-conversation cases (branches with slice 2)
+LABEL_CROSS_TRACE_WINDOW_HOURS=0.25 ...              # window for cross-conversation cases (branches with slice 2;
+                                                     # here, like LABEL_SEED_RULE, it has no Config field and no effect)
 ```
 
 The `opa` mark is excluded by the repository default (`-m 'not opa and not live'`); pass `-m opa`.
@@ -38,10 +39,12 @@ takes about two seconds per mode.
 ## Calibrate
 
 `findings.json` beside each `case.yaml` holds what the real NER model found in every payload the
-case puts on the wire, with the model generation and the date. Produce or refresh it with the venv
-that has the `classification` extra (`uv sync --extra classification`, about 2 GB):
+case puts on the wire, with the model generation and the date. Produce or refresh it with a venv
+that has the `classification` extra (about 2 GB):
 
 ```
+uv venv .venv-classif
+uv pip install --python .venv-classif/bin/python -e '.[classification]'
 .venv-classif/bin/python -m tests.system.calibrate tests/system/cases/C1 [more case dirs]
 ```
 
@@ -55,7 +58,7 @@ report, never silently accepted.
 calibration runs the real model, then subtracts its findings on the case's units at the `must_miss`
 legs (never invents one), records the subtraction in `findings.json`, and the report says
 "authored" on the case. Decided 2026-11-09: the real model labels an SSN or a date by value
-under any key, so a wire-level classifier alone already blocks them; label lineage's claim does not
+under any key (the calibration shows it often labels the MRN too), so a wire-level classifier alone already blocks them; label lineage's claim does not
 depend on where one model happens to miss. The real-model cases (C1, C2, K0) keep the plumbing honest.
 
 ## The cases
@@ -69,10 +72,12 @@ with one value in both calls (`T1(A1)>V1` names the call a request belongs to).
 
 ## The grid
 
-Units are rows, payloads are columns. `●` the unit is here and the classifier labelled it, `○` here
-but not labelled, `≡` bytes equal to the unit that are not the unit (`=s1`), `━` an edge the
-derivation drew into this cell, `┈` seen earlier but no edge arrived, `·` absent. An edge into a
-`≡` cell is a false positive; a `┈` cell is a miss. The `neighbourhood` row counts, per crossing,
+Units are rows, payloads are columns, and each result draws two grids: **expected** (the case's
+edges; `●` where `must_see` says the model labels the unit) above **observed** (what the run drew and
+labelled, inherited labels on). `●` the unit is here and the classifier labelled it (a `NAME` found
+as `PN` counts, in the grid and in the classifier checks alike), `○` here but not labelled, `≡`
+bytes equal to the unit that are not the unit (`=s1`), `━` an edge the derivation drew into this cell, `┈` seen earlier but no edge arrived, `·` absent. An edge into a
+`≡` cell is a false positive; a `┈` cell is a miss. The `neighbourhood` row counts, per leg an edge arrives at,
 how many of the units born beside this one recur with it (`k of n`).
 
 ## Status of a case
@@ -80,12 +85,14 @@ how many of the units born beside this one recur with it (`k of n`).
 `PENDING` (with `expect.pending: <reason>`) is a case the branch cannot pass yet, counted apart so the
 suite stays green; the day it passes while still marked pending it goes RED, so the mark is removed.
 An edge into a leg from an earlier holding of the same unit, beside the expected edge from the later
-holding, is reported as "also drawn", not red: the agent remembers, so both edges are true; the short
-chain says where the value was born, the long one which way it went.
+holding, is true too (the agent remembers; the short chain says where the value was born, the long one
+which way it went). The case lists such edges in `expect.also`; drawn, they are reported as "also
+drawn", not red. The judge never infers them: any other extra edge is red.
 
 - **GREEN**: the verdict pair matches `expect.verdict`; the edges match `expect.edges` (or, when
   `edges: derived`, the naive rule: a unit present here and at an earlier leg of the same
-  conversation with no invisible hop between gets an edge; extras and misses are reported).
+  conversation with no invisible hop between gets an edge), up to the `also` edges; a miss or an
+  extra is red either way.
 - **RED**: it does not, and the case has no `cannot`. The test fails.
 - **RED-BY-DESIGN**: it does not, and `expect.cannot` says why no wire observer could get it right.
 - **PENDING**: it does not, and `expect.pending` says why this branch cannot pass it yet.
@@ -94,10 +101,15 @@ chain says where the value was born, the long one which way it went.
 
 | file | job |
 |---|---|
+| `cases.py` | load `case.yaml` into a `Case`; `labelled()`, the one label-matching rule |
 | `caseline.py` | parse the line; the naive expected-edge rule |
 | `render.py` | line to sidecar span rows (the `spans`-table row shape `tools/load_trace.py` replays) |
 | `classify.py`, `calibrate.py` | the replay detector and the calibrate command |
 | `engine.py` | receiver, the five drains, real OPA, rows; the neighbourhood measurement |
 | `grid.py` | the unit grid (units as rows, legs as columns) |
 | `report.py` | judge a case; `REPORT.md` and `cases/<id>/result.md` |
+| `rules.py` | the suite's one rule, T-SENS |
+| `trunk_cases.py` | writes every `case.yaml` (the files are the record) |
+| `conftest.py`, `test_cases.py` | the containers and OPA per session; one test per case |
+| `test_judge.py` | the judge's branches, without containers |
 | `cases/<id>/` | `case.yaml`, `findings.json`, `result.md` (generated) |

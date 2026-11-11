@@ -7,6 +7,15 @@ U>A[s1 s2 s3 s4 -], A>L[-], L>A[-], A>T1[-], T1>V1[-], V1>T1[-], T1>A[-], A>L[s1
 ```
 
 ```
+expected
+              1      2      3      4      5      6      7      8      9      10     11     12     13     14     15     16     
+              U>A    A>L    L>A    A>T1   T1>V1  V1>T1  T1>A   A>L    L>A    A>T2   T2>V2⚑ V2>T2  T2>A   A>L    L>A    A>U    
+SSN     s1    ●      ·      ·      ·      ·      ·      ·      ━━━━━━●━━━━━━○━━━━━━○━━━━━━○·      ·      ·      ·      ·      
+MRN     s2    ●      ·      ·      ·      ·      ·      ·      ━━━━━━●━━━━━━○━━━━━━○━━━━━━○·      ·      ·      ·      ·      
+DOB     s3    ●      ·      ·      ·      ·      ·      ·      ━━━━━━●━━━━━━○━━━━━━○━━━━━━○·      ·      ·      ·      ·      
+DIS     s4    ●      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      
+
+observed
               1      2      3      4      5      6      7      8      9      10     11     12     13     14     15     16     
               U>A    A>L    L>A    A>T1   T1>V1  V1>T1  T1>A   A>L    L>A    A>T2   T2>V2⚑ V2>T2  T2>A   A>L    L>A    A>U    
 SSN     s1    ●      ·      ·      ·      ·      ·      ·      ━━━━━━●━━━━━━○━━━━━━○━━━━━━○·      ·      ·      ·      ·      
@@ -17,7 +26,7 @@ neighbourhood at 8: s1 2 of 3, s2 2 of 3, s3 2 of 3
 neighbourhood at 9: s1 2 of 3, s2 2 of 3, s3 2 of 3
 neighbourhood at 10: s1 2 of 3, s2 2 of 3, s3 2 of 3
 neighbourhood at 11: s1 2 of 3, s2 2 of 3, s3 2 of 3
-verdict at 11: on=block / off=allow
+verdict at 11: expected on=block / off=allow, observed on=block / off=allow
 ```
 
 **Reasons.** also drawn, from an earlier holding (where it was born): s1 1>10, s2 1>10, s3 1>10
@@ -43,7 +52,7 @@ verdict at 11: on=block / off=allow
 | 15 | L>A | PUBLIC  | — | — |
 | 16 | A>U | PUBLIC  | — | — |
 
-**Timing (on).** total 1.4699 s: reset 0.1007, receiver 0.0587, interactions 0.9199, data_lineage 0.1419, classification 0.0192, label_lineage 0.0148, leg_ready+risk 0.1922, read 0.0225
+**Timing (on).** total 1.8631 s: reset 0.0878, receiver 0.0615, interactions 1.1658, data_lineage 0.1882, classification 0.1104, label_lineage 0.0186, leg_ready+risk 0.2156, read 0.0152
 OPA calls: 19
 
 **Notes.** Root to the right leaf, the left branch benign: legs 4 to 7 carry nothing, the agent held the facts across a clean exchange.

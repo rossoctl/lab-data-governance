@@ -7,7 +7,7 @@ import dataclasses
 import datetime as dt
 from pathlib import Path
 
-from .cases import Case
+from .cases import Case, labelled
 from .engine import Observation
 from .grid import render_grid
 
@@ -46,11 +46,11 @@ def judge(case: Case, on: Observation, off: Observation) -> Outcome:
     observed = on.edges
     missing = expected - observed
     extra = observed - expected
-    # An origin edge: the same unit reaches the same leg by an expected edge from a
-    # later holding, and this extra edge comes from an earlier one (the agent remembers).
-    # The short chain says where the value was born, the long one which way it went;
-    # both are true. Reported, not red.
-    origin_edges = {(u, a, b) for u, a, b in extra if any(u2 == u and b2 == b and a2 > a for u2, a2, b2 in expected)}
+    # An origin edge: the same unit reaches the same leg from an earlier holding too
+    # (the agent remembers). The short chain says where the value was born, the long
+    # one which way it went; both are true. The case declares them (``also``), the
+    # judge never guesses them. Reported, not red.
+    origin_edges = extra & case.also
     extra -= origin_edges
     if missing:
         reasons.append("edges missing: " + ", ".join(f"{u} {a}>{b}" for u, a, b in sorted(missing)))
@@ -59,7 +59,7 @@ def judge(case: Case, on: Observation, off: Observation) -> Outcome:
     if origin_edges:
         reasons.append("also drawn, from an earlier holding (where it was born): "
                        + ", ".join(f"{u} {a}>{b}" for u, a, b in sorted(origin_edges)))
-    if case.edges is not None and (missing or extra):
+    if missing or extra:
         ok = False
     notes: list[str] = []
     for leg_index, units in case.must_see.items():
@@ -67,14 +67,14 @@ def judge(case: Case, on: Observation, off: Observation) -> Outcome:
         tags = {t for t, _ in (c or {"findings": []})["findings"]}
         for u in units:
             lab = case.units[u]
-            if not (lab in tags or (lab == "NAME" and "PN" in tags)):
+            if not labelled(lab, tags):
                 notes.append(f"leg {leg_index}: the model did NOT label {u} ({lab}); found {sorted(tags)}")
     for leg_index, units in case.must_miss.items():
         c = on.legs[leg_index].classification if leg_index in on.legs else None
         tags = {t for t, _ in (c or {"findings": []})["findings"]}
         for u in units:
             lab = case.units[u]
-            if lab in tags:
+            if labelled(lab, tags):
                 notes.append(f"leg {leg_index}: the model DID label {u} ({lab}); the case assumed it would not")
     if case.pending and not ok:
         status = "PENDING"
@@ -136,7 +136,8 @@ def write(results: Results, expected_cases: int | None = None) -> None:
     full = expected_cases is None or len(results.outcomes) >= expected_cases
     if not full and not tag:
         tag = "partial"   # a subset ran (-k, -x): never overwrite the full record
-    env = {k: v for k, v in os.environ.items() if k.startswith("LABEL_")}
+    env = {k: v for k, v in os.environ.items()   # not RISK_INHERITED_LABELS: each run sets the mode itself
+           if k.startswith(("LABEL_", "RISK_")) and k != "RISK_INHERITED_LABELS"}
     target = REPORT if not tag else REPORT.with_name(f"REPORT-{tag}.md")
     rows = ["# System tests — label lineage, exact match" + (f" ({tag})" if tag else ""), "",
             f"*Generated {now} by `pytest tests/system`; environment {env}.*", "",

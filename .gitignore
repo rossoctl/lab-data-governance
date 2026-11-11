@@ -79,3 +79,4 @@ tests/live/pins.*.local.yaml
 demos/*/*/runs/*
 !demos/*/*/runs/.gitkeep
 tests/system/REPORT-*.md
+.venv-classif/

@@ -7,6 +7,24 @@ U>A[-], A>L[-], L>A[-], A>T1[-], ..V1.., T1>A[s1 s2 s3 -], A>L[s1 s2 s3 -], L>A[
 ```
 
 ```
+expected
+conversation 1
+              1      2      3      4      5-6    7      8      9      10     11     12     13     14     15     16     
+              U>A    A>L    L>A    A>T1   ..V1.. T1>A   A>L    L>A    A>T2   T2>V2  V2>T2  T2>A   A>L    L>A    A>U    
+SSN     s1    ·      ·      ·      ·             ○      ━━━━━━○━━━━━━○━━━━━━○━━━━━━○·      ·      ·      ·      ·      
+MRN     s2    ·      ·      ·      ·             ○      ━━━━━━○━━━━━━○━━━━━━○━━━━━━○·      ·      ·      ·      ·      
+DOB     s3    ·      ·      ·      ·             ○      ━━━━━━○━━━━━━○━━━━━━○━━━━━━○·      ·      ·      ·      ·      
+DIS     s4    ·      ·      ·      ·             ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      
+
+conversation 2
+              17     18     19     20     21     22     23     24     25     26     27     28     29     30     31     32     
+              U>A    A>L    L>A    A>T2   T2>V2  V2>T2  T2>A   A>L    L>A    A>T3   T3>V3⚑ V3>T3  T3>A   A>L    L>A    A>U    
+SSN     s1    ·      ·      ·      ·      ·      ┈┈┈┈┈┈○━━━━━━○━━━━━━○━━━━━━○━━━━━━○━━━━━━○·      ·      ·      ·      ·      
+MRN     s2    ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      
+DOB     s3    ·      ·      ·      ·      ·      ┈┈┈┈┈┈○━━━━━━○━━━━━━○━━━━━━○━━━━━━○━━━━━━○·      ·      ·      ·      ·      
+DIS     s4    ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      
+
+observed
 conversation 1
               1      2      3      4      5-6    7      8      9      10     11     12     13     14     15     16     
               U>A    A>L    L>A    A>T1   ..V1.. T1>A   A>L    L>A    A>T2   T2>V2  V2>T2  T2>A   A>L    L>A    A>U    
@@ -26,10 +44,10 @@ neighbourhood at 8: s1 2 of 2, s2 2 of 2, s3 2 of 2
 neighbourhood at 9: s1 2 of 2, s2 2 of 2, s3 2 of 2
 neighbourhood at 10: s1 2 of 2, s2 2 of 2, s3 2 of 2
 neighbourhood at 11: s1 2 of 2, s2 2 of 2, s3 2 of 2
-verdict at 27: on=allow / off=allow
+verdict at 27: expected on=block / off=allow, observed on=allow / off=allow
 ```
 
-**Reasons.** pending: cross-conversation fold not on this branch · verdict on: want block, got allow · edges missing: s1 11>23, s1 22>23, s1 23>24, s1 24>25, s1 25>26, s1 26>27, s3 11>23, s3 22>23, s3 23>24, s3 24>25, s3 25>26, s3 26>27 · also drawn, from an earlier holding (where it was born): s1 7>10, s2 7>10, s3 7>10
+**Reasons.** pending: cross-conversation lineage not on this branch: the cross-trace fold (#273) with its seed rule and window, and the risk engine forwarding a cross-trace origin (labels.forwarded keeps same-trace origins only) · verdict on: want block, got allow · edges missing: s1 11>23, s1 22>23, s1 23>24, s1 24>25, s1 25>26, s1 26>27, s3 11>23, s3 22>23, s3 23>24, s3 24>25, s3 25>26, s3 26>27 · also drawn, from an earlier holding (where it was born): s1 7>10, s2 7>10, s3 7>10
 
 **Rows (inherited labels on).**
 
@@ -67,7 +85,7 @@ verdict at 27: on=allow / off=allow
 | 31 | L>A | PUBLIC  | — | — |
 | 32 | A>U | PUBLIC  | — | — |
 
-**Timing (on).** total 2.5635 s: reset 0.0773, receiver 0.0867, interactions 1.5684, data_lineage 0.3052, classification 0.0382, label_lineage 0.0285, leg_ready+risk 0.4286, read 0.0306
+**Timing (on).** total 2.7978 s: reset 0.0899, receiver 0.1004, interactions 1.8421, data_lineage 0.3071, classification 0.0399, label_lineage 0.0251, leg_ready+risk 0.3727, read 0.0206
 OPA calls: 33
 
 **Notes.** Conversation 2 is C5's shape; V2 returns s1 s3 (neighbourhood 1 of 2). The classifier labels nothing in conversation 2, so only a crossing from conversation 1 can produce the alert at V3. Wanted under person-anchored: block.

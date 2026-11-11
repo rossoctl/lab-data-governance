@@ -1,4 +1,4 @@
-"""Write the trunk cases (C1–C6, K0–K7) as case.yaml files. Run once; the files
+"""Write the trunk cases (C1–C6, K0–K7) and the #348 controls (P1–P3) as case.yaml files. Run once; the files
 are the record, this script is how they were produced.
 
     .venv/bin/python -m tests.system.trunk_cases
@@ -20,7 +20,8 @@ UNITS = {"s1": "SSN", "s2": "MRN", "s3": "DOB", "s4": "DIS"}
 SEEN = "s1 s2 s3"                               # keys the model recognises: ssn, mrn, dob
 MISS = "s1@subject s2@account s3@ref"           # keys the model must not recognise
 THREE = ["s1", "s2", "s3"]
-PENDING = "cross-conversation fold not on this branch"
+PENDING = ("cross-conversation lineage not on this branch: the cross-trace fold (#273) with its seed rule and window, "
+           "and the risk engine forwarding a cross-trace origin (labels.forwarded keeps same-trace origins only)")
 
 
 def legs(spec: dict[int, str], flag: int | None = None) -> str:
@@ -40,10 +41,16 @@ def chain(path: list[int], units=THREE) -> list[str]:
     return [f"{u} {a}>{b}" for u in units for a, b in zip(path, path[1:])]
 
 
-def case(id_, title, line, *, verdict, edges, must_see, must_miss, notes, cell, pending=None, authored=False) -> None:
+def held_earlier(at: int, to: int, units=THREE) -> list[str]:
+    """The edges from an earlier holding the agent remembers, beside the expected chain (``also``)."""
+    return [f"{u} {at}>{to}" for u in units]
+
+
+def case(id_, title, line, *, verdict, edges, must_see, must_miss, notes, cell, pending=None, authored=False,
+         also=()) -> None:
     d = {
         "id": id_, "title": title, "cell": cell, "line": line, "units": UNITS,
-        "expect": {"verdict": verdict, "edges": edges, "cannot": None, "pending": pending},
+        "expect": {"verdict": verdict, "edges": edges, "also": list(also), "cannot": None, "pending": pending},
         "classifier": {"must_see": {str(k): v for k, v in must_see.items()},
                        "must_miss": {str(k): v for k, v in must_miss.items()}, "authored": authored},
         "notes": notes,
@@ -62,25 +69,25 @@ def main() -> None:
          notes="No route. Nothing sensitive is on the wire; the control for the rule and the harness.")
 
     case("C2", "seen throughout", legs({1: "s1 s2 s3 s4", 2: SEEN, 3: SEEN, 4: SEEN, 5: SEEN}, flag=5),
-         cell="trunk/one/root-to-left-leaf", verdict=bb, edges=chain([1, 2, 3, 4, 5]),
+         cell="trunk/one/root-to-left-leaf", verdict=bb, edges=chain([1, 2, 3, 4, 5]), also=held_earlier(1, 4),
          must_see={1: all4, 2: THREE, 3: THREE, 4: THREE, 5: THREE}, must_miss={},
          notes="Root to the left leaf, U>A>T1>V1. The classifier labels the three on every leg; lineage draws the chain, "
                "the classifier alone already decides.")
 
     case("C3", "lost after the prompt", legs({1: "s1 s2 s3 s4", 2: SEEN, 3: MISS, 4: MISS, 5: MISS}, flag=5),
-         cell="trunk/one/root-to-left-leaf", verdict=ba, edges=chain([1, 2, 3, 4, 5]),
+         cell="trunk/one/root-to-left-leaf", verdict=ba, edges=chain([1, 2, 3, 4, 5]), also=held_earlier(1, 4),
          must_see={1: all4, 2: THREE}, must_miss={3: THREE, 4: THREE, 5: THREE}, authored=True,
          notes="Same route as C2. From the LLM's answer on the facts travel under keys the model does not recognise; "
                "only lineage carries the label to V1.")
 
     case("C4", "held for the second vendor", legs({1: "s1 s2 s3 s4", 8: SEEN, 9: MISS, 10: MISS, 11: MISS}, flag=11),
-         cell="trunk/one/root-to-right-leaf", verdict=ba, edges=chain([1, 8, 9, 10, 11]),
+         cell="trunk/one/root-to-right-leaf", verdict=ba, edges=chain([1, 8, 9, 10, 11]), also=held_earlier(1, 10),
          must_see={1: all4, 8: THREE}, must_miss={9: THREE, 10: THREE, 11: THREE}, authored=True,
          notes="Root to the right leaf, the left branch benign: legs 4 to 7 carry nothing, the agent held the facts "
                "across a clean exchange.")
 
     case("C5", "returned by the first vendor", legs({6: "s1 s2 s3 s4", 7: SEEN, 8: MISS, 9: MISS, 10: MISS, 11: MISS}, flag=11),
-         cell="trunk/one/leaf-to-leaf", verdict=ba, edges=chain([6, 7, 8, 9, 10, 11]),
+         cell="trunk/one/leaf-to-leaf", verdict=ba, edges=chain([6, 7, 8, 9, 10, 11]), also=held_earlier(7, 10),
          must_see={6: all4, 7: THREE}, must_miss={8: THREE, 9: THREE, 10: THREE, 11: THREE}, authored=True,
          notes="Leaf to leaf, starting from a response: born in the insurer's answer. T1 forgets, so leg 7 inherits leg 6 "
                "only through the invocation-scope fix of #348 (a response inherits what its child calls returned).")
@@ -90,7 +97,7 @@ def main() -> None:
           f"A>T2[{MISS} -], T2>V2[{MISS} -]⚑, V2>T2[-], T2>A[-], A>L[-], L>A[-], A>U[-]")
     case("C6", "returned unseen", c6, cell="trunk/one/leaf-to-leaf (leaf invisible)", verdict=ba,
          edges=chain([7, 8, 9, 10, 11]), must_see={7: THREE}, must_miss={8: THREE, 9: THREE, 10: THREE, 11: THREE},
-         authored=True,
+         authored=True, also=held_earlier(7, 10),
          notes="C5 with V1 off the wire: T1 is the leaf, the origin is T1's answer at leg 7; legs 5 and 6 are the unseen hop.")
 
     # K: conversation 1 is C6's flow with no verdict (the three leave through V2 at leg 11);
@@ -126,7 +133,7 @@ def main() -> None:
         n = len(k)
         nb = {0: "—", 1: "0 of 2", 2: "1 of 2", 3: "2 of 2"}[n]
         case(id_, title, line, cell="trunk/cross", verdict=wanted, edges=edges, must_see={}, must_miss=must_miss,
-             pending=pending, authored=bool(k),
+             pending=pending, authored=bool(k), also=held_earlier(7, 10),
              notes=f"Conversation 2 is C5's shape; V2 returns {' '.join(k) or 'nothing'} (neighbourhood {nb}). The classifier "
                    f"labels nothing in conversation 2, so only a crossing from conversation 1 can produce the alert at V3. "
                    f"Wanted under person-anchored: {want}.")
@@ -140,7 +147,7 @@ def main() -> None:
          authored=True,
          notes="Picture 1 of #348. Inside A's call, T1 asks V1, then asks V2 with what V1 returned, then answers A. "
                "T1's second request inherits from the call that opened it (s1 2>5) and from V1's answer inside the "
-               "call (s2 4>5); its answer carries both (2>7, 4>7). Before #348 the fold drew s2 4>5 only.")
+               "call (s2 4>5); its answer carries both (2>7, 4>7). Before #348 the fold drew s2 4>5 only, and no 4>7.")
 
     p2 = ("U>A1[s1 -], U>A2[s2 -], A1>T1[s1 -], A2>T1[s2 -], T1(A1)>V1[s1@subject -]⚑, V1>T1[-], "
           "T1(A2)>V2[s2@account -], V2>T1[-], T1>A1[s1@subject -], T1>A2[s2@account -], A1>U[-], A2>U[-]")
@@ -160,7 +167,7 @@ def main() -> None:
          authored=True,
          notes="Picture 2 of #348 with the same value in both calls, so a wrong parent shows as an edge that should not "
                "exist: T1(A1)>V1 must inherit from A1's request (3>5), not from A2's, which arrived later (4>5). "
-               "Before #348 the fold drew 4>5 and 3>5 was missing.")
+               "Before #348 the fold drew 4>5, and 3>5 and 4>7 were missing.")
 
 if __name__ == "__main__":
     main()

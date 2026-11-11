@@ -7,6 +7,15 @@ U>A[s1 s2 s3 s4 -], A>L[s1 s2 s3 -], L>A[s1@subject s2@account s3@ref -], A>T1[s
 ```
 
 ```
+expected
+              1      2      3      4      5      6      7      8      9      10     11     12     13     14     15     16     
+              U>A    A>L    L>A    A>T1   T1>V1⚑ V1>T1  T1>A   A>L    L>A    A>T2   T2>V2  V2>T2  T2>A   A>L    L>A    A>U    
+SSN     s1    ●      ━━━━━━●━━━━━━○━━━━━━○━━━━━━○·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      
+MRN     s2    ●      ━━━━━━●━━━━━━○━━━━━━○━━━━━━○·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      
+DOB     s3    ●      ━━━━━━●━━━━━━○━━━━━━○━━━━━━○·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      
+DIS     s4    ●      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      
+
+observed
               1      2      3      4      5      6      7      8      9      10     11     12     13     14     15     16     
               U>A    A>L    L>A    A>T1   T1>V1⚑ V1>T1  T1>A   A>L    L>A    A>T2   T2>V2  V2>T2  T2>A   A>L    L>A    A>U    
 SSN     s1    ●      ━━━━━━●━━━━━━○━━━━━━○━━━━━━○·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      
@@ -17,7 +26,7 @@ neighbourhood at 2: s1 2 of 3, s2 2 of 3, s3 2 of 3
 neighbourhood at 3: s1 2 of 3, s2 2 of 3, s3 2 of 3
 neighbourhood at 4: s1 2 of 3, s2 2 of 3, s3 2 of 3
 neighbourhood at 5: s1 2 of 3, s2 2 of 3, s3 2 of 3
-verdict at 5: on=block / off=allow
+verdict at 5: expected on=block / off=allow, observed on=block / off=allow
 ```
 
 **Reasons.** also drawn, from an earlier holding (where it was born): s1 1>4, s2 1>4, s3 1>4
@@ -43,7 +52,7 @@ verdict at 5: on=block / off=allow
 | 15 | L>A | PUBLIC  | — | — |
 | 16 | A>U | PUBLIC  | — | — |
 
-**Timing (on).** total 1.5539 s: reset 0.11, receiver 0.063, interactions 0.8487, data_lineage 0.2193, classification 0.0283, label_lineage 0.0227, leg_ready+risk 0.2439, read 0.018
+**Timing (on).** total 1.8047 s: reset 0.0975, receiver 0.0596, interactions 1.07, data_lineage 0.2709, classification 0.0306, label_lineage 0.0236, leg_ready+risk 0.237, read 0.0155
 OPA calls: 19
 
 **Notes.** Same route as C2. From the LLM's answer on the facts travel under keys the model does not recognise; only lineage carries the label to V1.

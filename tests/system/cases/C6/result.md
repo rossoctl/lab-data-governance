@@ -7,6 +7,15 @@ U>A[-], A>L[-], L>A[-], A>T1[-], ..V1.., T1>A[s1 s2 s3 -], A>L[s1@subject s2@acc
 ```
 
 ```
+expected
+              1      2      3      4      5-6    7      8      9      10     11     12     13     14     15     16     
+              U>A    A>L    L>A    A>T1   ..V1.. T1>A   A>L    L>A    A>T2   T2>V2⚑ V2>T2  T2>A   A>L    L>A    A>U    
+SSN     s1    ·      ·      ·      ·             ●      ━━━━━━○━━━━━━○━━━━━━○━━━━━━○·      ·      ·      ·      ·      
+MRN     s2    ·      ·      ·      ·             ●      ━━━━━━○━━━━━━○━━━━━━○━━━━━━○·      ·      ·      ·      ·      
+DOB     s3    ·      ·      ·      ·             ●      ━━━━━━○━━━━━━○━━━━━━○━━━━━━○·      ·      ·      ·      ·      
+DIS     s4    ·      ·      ·      ·             ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      
+
+observed
               1      2      3      4      5-6    7      8      9      10     11     12     13     14     15     16     
               U>A    A>L    L>A    A>T1   ..V1.. T1>A   A>L    L>A    A>T2   T2>V2⚑ V2>T2  T2>A   A>L    L>A    A>U    
 SSN     s1    ·      ·      ·      ·             ●      ━━━━━━○━━━━━━○━━━━━━○━━━━━━○·      ·      ·      ·      ·      
@@ -17,7 +26,7 @@ neighbourhood at 8: s1 2 of 2, s2 2 of 2, s3 2 of 2
 neighbourhood at 9: s1 2 of 2, s2 2 of 2, s3 2 of 2
 neighbourhood at 10: s1 2 of 2, s2 2 of 2, s3 2 of 2
 neighbourhood at 11: s1 2 of 2, s2 2 of 2, s3 2 of 2
-verdict at 11: on=block / off=allow
+verdict at 11: expected on=block / off=allow, observed on=block / off=allow
 ```
 
 **Reasons.** also drawn, from an earlier holding (where it was born): s1 7>10, s2 7>10, s3 7>10
@@ -42,7 +51,7 @@ verdict at 11: on=block / off=allow
 | 15 | L>A | PUBLIC  | — | — |
 | 16 | A>U | PUBLIC  | — | — |
 
-**Timing (on).** total 1.4535 s: reset 0.1107, receiver 0.0789, interactions 0.8776, data_lineage 0.1642, classification 0.0209, label_lineage 0.0171, leg_ready+risk 0.1703, read 0.0138
+**Timing (on).** total 1.5581 s: reset 0.0885, receiver 0.061, interactions 0.9309, data_lineage 0.156, classification 0.0211, label_lineage 0.0229, leg_ready+risk 0.257, read 0.0207
 OPA calls: 17
 
 **Notes.** C5 with V1 off the wire: T1 is the leaf, the origin is T1's answer at leg 7; legs 5 and 6 are the unseen hop.

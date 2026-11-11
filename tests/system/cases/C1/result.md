@@ -7,13 +7,22 @@ U>A[-], A>L[-], L>A[-], A>T1[-], T1>V1[-]⚑, V1>T1[-], T1>A[-], A>L[-], L>A[-],
 ```
 
 ```
+expected
               1      2      3      4      5      6      7      8      9      10     11     12     13     14     15     16     
               U>A    A>L    L>A    A>T1   T1>V1⚑ V1>T1  T1>A   A>L    L>A    A>T2   T2>V2  V2>T2  T2>A   A>L    L>A    A>U    
 SSN     s1    ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      
 MRN     s2    ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      
 DOB     s3    ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      
 DIS     s4    ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      
-verdict at 5: on=allow / off=allow
+
+observed
+              1      2      3      4      5      6      7      8      9      10     11     12     13     14     15     16     
+              U>A    A>L    L>A    A>T1   T1>V1⚑ V1>T1  T1>A   A>L    L>A    A>T2   T2>V2  V2>T2  T2>A   A>L    L>A    A>U    
+SSN     s1    ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      
+MRN     s2    ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      
+DOB     s3    ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      
+DIS     s4    ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      
+verdict at 5: expected on=allow / off=allow, observed on=allow / off=allow
 ```
 
 **Rows (inherited labels on).**
@@ -37,7 +46,7 @@ verdict at 5: on=allow / off=allow
 | 15 | L>A | PUBLIC  | — | — |
 | 16 | A>U | PUBLIC  | — | — |
 
-**Timing (on).** total 1.4197 s: reset 0.1042, receiver 0.058, interactions 0.8258, data_lineage 0.1762, classification 0.017, label_lineage 0.0164, leg_ready+risk 0.203, read 0.0191
+**Timing (on).** total 1.5401 s: reset 0.0968, receiver 0.0642, interactions 0.779, data_lineage 0.2818, classification 0.0234, label_lineage 0.0226, leg_ready+risk 0.2529, read 0.0194
 OPA calls: 16
 
 **Notes.** No route. Nothing sensitive is on the wire; the control for the rule and the harness.

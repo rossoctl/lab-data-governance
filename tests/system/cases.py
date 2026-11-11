@@ -1,6 +1,7 @@
-"""Case files: ``case.yaml`` next to its ``findings.json``.
+"""Case files: ``case.yaml`` next to its ``findings.json``. An example (not one of
+the shipped cases), every key shown:
 
-    id: C1
+    id: X1
     title: the record number alone
     cell: identifier/exact/straight/one
     line: "U>A[-], A>T1[-], T1>A[s1 s2 s3 -], A>T2[s1@patient_ref -], T2>V[s1@external_id -]⚑"
@@ -9,6 +10,8 @@
       verdict: {'on': block, 'off': allow} # at the flagged leg, with inherited labels on / off (quote the keys:
                                            # bare on/off are YAML 1.1 booleans)
       edges: derived                       # or a list of "s1 3>5" strings
+      also: []                             # edges the fold may also draw, from an earlier holding of the
+                                           # same unit (where it was born): never red, reported when drawn
       cannot: null                         # or one sentence: why the wire cannot get this right
       pending: null                        # or one sentence: why this case cannot pass on this branch yet
     classifier:
@@ -41,6 +44,7 @@ class Case:
     units: dict[str, str]
     verdict: dict[str, str]                  # {"on": "block", "off": "allow"}
     edges: set[tuple[str, int, int]] | None  # None = derived
+    also: set[tuple[str, int, int]]          # tolerated beside the expected edges, declared per case
     cannot: str | None
     pending: str | None
     must_see: dict[int, list[str]]
@@ -52,6 +56,11 @@ class Case:
     @property
     def expected_edges(self) -> set[tuple[str, int, int]]:
         return self.edges if self.edges is not None else cl.naive_expected_edges(self.line)
+
+
+def labelled(unit_label: str, tags: set[str]) -> bool:
+    """Whether the model's finding tags label a unit of this type (a NAME is also found as PN)."""
+    return unit_label in tags or (unit_label == "NAME" and "PN" in tags)
 
 
 def _edge(s: str) -> tuple[str, int, int]:
@@ -70,6 +79,8 @@ def load_case(case_dir: Path) -> Case:
     if bad:
         raise ValueError(f"{case_dir.name}: expect.verdict keys must be 'on'/'off' (quoted), got {sorted(map(str, bad))}")
     line = cl.parse(d["line"])
+    if sum(leg.sink for leg in line.legs) > 1:
+        raise ValueError(f"{case_dir.name}: more than one leg is flagged (⚑); the verdict is read at one")
     if line.sink is not None and set(verdict) != {"on", "off"}:
         raise ValueError(f"{case_dir.name}: the line has a flagged leg (⚑); expect.verdict needs both 'on' and 'off'")
     if line.sink is None and verdict:
@@ -79,6 +90,7 @@ def load_case(case_dir: Path) -> Case:
         line_text=d["line"], line=line, units=dict(d.get("units", {})),
         verdict={k: str(v) for k, v in verdict.items()},
         edges=None if edges == "derived" else {_edge(e) for e in edges},
+        also={_edge(e) for e in expect.get("also") or []},
         cannot=expect.get("cannot"),
         pending=expect.get("pending"),
         must_see={int(k): list(v) for k, v in (classifier.get("must_see") or {}).items()},

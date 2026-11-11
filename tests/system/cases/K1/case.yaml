@@ -46,8 +46,13 @@ expect:
   - s1 11>23
   - s2 11>23
   - s3 11>23
+  also:
+  - s1 7>10
+  - s2 7>10
+  - s3 7>10
   cannot: null
-  pending: cross-conversation fold not on this branch
+  pending: 'cross-conversation lineage not on this branch: the cross-trace fold (#273) with its seed rule and window, and
+    the risk engine forwarding a cross-trace origin (labels.forwarded keeps same-trace origins only)'
 classifier:
   must_see: {}
   must_miss:

@@ -7,6 +7,15 @@ U>A[-], A>L[-], L>A[-], A>T1[-], T1>V1[-], V1>T1[s1 s2 s3 s4 -], T1>A[s1 s2 s3 -
 ```
 
 ```
+expected
+              1      2      3      4      5      6      7      8      9      10     11     12     13     14     15     16     
+              U>A    A>L    L>A    A>T1   T1>V1  V1>T1  T1>A   A>L    L>A    A>T2   T2>V2⚑ V2>T2  T2>A   A>L    L>A    A>U    
+SSN     s1    ·      ·      ·      ·      ·      ●      ━━━━━━●━━━━━━○━━━━━━○━━━━━━○━━━━━━○·      ·      ·      ·      ·      
+MRN     s2    ·      ·      ·      ·      ·      ●      ━━━━━━●━━━━━━○━━━━━━○━━━━━━○━━━━━━○·      ·      ·      ·      ·      
+DOB     s3    ·      ·      ·      ·      ·      ●      ━━━━━━●━━━━━━○━━━━━━○━━━━━━○━━━━━━○·      ·      ·      ·      ·      
+DIS     s4    ·      ·      ·      ·      ·      ●      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      
+
+observed
               1      2      3      4      5      6      7      8      9      10     11     12     13     14     15     16     
               U>A    A>L    L>A    A>T1   T1>V1  V1>T1  T1>A   A>L    L>A    A>T2   T2>V2⚑ V2>T2  T2>A   A>L    L>A    A>U    
 SSN     s1    ·      ·      ·      ·      ·      ●      ━━━━━━●━━━━━━○━━━━━━○━━━━━━○━━━━━━○·      ·      ·      ·      ·      
@@ -18,7 +27,7 @@ neighbourhood at 8: s1 2 of 3, s2 2 of 3, s3 2 of 3
 neighbourhood at 9: s1 2 of 3, s2 2 of 3, s3 2 of 3
 neighbourhood at 10: s1 2 of 3, s2 2 of 3, s3 2 of 3
 neighbourhood at 11: s1 2 of 3, s2 2 of 3, s3 2 of 3
-verdict at 11: on=block / off=allow
+verdict at 11: expected on=block / off=allow, observed on=block / off=allow
 ```
 
 **Reasons.** also drawn, from an earlier holding (where it was born): s1 7>10, s2 7>10, s3 7>10
@@ -44,7 +53,7 @@ verdict at 11: on=block / off=allow
 | 15 | L>A | PUBLIC  | — | — |
 | 16 | A>U | PUBLIC  | — | — |
 
-**Timing (on).** total 1.4947 s: reset 0.1012, receiver 0.0592, interactions 0.8722, data_lineage 0.1399, classification 0.0244, label_lineage 0.0175, leg_ready+risk 0.2607, read 0.0196
+**Timing (on).** total 1.8104 s: reset 0.092, receiver 0.0633, interactions 1.1421, data_lineage 0.2034, classification 0.0374, label_lineage 0.0253, leg_ready+risk 0.2314, read 0.0155
 OPA calls: 20
 
 **Notes.** Leaf to leaf, starting from a response: born in the insurer's answer. T1 forgets, so leg 7 inherits leg 6 only through the invocation-scope fix of #348 (a response inherits what its child calls returned).

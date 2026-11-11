@@ -7,6 +7,15 @@ U>A1[s1 -], U>A2[s2 -], A1>T1[s1 -], A2>T1[s2 -], T1(A1)>V1[s1@subject -]⚑, V1
 ```
 
 ```
+expected
+              1      2      3      4      5      6      7      8      9      10     11     12     
+              U>A1   U>A2   A1>T1  A2>T1  T1>V1⚑ V1>T1  T1>V2  V2>T1  T1>A1  T1>A2  A1>U   A2>U   
+SSN     s1    ●      ·      ━━━━━━●·      ━━━━━━○·      ·      ·      ━━━━━━○·      ·      ·      
+MRN     s2    ·      ●      ·      ━━━━━━●·      ·      ━━━━━━○·      ·      ━━━━━━○·      ·      
+DOB     s3    ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      
+DIS     s4    ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      
+
+observed
               1      2      3      4      5      6      7      8      9      10     11     12     
               U>A1   U>A2   A1>T1  A2>T1  T1>V1⚑ V1>T1  T1>V2  V2>T1  T1>A1  T1>A2  A1>U   A2>U   
 SSN     s1    ●      ·      ━━━━━━●·      ━━━━━━○·      ·      ·      ━━━━━━○·      ·      ·      
@@ -19,7 +28,7 @@ neighbourhood at 5: s1 0 of 0
 neighbourhood at 7: s2 0 of 0
 neighbourhood at 9: s1 0 of 0
 neighbourhood at 10: s2 0 of 0
-verdict at 5: on=block / off=allow
+verdict at 5: expected on=block / off=allow, observed on=block / off=allow
 ```
 
 **Rows (inherited labels on).**
@@ -39,7 +48,7 @@ verdict at 5: on=block / off=allow
 | 11 | A1>U | PUBLIC  | — | — |
 | 12 | A2>U | PUBLIC  | — | — |
 
-**Timing (on).** total 1.2751 s: reset 0.1051, receiver 0.0561, interactions 0.7389, data_lineage 0.125, classification 0.0309, label_lineage 0.0185, leg_ready+risk 0.1835, read 0.0171
+**Timing (on).** total 1.2998 s: reset 0.0768, receiver 0.052, interactions 0.7281, data_lineage 0.1723, classification 0.0415, label_lineage 0.0215, leg_ready+risk 0.1916, read 0.016
 OPA calls: 16
 
 **Notes.** Picture 2 of #348. A1 and A2 call T1; A2's request arrives before T1 serves A1. T1(A1)>V1 belongs to A1's call, so it carries s1 (3>5) and nothing of A2's; before #348 the fold routed it from the latest inbound (A2's) and V1 saw no label: verdict allow.

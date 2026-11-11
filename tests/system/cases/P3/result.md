@@ -7,6 +7,15 @@ U>A1[s1 -], U>A2[s1 -], A1>T1[s1 -], A2>T1[s1 -], T1(A1)>V1[s1@subject -]⚑, V1
 ```
 
 ```
+expected
+              1      2      3      4      5      6      7      8      9      10     11     12     
+              U>A1   U>A2   A1>T1  A2>T1  T1>V1⚑ V1>T1  T1>V2  V2>T1  T1>A1  T1>A2  A1>U   A2>U   
+SSN     s1    ●      ┈┈┈┈┈┈●━━━━━━●━━━━━━●━━━━━━○·      ━━━━━━○·      ━━━━━━○━━━━━━○·      ·      
+MRN     s2    ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      
+DOB     s3    ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      
+DIS     s4    ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      
+
+observed
               1      2      3      4      5      6      7      8      9      10     11     12     
               U>A1   U>A2   A1>T1  A2>T1  T1>V1⚑ V1>T1  T1>V2  V2>T1  T1>A1  T1>A2  A1>U   A2>U   
 SSN     s1    ●      ┈┈┈┈┈┈●━━━━━━●━━━━━━●━━━━━━○·      ━━━━━━○·      ━━━━━━○━━━━━━○·      ·      
@@ -19,7 +28,7 @@ neighbourhood at 5: s1 0 of 0
 neighbourhood at 7: s1 0 of 0
 neighbourhood at 9: s1 0 of 0
 neighbourhood at 10: s1 0 of 0
-verdict at 5: on=block / off=allow
+verdict at 5: expected on=block / off=allow, observed on=block / off=allow
 ```
 
 **Rows (inherited labels on).**
@@ -39,8 +48,8 @@ verdict at 5: on=block / off=allow
 | 11 | A1>U | PUBLIC  | — | — |
 | 12 | A2>U | PUBLIC  | — | — |
 
-**Timing (on).** total 1.0769 s: reset 0.1102, receiver 0.0531, interactions 0.5354, data_lineage 0.1126, classification 0.0232, label_lineage 0.0169, leg_ready+risk 0.2105, read 0.015
+**Timing (on).** total 1.3262 s: reset 0.0827, receiver 0.0583, interactions 0.6949, data_lineage 0.1651, classification 0.0409, label_lineage 0.0232, leg_ready+risk 0.2466, read 0.0145
 OPA calls: 16
 
-**Notes.** Picture 2 of #348 with the same value in both calls, so a wrong parent shows as an edge that should not exist: T1(A1)>V1 must inherit from A1's request (3>5), not from A2's, which arrived later (4>5). Before #348 the fold drew 4>5 and 3>5 was missing.
+**Notes.** Picture 2 of #348 with the same value in both calls, so a wrong parent shows as an edge that should not exist: T1(A1)>V1 must inherit from A1's request (3>5), not from A2's, which arrived later (4>5). Before #348 the fold drew 4>5, and 3>5 and 4>7 were missing.
 

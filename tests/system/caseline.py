@@ -8,7 +8,7 @@
 - Inside ``[...]``: ``s1`` a sensitive unit (its label is declared once per case),
   ``-`` some content nobody cares about, ``x1`` content that recurs later,
   ``=s1`` bytes equal to s1 that are NOT that unit here, ``s1@key`` the JSON key
-  the value travels under (``mrn`` by default).
+  the value travels under (by default the label's own key: ``ssn``, ``mrn``, ``dob`` ...).
 - ``T1(A1)>V1[...]``: the request T1 sends belongs to the call A1 opened on T1 (the wire
   parent). Without it a request belongs to the latest call its sender received.
 - ``,`` the next payload in the same conversation; ``..P..`` an invisible hop

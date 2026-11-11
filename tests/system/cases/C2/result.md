@@ -7,6 +7,15 @@ U>A[s1 s2 s3 s4 -], A>L[s1 s2 s3 -], L>A[s1 s2 s3 -], A>T1[s1 s2 s3 -], T1>V1[s1
 ```
 
 ```
+expected
+              1      2      3      4      5      6      7      8      9      10     11     12     13     14     15     16     
+              U>A    A>L    L>A    A>T1   T1>V1⚑ V1>T1  T1>A   A>L    L>A    A>T2   T2>V2  V2>T2  T2>A   A>L    L>A    A>U    
+SSN     s1    ●      ━━━━━━●━━━━━━●━━━━━━●━━━━━━●·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      
+MRN     s2    ●      ━━━━━━●━━━━━━●━━━━━━●━━━━━━●·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      
+DOB     s3    ●      ━━━━━━●━━━━━━●━━━━━━●━━━━━━●·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      
+DIS     s4    ●      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      
+
+observed
               1      2      3      4      5      6      7      8      9      10     11     12     13     14     15     16     
               U>A    A>L    L>A    A>T1   T1>V1⚑ V1>T1  T1>A   A>L    L>A    A>T2   T2>V2  V2>T2  T2>A   A>L    L>A    A>U    
 SSN     s1    ●      ━━━━━━●━━━━━━●━━━━━━●━━━━━━●·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      
@@ -17,7 +26,7 @@ neighbourhood at 2: s1 2 of 3, s2 2 of 3, s3 2 of 3
 neighbourhood at 3: s1 2 of 3, s2 2 of 3, s3 2 of 3
 neighbourhood at 4: s1 2 of 3, s2 2 of 3, s3 2 of 3
 neighbourhood at 5: s1 2 of 3, s2 2 of 3, s3 2 of 3
-verdict at 5: on=block / off=block
+verdict at 5: expected on=block / off=block, observed on=block / off=block
 ```
 
 **Reasons.** also drawn, from an earlier holding (where it was born): s1 1>4, s2 1>4, s3 1>4
@@ -43,7 +52,7 @@ verdict at 5: on=block / off=block
 | 15 | L>A | PUBLIC  | — | — |
 | 16 | A>U | PUBLIC  | — | — |
 
-**Timing (on).** total 1.6096 s: reset 0.1059, receiver 0.057, interactions 0.9458, data_lineage 0.2381, classification 0.0271, label_lineage 0.032, leg_ready+risk 0.1902, read 0.0135
+**Timing (on).** total 1.7831 s: reset 0.1093, receiver 0.06, interactions 1.0673, data_lineage 0.1942, classification 0.0217, label_lineage 0.0393, leg_ready+risk 0.2603, read 0.031
 OPA calls: 19
 
 **Notes.** Root to the left leaf, U>A>T1>V1. The classifier labels the three on every leg; lineage draws the chain, the classifier alone already decides.

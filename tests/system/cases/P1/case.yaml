@@ -19,6 +19,7 @@ expect:
   - s1 2>7
   - s2 4>5
   - s2 4>7
+  also: []
   cannot: null
   pending: null
 classifier:
@@ -41,4 +42,4 @@ classifier:
   authored: true
 notes: 'Picture 1 of #348. Inside A''s call, T1 asks V1, then asks V2 with what V1 returned, then answers A. T1''s second
   request inherits from the call that opened it (s1 2>5) and from V1''s answer inside the call (s2 4>5); its answer carries
-  both (2>7, 4>7). Before #348 the fold drew s2 4>5 only.'
+  both (2>7, 4>7). Before #348 the fold drew s2 4>5 only, and no 4>7.'
