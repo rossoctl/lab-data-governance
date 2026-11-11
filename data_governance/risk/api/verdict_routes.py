@@ -29,7 +29,8 @@ says what that was (wire contract §5): ``http.request.body.size`` is always the
 and a size above 0 beside no ``input.value`` is a body the sidecar saw and did not
 emit (``capture_io`` off, not text, not whole, a parser that reduced it to nothing);
 a value cut at ``max_payload_bytes`` ends ``…[truncated]``. So a record whose request
-body was not read whole answers ``state: unjudged``, with the record's verdict and a
+body was not read whole (:func:`~data_governance.retrieval.get_exchange_requests` derives
+it) answers ``state: unjudged``, with the record's verdict and a
 ``reason`` (``body_not_captured``, ``body_truncated``). A ``block`` on what was read
 still blocks; what to do with anything else is the gate's choice.
 No value and no size (a sidecar older than contract v1.8) counts as not captured.
@@ -49,8 +50,8 @@ canonical JSON of the arguments, not the agent's bytes, and for a body cut at
 ``max_payload_bytes`` it is the cut text. It replaces findings and nothing else: what
 the classifier did not flag stays. It is all or nothing, and never fails the answer: a
 payload above :data:`REDACTED_MAX_BYTES` leaves the field out, and so does a finding that
-does not fit the text at its offsets, with a log line naming offsets only. These are read by a
-second query for the answered ids only, so a wake fetches no body for a waiter still
+does not fit the text at its offsets, with a log line naming offsets only. These are read for
+the answered ids only, so a wake fetches no body for a waiter still
 waiting. The answer names the exchange by ``exchange_id``, the sidecar's own word for it.
 
 **Who may ask.** ``Authorization: Bearer <VERDICT_SECRET>`` (constant-time compare;
@@ -60,16 +61,18 @@ waiting. The answer names the exchange by ``exchange_id``, the sidecar's own wor
 **Cap.** At most ``VERDICT_MAX_WAITERS`` requests are in flight per process; beyond
 it the answer is 503 ``verdict_busy`` at once, never a queue.
 
-**One read per wake.** Each process keeps a waiter map keyed by interaction id and
+**One pass per wake.** Each process keeps a waiter map keyed by interaction id and
 one dispatcher subscribed to the change hub (``dg_legs_inserted``,
 ``dg_interaction_risk_written``; the notifies carry no payload). On every wake, and
-at least every :data:`BACKSTOP_SECONDS` while anyone waits, the dispatcher runs ONE
-batched read for every waited interaction (the records through Risk retrieval's
-:func:`~data_governance.retrieval.get_request_risk`, then the leg facts, :data:`_STATE_SQL`)
-and resolves only the answered ones. A new waiter registers first and then reads its own state once, so a
+at least every :data:`BACKSTOP_SECONDS` while anyone waits, the dispatcher runs one
+batched pass for every waited interaction, whatever their number: the records from
+:func:`~data_governance.retrieval.get_request_risk`, the requests from
+:func:`~data_governance.retrieval.get_exchange_requests`, and what was caught from
+:func:`~data_governance.retrieval.get_request_findings` for the answered ones, each read
+its own transaction. It resolves only the answered ones. A new waiter registers first and then reads its own state once, so a
 write landing between the two is seen by one of them. Every DB user is a bounded
 executor (reads, priority classification), so no request waits on the pool: 64 waiters cost 64
-first reads and then one read per wake.
+first passes and then one pass per wake.
 
 **Priority classification** (``VERDICT_PRIORITY_CLASSIFICATION=on``; this process then runs from the
 classification image, with the model). When the waited exchange's request payload
@@ -148,9 +151,6 @@ _WAIT_RE = re.compile(r"[0-9]{1,6}")
 #: What a keyed log line keeps of a key it has not validated yet.
 _LOG_KEY_CHARS = 64
 
-#: Wire contract §5's mark on a value cut at ``max_payload_bytes``.
-_TRUNCATED_SUFFIX = "…[truncated]"
-
 #: Largest ``redacted_payload`` an answer carries, JSON-encoded, and the largest stored
 #: payload fetched to make one. A gate reads 64 KiB of an answer; a block must never be
 #: lost to the size of its text.
@@ -207,33 +207,6 @@ class Settings:
         return self.read_workers + (self.priority_classification_concurrency if self.priority_classification else 0) + 1
 
 
-# One row per waited interaction: its request leg's payload state for priority
-# classification, and what its request span says about the body. The span is the
-# exchange's own: its span id is the exchange id. The answering record comes from
-# Risk retrieval (:func:`data_governance.retrieval.get_request_risk`).
-_STATE_SQL = """
-SELECT w.id, l.interaction_id IS NOT NULL, l.payload_hash,
-       p.content_hash IS NOT NULL, pc.content_hash IS NOT NULL,
-       s.attributes->>'http.request.body.size',
-       right(s.attributes->>'input.value', %s) = %s
-  FROM unnest(%s::text[], %s::text[], %s::text[]) AS w(id, trace_id, exchange_id)
-  LEFT JOIN interaction_legs l ON l.interaction_id = w.id AND l.leg_type = 'request'
-  LEFT JOIN interaction_payloads p ON p.content_hash = l.payload_hash
-  LEFT JOIN payload_classifications pc ON pc.content_hash = l.payload_hash
-  LEFT JOIN spans s ON s.trace_id = w.trace_id AND s.span_id = w.exchange_id
-"""
-
-# What was caught, for the answered ids of one state read: the request payload's
-# findings, and its body for a block unless it is too large to fetch.
-_CAUGHT_SQL = """
-SELECT w.id, pc.findings, CASE WHEN w.verdict = 'block' AND p.byte_size <= %s THEN p.content END
-  FROM unnest(%s::text[], %s::text[]) AS w(id, verdict)
-  JOIN interaction_legs l ON l.interaction_id = w.id AND l.leg_type = 'request'
-  JOIN interaction_payloads p ON p.content_hash = l.payload_hash
-  JOIN payload_classifications pc ON pc.content_hash = l.payload_hash
-"""
-
-
 #: A waited exchange: (interaction id, trace id, exchange id).
 _Key = tuple[str, str, str]
 
@@ -244,17 +217,6 @@ class _State:
     payload_hash: str | None
     payload_present: bool
     classified: bool
-
-
-def _unread_body(has_leg: bool, payload_hash: str | None, body_size: str | None, truncated: bool | None) -> str | None:
-    """Why the record cannot have judged the whole request body, or None."""
-    if not has_leg:
-        return None
-    if truncated:
-        return "body_truncated"
-    if payload_hash is None and body_size != "0":
-        return "body_not_captured"
-    return None
 
 
 def _label(finding: Any) -> str | None:
@@ -323,44 +285,40 @@ def _redacted_payload(interaction_id: str, content: Any, findings: Any) -> str |
 
 
 def _read_states(keys: list[_Key], notify_undecided: bool = False) -> dict[str, _State]:
-    """The state of every waited exchange in one read; with *notify_undecided*, name
-    each undecided one on the priority decision channel in the same transaction.
+    """The state of every waited exchange, read through retrieval for all of them at
+    once; with *notify_undecided*, name each undecided one on the priority decision
+    channel.
 
-    The record comes from Risk retrieval in its own transaction, before the leg facts,
-    so a leg landing between the two is not in the record's pick. For a held exchange
-    that changes nothing: its request leg is derived before any record of it (a record
-    is computed from legs, and the response leg cannot exist while the request is held),
-    so the pick's no-request-leg arm never fires for it."""
-    ids, traces, exchanges = (list(column) for column in zip(*keys, strict=True))
-    params = (len(_TRUNCATED_SUFFIX), _TRUNCATED_SUFFIX, ids, traces, exchanges)
+    The record (:func:`~data_governance.retrieval.get_request_risk`) is read before the
+    request (:func:`~data_governance.retrieval.get_exchange_requests`), so a leg landing
+    between the two is not in the record's pick. For a held exchange that changes
+    nothing: its request leg is derived before any record of it (a record is computed
+    from legs, and the response leg cannot exist while the request is held), so the
+    pick's no-request-leg arm never fires for it."""
     exchange_of = {key[0]: key[2] for key in keys}
+    risk = retrieval.get_request_risk(list(exchange_of))
     states: dict[str, _State] = {}
-    risk = retrieval.get_request_risk(ids)
-    with db.transaction() as tx:
-        for (iid, has_leg, payload_hash, payload_present, classified,
-             body_size, truncated) in tx.fetch_all(_STATE_SQL, params):
-            record = None
-            if iid in risk:
-                r = risk[iid]
-                record = {"state": "decided", "verdict": r.enforcement_type, "exchange_id": exchange_of[iid],
-                          "version": r.version, "rules": r.triggered_rule_ids, "labels": []}
-                reason = _unread_body(has_leg, payload_hash, body_size, truncated)
-                if reason is not None:
-                    record.update(state="unjudged", reason=reason)
-            states[iid] = _State(record, payload_hash, bool(payload_present), bool(classified))
-        answered = {iid: state.record for iid, state in states.items() if state.record is not None}
-        if answered:
-            verdicts = [record["verdict"] for record in answered.values()]
-            for iid, findings, content in tx.fetch_all(_CAUGHT_SQL, (REDACTED_MAX_BYTES, list(answered), verdicts)):
-                answered[iid]["labels"] = _labels(findings)
-                if answered[iid]["verdict"] == "block":
-                    redacted = _redacted_payload(iid, content, findings) if content is not None else None
-                    if redacted is not None:
-                        answered[iid]["redacted_payload"] = redacted
-        if notify_undecided:
-            for iid, state in states.items():
-                if state.record is None:
-                    tx.execute("SELECT pg_notify(%s, %s)", (PRIORITY_DECISION_CHANNEL, iid))
+    for iid, request in retrieval.get_exchange_requests(keys).items():
+        record = None
+        if iid in risk:
+            r = risk[iid]
+            record = {"state": "decided", "verdict": r.enforcement_type, "exchange_id": exchange_of[iid],
+                      "version": r.version, "rules": r.triggered_rule_ids, "labels": []}
+            if request.unread_body is not None:
+                record.update(state="unjudged", reason=request.unread_body)
+        states[iid] = _State(record, request.payload_hash, request.payload_stored, request.classified)
+    answered = {iid: state.record for iid, state in states.items() if state.record is not None}
+    blocks = {iid for iid, record in answered.items() if record["verdict"] == "block"}
+    found = retrieval.get_request_findings(list(answered), content_for=blocks, max_content_bytes=REDACTED_MAX_BYTES)
+    for iid, request in found.items():
+        answered[iid]["labels"] = _labels(request.findings)
+        if iid in blocks and request.content is not None:
+            redacted = _redacted_payload(iid, request.content, request.findings)
+            if redacted is not None:
+                answered[iid]["redacted_payload"] = redacted
+    undecided = [iid for iid, state in states.items() if state.record is None]
+    if notify_undecided and undecided:
+        _name_for_decision(undecided)
     return states
 
 

@@ -51,6 +51,11 @@ derivation stays behind the interface (ADR-0005):
   evidences the request leg (its docstring says why). Pagination is DB-level keyset, not the bounded
   in-memory ``http.paginate`` — see the module docstring for why an offset cursor is
   wrong here.
+- :mod:`.exchanges` — the verdict service's batched reads of a held exchange's request
+  (``get_exchange_requests``: its request leg's payload state and whether the body was
+  read whole, from the request span's facts; ``get_request_findings``: the request
+  payload's findings, and its content when asked). Sibling to ``get_request_risk``,
+  which picks the record.
 - :mod:`.alerts` — the read path over ``alerts`` (issue #110's read half):
   ``list_alerts`` (filtered, keyset-paged, superseded alerts left out by default) and
   ``get_alert``. Not versioned like the risk tables: a level rise links rows through
@@ -70,6 +75,12 @@ from data_governance.retrieval.alerts import (
     AlertView,
     get_alert,
     list_alerts,
+)
+from data_governance.retrieval.exchanges import (
+    ExchangeRequestView,
+    RequestFindingsView,
+    get_exchange_requests,
+    get_request_findings,
 )
 from data_governance.retrieval.interactions import (
     DestinationView,
@@ -225,6 +236,11 @@ __all__ = [
     "get_trace_risk_history",
     "list_interaction_risk",
     "list_trace_risk",
+    # the verdict service's exchange reads
+    "ExchangeRequestView",
+    "RequestFindingsView",
+    "get_exchange_requests",
+    "get_request_findings",
     # DAS alert reads (issue #110)
     "SORT_TIMESTAMP_DESC",
     "AlertPage",
