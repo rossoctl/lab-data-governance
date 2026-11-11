@@ -118,33 +118,23 @@ def gate_block(indent: int, spec: dict, mode: str) -> list[str]:
     return lines
 
 
-def gated_lineage_lines(lines: list[str], reconcile, otel_endpoint: str, direction: str) -> list[str]:
-    """Replace the lineage block reconcile wrote at the end of ``direction`` with the
-    gated one (capture_io true, export_delay_ms)."""
-    section = reconcile._plugin_blocks(lines, direction)
-    written = reconcile._managed_blocks(section.item_indent, otel_endpoint)
-    start = section.section_end - len(written)
-    if lines[start:section.section_end] != written:
-        raise ValueError(f"pipeline.{direction}: the lineage entries are not as the reconciler wrote them")
-    gated = [line.replace("capture_io: false", "capture_io: true") for line in written]
-    config_pad = " " * (section.item_indent + 4)
-    gated.append(f"{config_pad}export_delay_ms: {EXPORT_DELAY_MS}\n")
-    return lines[:start] + gated + lines[section.section_end:]
-
-
 def apply_gate(config: str, reconcile, otel_endpoint: str, spec: dict, mode: str) -> str:
+    """In both directions: the lineage entries as reconcile wrote them, lineage-telemetry's
+    with capture_io true and export_delay_ms, and no gate entry wherever one sat; on outbound,
+    the canonical gate after lineage."""
     lines = config.splitlines(keepends=True)
     for direction in ("inbound", "outbound"):
-        lines = gated_lineage_lines(lines, reconcile, otel_endpoint, direction)
-    # Any gate entry, wherever it sits, goes; the canonical one follows lineage.
-    for direction in ("inbound", "outbound"):
-        section = reconcile._plugin_blocks(lines, direction)
-        for start, end in reversed(section.ranges):
-            if reconcile._plugin_name(lines[start:end]) == GATE_PLUGIN:
-                del lines[start:end]
-    section = reconcile._plugin_blocks(lines, "outbound")
-    end = section.section_end
-    return "".join(lines[:end] + gate_block(section.item_indent, spec, mode) + lines[end:])
+        indent, entries = reconcile.plugin_entries(lines, direction)
+        written = entries[-len(reconcile.MANAGED_PLUGINS):]
+        if [line for entry in written for line in entry] != reconcile.managed_blocks(indent, otel_endpoint):
+            raise ValueError(f"pipeline.{direction}: the lineage entries are not as the reconciler wrote them")
+        lineage = [line.replace("capture_io: false", "capture_io: true") for line in entries[-1]]
+        lineage.append(f"{' ' * (indent + 4)}export_delay_ms: {EXPORT_DELAY_MS}\n")
+        entries = [entry for entry in entries[:-1] if reconcile.plugin_name(entry) != GATE_PLUGIN] + [lineage]
+        if direction == "outbound":
+            entries.append(gate_block(indent, spec, mode))
+        lines = reconcile.with_plugin_entries(lines, direction, entries)
+    return "".join(lines)
 
 
 def apply_command(args: argparse.Namespace) -> int:
@@ -244,11 +234,9 @@ def read_command(args: argparse.Namespace) -> int:
     config keys, so a row's or a slice's wait or fallback is not the gate's."""
     reconcile = load_reconcile(args.kit_dir)
     config = (json.load(sys.stdin).get("data") or {}).get("config.yaml") or ""
-    lines = config.splitlines(keepends=True)
-    section = reconcile._plugin_blocks(lines, "outbound")
-    for start, end in section.ranges:
-        block = lines[start:end]
-        if reconcile._plugin_name(block) != GATE_PLUGIN:
+    _, entries = reconcile.plugin_entries(config.splitlines(keepends=True), "outbound")
+    for block in entries:
+        if reconcile.plugin_name(block) != GATE_PLUGIN:
             continue
         text = "".join(block)
         entry = re.search(r"^( *)config:\s*$", text, re.M)

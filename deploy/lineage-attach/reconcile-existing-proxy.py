@@ -90,7 +90,7 @@ def _section(lines: list[str], name: str, start: int, end: int, parent_indent: i
     raise ConfigError(f"missing {name}: section")
 
 
-def _plugin_name(block: list[str]) -> str | None:
+def plugin_name(block: list[str]) -> str | None:
     for line in block:
         match = re.match(r"^\s*(?:-\s*)?name:\s*['\"]?([^'\"\s#]+)", line)
         if match:
@@ -98,7 +98,7 @@ def _plugin_name(block: list[str]) -> str | None:
     return None
 
 
-def _managed_blocks(indent: int, otel_endpoint: str) -> list[str]:
+def managed_blocks(indent: int, otel_endpoint: str) -> list[str]:
     # Plain scalars, as PyYAML dumps them: another writer's safe_load and
     # safe_dump(sort_keys=False) round trip then leaves the canonical bytes
     # unchanged.
@@ -159,11 +159,24 @@ def _plugin_blocks(lines: list[str], direction: str) -> _PluginBlocks:
     return _PluginBlocks(first_item, plugins_end, item_indent, ranges)
 
 
+def plugin_entries(lines: list[str], direction: str) -> tuple[int, list[list[str]]]:
+    """``pipeline.<direction>.plugins`` as its items' indentation and each entry's lines."""
+    section = _plugin_blocks(lines, direction)
+    return section.item_indent, [lines[start:end] for start, end in section.ranges]
+
+
+def with_plugin_entries(lines: list[str], direction: str, entries: list[list[str]]) -> list[str]:
+    """*lines* with the entries of ``pipeline.<direction>.plugins`` replaced by *entries*,
+    each an entry's lines at the indentation :func:`plugin_entries` gives."""
+    section = _plugin_blocks(lines, direction)
+    return lines[: section.first_item] + [line for entry in entries for line in entry] + lines[section.section_end :]
+
+
 def _plugin_names(lines: list[str], direction: str) -> list[str]:
     section = _plugin_blocks(lines, direction)
     names: list[str] = []
     for start, end in section.ranges:
-        name = _plugin_name(lines[start:end])
+        name = plugin_name(lines[start:end])
         if name is None:
             raise ConfigError(f"unnamed plugin in pipeline.{direction}")
         names.append(name)
@@ -175,7 +188,7 @@ def _reconcile_direction(lines: list[str], direction: str, otel_endpoint: str) -
     preserved: list[str] = []
     for block_start, block_end in section.ranges:
         block = lines[block_start:block_end]
-        name = _plugin_name(block)
+        name = plugin_name(block)
         # The same refusal as pipeline-contract, so nothing is written that the
         # verification after the rollout cannot read (a flow-style item, say).
         if name is None:
@@ -184,7 +197,7 @@ def _reconcile_direction(lines: list[str], direction: str, otel_endpoint: str) -
             preserved.extend(block)
 
     replacement = lines[: section.first_item] + preserved
-    replacement.extend(_managed_blocks(section.item_indent, otel_endpoint))
+    replacement.extend(managed_blocks(section.item_indent, otel_endpoint))
     replacement.extend(lines[section.section_end :])
     return replacement
 

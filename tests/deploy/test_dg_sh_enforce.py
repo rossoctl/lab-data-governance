@@ -166,6 +166,31 @@ def test_an_existing_gate_before_lineage_is_moved_after_it(gated) -> None:
     assert names.count("sentry-gate") == 1 and names[-1] == "sentry-gate"
 
 
+def test_apply_refuses_lineage_entries_not_as_the_reconciler_wrote_them(tmp_path) -> None:
+    """gate_config apply edits the lineage entries the reconciler just wrote, and nothing else: entries that
+    differ (here a lineage already capturing) are refused with nothing printed, never edited in place."""
+    import subprocess
+    deploy = REPO_ROOT / "deploy"
+    config = {"data": {"config.yaml": "pipeline:\n  inbound:\n    plugins:\n    - name: jwt-validation\n"
+                                      "  outbound:\n    plugins:\n    - name: token-exchange\n"}}
+    endpoint = "otel.example:4317"
+    rendered = subprocess.run([sys.executable, str(deploy / "lineage-attach" / "reconcile-existing-proxy.py"), "render",
+                               "--otel-endpoint", endpoint], input=json.dumps(config), capture_output=True, text=True,
+                              check=True).stdout
+    spec = tmp_path / "spec.json"
+    spec.write_text(json.dumps({"verdict_url": "http://v.example", "verdict_secret": "s"}))
+
+    def apply(document: str) -> subprocess.CompletedProcess:
+        return subprocess.run([sys.executable, str(deploy / "gate_config.py"), "apply", "--kit-dir",
+                               str(deploy / "lineage-attach"), "--spec", str(spec), "--mode", "enforce",
+                               "--otel-endpoint", endpoint], input=document, capture_output=True, text=True)
+
+    assert apply(rendered).returncode == 0
+    result = apply(rendered.replace("capture_io: false", "capture_io: true", 1))
+    assert result.returncode == 2 and result.stdout == ""
+    assert "pipeline.inbound: the lineage entries are not as the reconciler wrote them" in result.stderr
+
+
 def test_observe_writes_on_error_observe_and_enforce_switches_it_back(gated) -> None:
     """--observe writes the framework's on_error: observe on the gate; --enforce removes it and rolls."""
     assert gated.run("namespace", "travel-advisor", "instrument", "--observe").returncode == 0
