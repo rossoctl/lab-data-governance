@@ -177,21 +177,20 @@ def process_leg(tx: db.Transaction, leg: Leg, write: LegWrite | None = None) -> 
 # The readiness predicate lives in the SQL (derived fresh from the durable tables on
 # every drain): a leg is ready iff it has no payload OR its payload has been
 # classified. LEFT JOIN payload_classifications (PK content_hash); ``pc.content_hash
-# IS NOT NULL`` means a verdict row exists.
-_FETCH_SQL = """
+# IS NOT NULL`` means a verdict row exists. One selection per predicate, shared by the
+# cursor fetch (by seq) and priority decision's one named leg (:mod:`.priority_decision`,
+# which asks about one interaction out of seq order and must judge readiness by exactly
+# this stream's rule), so both read the same columns into the same Leg.
+_LEGS_SQL = """
 SELECT l.interaction_id, l.leg_type::text, l.payload_hash, l.seq,
        (l.payload_hash IS NULL OR pc.content_hash IS NOT NULL) AS ready
   FROM interaction_legs l
   LEFT JOIN payload_classifications pc ON pc.content_hash = l.payload_hash
- WHERE l.seq > %s
- ORDER BY l.seq ASC
- LIMIT %s
 """
-
 
 # With RISK_INHERITED_LABELS on: classified AND derived by label lineage at the
 # leg's current payload.
-_FETCH_WITH_LABELS_SQL = """
+_LEGS_WITH_LABELS_SQL = """
 SELECT l.interaction_id, l.leg_type::text, l.payload_hash, l.seq,
        ((l.payload_hash IS NULL
         OR (pc.content_hash IS NOT NULL AND m.payload_hash = l.payload_hash
@@ -202,36 +201,10 @@ SELECT l.interaction_id, l.leg_type::text, l.payload_hash, l.seq,
   LEFT JOIN payload_classifications pc ON pc.content_hash = l.payload_hash
   LEFT JOIN leg_inherited_labels m
          ON m.interaction_id = l.interaction_id AND m.leg_type = l.leg_type
- WHERE l.seq > %s
- ORDER BY l.seq ASC
- LIMIT %s
 """
 
-
-# The same two predicates for one named leg, for priority decision (:mod:`.priority_decision`),
-# which asks about one interaction out of seq order and must judge readiness by
-# exactly this stream's rule. Same columns as the fetch, so the same Leg.
-_ONE_LEG_SQL = """
-SELECT l.interaction_id, l.leg_type::text, l.payload_hash, l.seq,
-       (l.payload_hash IS NULL OR pc.content_hash IS NOT NULL) AS ready
-  FROM interaction_legs l
-  LEFT JOIN payload_classifications pc ON pc.content_hash = l.payload_hash
- WHERE l.interaction_id = %s AND l.leg_type = %s
-"""
-
-_ONE_LEG_WITH_LABELS_SQL = """
-SELECT l.interaction_id, l.leg_type::text, l.payload_hash, l.seq,
-       ((l.payload_hash IS NULL
-        OR (pc.content_hash IS NOT NULL AND m.payload_hash = l.payload_hash
-            AND m.trace_id = i.trace_id))
-        AND NOT EXISTS (SELECT 1 FROM label_lineage_dirty_traces d WHERE d.trace_id = i.trace_id)) AS ready
-  FROM interaction_legs l
-  LEFT JOIN interactions i ON i.id = l.interaction_id
-  LEFT JOIN payload_classifications pc ON pc.content_hash = l.payload_hash
-  LEFT JOIN leg_inherited_labels m
-         ON m.interaction_id = l.interaction_id AND m.leg_type = l.leg_type
- WHERE l.interaction_id = %s AND l.leg_type = %s
-"""
+_BY_SEQ = " WHERE l.seq > %s ORDER BY l.seq ASC LIMIT %s"
+_BY_NAME = " WHERE l.interaction_id = %s AND l.leg_type = %s"
 
 
 def one_leg(tx: db.Transaction, interaction_id: str, leg_type: str) -> "Leg | None":
@@ -239,7 +212,7 @@ def one_leg(tx: db.Transaction, interaction_id: str, leg_type: str) -> "Leg | No
     label-lineage arm, as ``RISK_INHERITED_LABELS`` says); ``None`` when the leg
     does not exist yet."""
     row = tx.fetch_one(
-        _ONE_LEG_WITH_LABELS_SQL if _labels_on() else _ONE_LEG_SQL,
+        (_LEGS_WITH_LABELS_SQL if _labels_on() else _LEGS_SQL) + _BY_NAME,
         (interaction_id, leg_type),
     )
     if row is None:
@@ -347,7 +320,7 @@ def _labels_on() -> bool:
 
 
 def _fetch_batch(tx: db.Transaction, cursor: int, limit: int) -> list[Leg]:
-    rows = tx.fetch_all(_FETCH_WITH_LABELS_SQL if _labels_on() else _FETCH_SQL, (cursor, limit))
+    rows = tx.fetch_all((_LEGS_WITH_LABELS_SQL if _labels_on() else _LEGS_SQL) + _BY_SEQ, (cursor, limit))
     return [
         Leg(
             interaction_id=r[0],
