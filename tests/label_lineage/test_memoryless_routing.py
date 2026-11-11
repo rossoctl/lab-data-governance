@@ -84,8 +84,9 @@ def test_a_request_whose_call_another_entity_received_keeps_the_latest_leg(c_kin
         3: ("id", "request", "C", "D", "ix"),  # names X's call, not one C received
         4: ("id", "response", "C", "D", "ix"),
         5: ("ia", "response", "A", "C", None),
+        6: ("ix", "response", "B", "X", None),  # X never received D's answer
     }
-    assert edges(picture, c_kind) == {(1, 3), (3, 4), (1, 5)}
+    assert edges(picture, c_kind) == {(1, 3), (3, 4), (1, 5), (2, 6)}
 
 
 @pytest.mark.parametrize("c_kind", ["tool", "llm"])

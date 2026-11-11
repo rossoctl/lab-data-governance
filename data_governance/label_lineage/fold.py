@@ -167,7 +167,8 @@ def with_invocation_scope(ordered: Sequence[WireLeg], inbound: Mapping[LegKey, t
     received inside the call before it; nothing crosses from one call to another.
     The call a leg belongs to: a response's own interaction; a request's
     ``parent_interaction_id``, when that interaction's request is present and was
-    received by the same entity. ``inbound_sets`` routes a memoryless entity by time
+    received by the same entity. Of the responses inside a call, only those the
+    entity itself received count (a response is inbound to its caller). ``inbound_sets`` routes a memoryless entity by time
     instead (a request inherits the latest leg it received, from whichever call; a
     response its own request only), so its sets are replaced here. A request whose
     call is unknown keeps them. Accumulating entities are untouched: one memory for
@@ -175,10 +176,11 @@ def with_invocation_scope(ordered: Sequence[WireLeg], inbound: Mapping[LegKey, t
     """
     position = {(leg.interaction_id, leg.leg_type): i for i, leg in enumerate(ordered)}
     receiver = {leg.interaction_id: leg.callee_entity_id for leg in ordered if leg.leg_type == "request"}
-    children: dict[str, list[LegKey]] = {}
+    children: dict[str, list[tuple[LegKey, str]]] = {}
     for leg in ordered:
         if leg.leg_type == "response" and leg.parent_interaction_id:
-            children.setdefault(leg.parent_interaction_id, []).append((leg.interaction_id, "response"))
+            children.setdefault(leg.parent_interaction_id, []).append(
+                ((leg.interaction_id, "response"), leg.caller_entity_id))
     out = dict(inbound)
     for leg in ordered:
         key = (leg.interaction_id, leg.leg_type)
@@ -194,6 +196,6 @@ def with_invocation_scope(ordered: Sequence[WireLeg], inbound: Mapping[LegKey, t
         producer = entities.get(sender)
         if producer is None or memory.accumulates(producer):
             continue
-        out[key] = have + tuple(k for k in children.get(call, ())
-                                if position[k] < position[key] and k not in have)
+        out[key] = have + tuple(k for k, received_by in children.get(call, ())
+                                if received_by == sender and position[k] < position[key] and k not in have)
     return out
