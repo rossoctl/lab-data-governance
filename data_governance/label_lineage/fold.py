@@ -4,9 +4,10 @@ to the next by a finder. Pure: a :class:`TraceInput` in, a
 
 At each payload-bearing leg, in :func:`wire_order`:
 
-1. **inputs** — the leg's inbound legs (``traversal.inbound_sets`` with responses
-   paired to their own request); each contributes the occurrences it holds after
-   its own fold. A leg with no payload is routed but holds nothing.
+1. **inputs** — the leg's inbound legs (``traversal.inbound_sets``; a tool or an
+   LLM routed by the call it is answering, :func:`with_invocation_scope`); each
+   contributes the occurrences it holds after its own fold. A leg with no payload
+   is routed but holds nothing.
 2. **find** — the finder, once per input, returns candidate occurrences here.
 3. **attribute** — one owner per span (:func:`attribute`).
 4. **summarize** — the leg's edges become its :class:`~.summary.LegSummary`.
@@ -23,6 +24,7 @@ from collections.abc import Mapping, Sequence
 
 from data_governance.interaction_order import LegOrderEvent, LegOrderKey, leg_positions
 from data_governance.processors.classification.projection import project
+from data_governance.processors.data_lineage import memory
 from data_governance.processors.data_lineage.traversal import Entity, Leg, inbound_sets
 
 from .find import Finder
@@ -62,8 +64,8 @@ def wire_order(legs: Sequence[WireLeg]) -> list[WireLeg]:
     """The shared trace-local causal order (ADR-0035), using recorded parents.
 
     Observed times order otherwise ready legs; ingestion ``seq`` breaks ties.
-    The fold still routes absent payloads and pairs memoryless responses with
-    their own requests.
+    The fold still routes absent payloads and routes a memoryless entity by the
+    call each leg belongs to.
     """
     positions = leg_positions(
         LegOrderEvent(leg.interaction_id, leg.leg_type, leg.parent_interaction_id,
@@ -79,6 +81,7 @@ def derive(trace_input: TraceInput, finder: Finder) -> Derivation:
         raise ValueError("priors from other conversations are not read in one conversation")
     ordered = wire_order(trace_input.legs)
     inbound = inbound_sets(ordered, dict(trace_input.entities), pair_responses=True)
+    inbound = with_invocation_scope(ordered, inbound, trace_input.entities)
     texts = {h: project(c) for h, c in trace_input.payloads.items()}
     held: dict[LegKey, tuple[Occurrence, ...]] = {}
     summaries: dict[LegKey, LegSummary] = {}
@@ -153,3 +156,46 @@ def _nests_in(c: Occurrence, d: Occurrence) -> bool:
     if c.span is None or c.span == d.span or c.unit.entity_type != d.unit.entity_type:
         return False
     return d.span[0] <= c.span[0] and c.span[1] <= d.span[1]
+
+
+def with_invocation_scope(ordered: Sequence[WireLeg], inbound: Mapping[LegKey, tuple[LegKey, ...]],
+                          entities: Mapping[str, Entity]) -> dict[LegKey, tuple[LegKey, ...]]:
+    """A tool or an LLM keeps one memory per call it receives (#348).
+
+    What a memoryless entity sends inside a call (its requests to others and its
+    answer) inherits from the request that opened the call and from the responses it
+    received inside the call before it; nothing crosses from one call to another.
+    The call a leg belongs to: a response's own interaction; a request's
+    ``parent_interaction_id``, when that interaction's request is present and was
+    received by the same entity. Of the responses inside a call, only those the
+    entity itself received count (a response is inbound to its caller). ``inbound_sets`` routes a memoryless entity by time
+    instead (a request inherits the latest leg it received, from whichever call; a
+    response its own request only), so its sets are replaced here. A request whose
+    call is unknown keeps them. Accumulating entities are untouched: one memory for
+    all calls (#349). ``inbound_sets`` itself is untouched.
+    """
+    position = {(leg.interaction_id, leg.leg_type): i for i, leg in enumerate(ordered)}
+    receiver = {leg.interaction_id: leg.callee_entity_id for leg in ordered if leg.leg_type == "request"}
+    children: dict[str, list[tuple[LegKey, str]]] = {}
+    for leg in ordered:
+        if leg.leg_type == "response" and leg.parent_interaction_id:
+            children.setdefault(leg.parent_interaction_id, []).append(
+                ((leg.interaction_id, "response"), leg.caller_entity_id))
+    out = dict(inbound)
+    for leg in ordered:
+        key = (leg.interaction_id, leg.leg_type)
+        if leg.leg_type == "response":
+            sender, call = leg.callee_entity_id, leg.interaction_id
+            have = tuple(out.get(key, ()))
+        else:
+            sender, call = leg.caller_entity_id, leg.parent_interaction_id
+            opener = (call, "request")
+            if call is None or receiver.get(call) != sender or position[opener] > position[key]:
+                continue
+            have = (opener,)
+        producer = entities.get(sender)
+        if producer is None or memory.accumulates(producer):
+            continue
+        out[key] = have + tuple(k for k, received_by in children.get(call, ())
+                                if received_by == sender and position[k] < position[key] and k not in have)
+    return out
