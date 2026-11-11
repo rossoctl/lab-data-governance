@@ -106,6 +106,10 @@ def test_labels_wire_shape(seeded, api_server):
                  "text": "BK-2850EB", "start": 16, "end": 25, "role": "here", "excerpt": None},
             ]],
             "route_count": 1,
+            "carriers": [
+                {"trace_id": _TID, "interaction_id": _ORIGIN, "leg_type": "request"},
+                {"trace_id": _TID, "interaction_id": _IX, "leg_type": "request"},
+            ],
         }],
     }
     assert (opid["entity_type"], opid["found_here"], opid["carried_in"]) == ("OPID", True, [])

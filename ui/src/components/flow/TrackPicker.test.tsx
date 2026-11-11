@@ -63,7 +63,7 @@ describe('TrackPicker', () => {
   });
 
   it('ticks a value in and out, and "all" / "none" replace the leg\'s values keeping the rest', async () => {
-    const other: TrackedValue = { key: 'z/request/DATE/0-1/w', interactionId: 'z', legType: 'request', text: 'w', entityType: 'DATE', chains: [] };
+    const other: TrackedValue = { key: 'z/request/DATE/0-1/w', interactionId: 'z', legType: 'request', text: 'w', entityType: 'DATE', chains: [], carriers: [] };
     const { set, replace } = renderPicker(new Map([[other.key, other]]));
     const dialog = await screen.findByRole('dialog');
     const box = await within(dialog).findByRole('checkbox', { name: 'Track BK-83CE5F (PID) on the graph' });
@@ -76,7 +76,7 @@ describe('TrackPicker', () => {
   });
 
   it('shows a tracked value ticked and the count, and closes on Done, Escape and a click outside', async () => {
-    const v: TrackedValue = { key: 'i1/request/PID/16-25/BK-83CE5F', interactionId: 'i1', legType: 'request', text: 'BK-83CE5F', entityType: 'PID', chains: [] };
+    const v: TrackedValue = { key: 'i1/request/PID/16-25/BK-83CE5F', interactionId: 'i1', legType: 'request', text: 'BK-83CE5F', entityType: 'PID', chains: [], carriers: [] };
     const { onClose } = renderPicker(new Map([[v.key, v]]));
     const dialog = await screen.findByRole('dialog');
     await waitFor(() => expect(within(dialog).getByRole('checkbox', { name: /BK-83CE5F/ })).toBeChecked());

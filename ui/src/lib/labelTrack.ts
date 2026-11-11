@@ -1,4 +1,4 @@
-import type { Interaction, LegLabel, LegLabels, LineageHop } from '../types';
+import type { CarrierLeg, Interaction, LegLabel, LegLabels, LineageHop } from '../types';
 import type { RuleListItem } from '../risk-api/types';
 import type { GraphHighlight } from '../components/ExecutionFlowGraph';
 
@@ -8,7 +8,7 @@ import type { GraphHighlight } from '../components/ExecutionFlowGraph';
  * A risk decision is on a payload; label lineage is per value; an edge on the
  * execution-flow graph and the sequence diagram is a leg, one payload. So the
  * chain of one value cannot be "the path of an edge": the picture is the UNION of
- * the routes of every value the reader chose to track, drawn as a highlight over
+ * the carriers (every leg on any route) of every value the reader chose to track, drawn as a highlight over
  * the graph that is already there — the legs those values sat on lit, every other
  * leg dimmed. Pure functions, so the derivation is testable without an SVG; the
  * components only paint the sets.
@@ -17,7 +17,7 @@ import type { GraphHighlight } from '../components/ExecutionFlowGraph';
  * decision (the engine records no such thing — see `PolicyDecisionPanel`).
  */
 
-/** One value under tracking: which leg it is on, what it is, and its chains. */
+/** One value under tracking: which leg it is on, what it is, its chains and the legs it sat on. */
 export interface TrackedValue {
   key: string;
   interactionId: string;
@@ -25,6 +25,8 @@ export interface TrackedValue {
   text: string;
   entityType: string;
   chains: LineageHop[][];
+  /** Every leg on any route, from the read's `carriers`; the chains' hops from an older server. */
+  carriers: CarrierLeg[];
 }
 
 /** The identity of a labelled value on a leg: the leg, the type and the span. */
@@ -43,6 +45,7 @@ export function trackedValueOf(interactionId: string, leg: LegLabels, label: Leg
     text: label.text,
     entityType: label.entity_type,
     chains,
+    carriers: label.carried_in.flatMap((o) => o.carriers ?? (o.chains ?? []).flat()),
   };
 }
 
@@ -107,7 +110,7 @@ export interface LabelTrackHighlight {
   interactionIds: string[];
   /** The entities at the ends of those interactions (node ids). */
   nodeIds: string[];
-  /** Hops in other traces, which this graph cannot show. */
+  /** Legs in other traces, each once, which this graph cannot show. */
   foreignHops: number;
 }
 
@@ -118,17 +121,15 @@ export function deriveLabelTrackHighlight(
 ): LabelTrackHighlight {
   const edgeIds = new Set<string>();
   const interactionIds = new Set<string>();
-  let foreignHops = 0;
+  const foreign = new Set<string>();
   for (const v of tracked) {
-    for (const chain of v.chains) {
-      for (const hop of chain) {
-        if (hop.trace_id !== traceId) {
-          foreignHops += 1;
-          continue;
-        }
-        edgeIds.add(`${hop.interaction_id}:${hop.leg_type}`);
-        interactionIds.add(hop.interaction_id);
+    for (const leg of v.carriers) {
+      if (leg.trace_id !== traceId) {
+        foreign.add(`${leg.trace_id}/${leg.interaction_id}:${leg.leg_type}`);
+        continue;
       }
+      edgeIds.add(`${leg.interaction_id}:${leg.leg_type}`);
+      interactionIds.add(leg.interaction_id);
     }
   }
   const nodeIds = new Set<string>();
@@ -141,7 +142,7 @@ export function deriveLabelTrackHighlight(
     edgeIds: [...edgeIds].sort(),
     interactionIds: [...interactionIds].sort(),
     nodeIds: [...nodeIds].sort(),
-    foreignHops,
+    foreignHops: foreign.size,
   };
 }
 

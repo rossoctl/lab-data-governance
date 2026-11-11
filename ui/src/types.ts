@@ -143,6 +143,19 @@ export interface LabelOrigin {
   chains?: LineageHop[][];
   /** How many routes there are in all; `chains` lists the shortest of them. Absent from an older server. */
   route_count?: number | null;
+  /**
+   * Every leg on any route from this origin to the leg read, both ends included:
+   * what tracking lights (the chains are only the shortest routes). Absent from
+   * an older server; tracking then lights the chains' hops.
+   */
+  carriers?: CarrierLeg[];
+}
+
+/** One leg a carried-in value sat on, on some route from its origin to the leg read. */
+export interface CarrierLeg {
+  trace_id: string;
+  interaction_id: string;
+  leg_type: 'request' | 'response';
 }
 
 /**

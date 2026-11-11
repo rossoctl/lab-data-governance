@@ -333,6 +333,11 @@ def test_the_partner_request_pid_has_one_shortest_chain_and_counts_two_routes(bo
         [(80565, "origin"), (82049, "hop"), (83053, "here")],
     ]
     assert origin.route_count == 2
+    # Tracking lights every leg on any route, so the LLM round trip the chain
+    # skips (80603, 82082) is a carrier.
+    assert [(c.interaction_id, c.leg_type) for c in origin.carriers] == [
+        (_P, "request"), (_NP, "request"), (_LLM2, "request"), (_LLM2, "response"), (_CB, "response")]
+    assert {c.trace_id for c in origin.carriers} == {booking_trace}
     born = origin.chains[0][0]
     assert (born.interaction_id, born.leg_type, born.trace_id) == (_CB, "response", booking_trace)
     assert (born.caller, born.callee) == ("booking-agent", "create-booking")
@@ -471,6 +476,28 @@ def test_a_cycle_ends_the_walk_as_a_truncated_chain(configured_db: str) -> None:
     # a → b → a(repeat, stop): the chain is kept, its first hop is not an origin.
     assert [(h.interaction_id, h.role) for h in chain] == [
         ("ix-a", "hop"), ("ix-b", "hop"), ("ix-a", "hop"), ("ix-z", "here")]
+
+
+def test_converging_branches_do_not_end_a_route_that_cannot_reach_the_origin(configured_db: str) -> None:
+    # z ← m, m ← b and c, b and c ← d, d ← e, e ← f; the origin is never reached.
+    # The second branch meets d already walked: that is convergence, not a dead
+    # end, so the route runs on to f, the edge with no edge of its own.
+    with psycopg.connect(configured_db) as conn:
+        names = ("f", "e", "d", "c", "b", "m", "z")
+        legs = {n: (f"ix-{n}", "request", n) for n in names}
+        for i, n in enumerate(names):
+            _interaction(conn, legs[n][0], "t-conv", "e-a", "e-b", [("request", n, 10 + i)])
+        k = dict(origin=("ix-never", "response", "never"), unit=(0, 9), entity_type="PID",
+                 tags=["PII"], level="RESTRICTED")
+        for to, frm in [("z", "m"), ("m", "b"), ("m", "c"), ("b", "d"), ("c", "d"), ("d", "e"), ("e", "f")]:
+            _edge2(conn, eid=f"{to}-{frm}", trace="t-conv", to=legs[to], frm=legs[frm], span=(0, 9), **k)
+        conn.commit()
+    (origin,) = _legs(retrieval.get_leg_labels("t-conv", "ix-z"))["request"].labels[0].carried_in
+    (chain,) = origin.chains
+    assert [(h.interaction_id, h.role) for h in chain] == [
+        ("ix-f", "hop"), ("ix-e", "hop"), ("ix-d", "hop"), ("ix-b", "hop"), ("ix-m", "hop"), ("ix-z", "here")]
+    assert origin.route_count == 2
+    assert {c.interaction_id for c in origin.carriers} == {f"ix-{n}" for n in names}
 
 
 def test_the_walk_stops_at_the_origin_whatever_leads_into_it(configured_db: str) -> None:
