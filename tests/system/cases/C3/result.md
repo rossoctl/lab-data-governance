@@ -29,8 +29,6 @@ neighbourhood at 5: s1 2 of 3, s2 2 of 3, s3 2 of 3
 verdict at 5: expected on=block / off=allow, observed on=block / off=allow
 ```
 
-**Reasons.** also drawn, from an earlier holding (where it was born): s1 1>4, s2 1>4, s3 1>4
-
 **Rows (inherited labels on).**
 
 | leg | who | classification | inherited labels (from leg) | risk |
@@ -52,7 +50,7 @@ verdict at 5: expected on=block / off=allow, observed on=block / off=allow
 | 15 | L>A | PUBLIC  | — | — |
 | 16 | A>U | PUBLIC  | — | — |
 
-**Timing (on).** total 1.6171 s: reset 0.0882, receiver 0.064, interactions 1.0102, data_lineage 0.176, classification 0.0273, label_lineage 0.0184, leg_ready+risk 0.2172, read 0.0158
+**Timing (on).** total 1.8317 s: reset 0.1116, receiver 0.0671, interactions 1.1102, data_lineage 0.2371, classification 0.0286, label_lineage 0.02, leg_ready+risk 0.2403, read 0.0168
 OPA calls: 19
 
 **Notes.** Same route as C2. From the LLM's answer on the facts travel under keys the model does not recognise; only lineage carries the label to V1.

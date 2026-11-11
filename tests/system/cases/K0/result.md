@@ -47,8 +47,6 @@ neighbourhood at 11: s1 2 of 2, s2 2 of 2, s3 2 of 2
 verdict at 27: expected on=allow / off=allow, observed on=allow / off=allow
 ```
 
-**Reasons.** also drawn, from an earlier holding (where it was born): s1 7>10, s2 7>10, s3 7>10
-
 **Rows (inherited labels on).**
 
 | leg | who | classification | inherited labels (from leg) | risk |
@@ -85,7 +83,7 @@ verdict at 27: expected on=allow / off=allow, observed on=allow / off=allow
 | 31 | L>A | PUBLIC  | — | — |
 | 32 | A>U | PUBLIC  | — | — |
 
-**Timing (on).** total 2.4576 s: reset 0.0977, receiver 0.0869, interactions 1.5095, data_lineage 0.3435, classification 0.0243, label_lineage 0.0253, leg_ready+risk 0.3556, read 0.0148
+**Timing (on).** total 2.955 s: reset 0.0827, receiver 0.092, interactions 2.0707, data_lineage 0.2927, classification 0.0283, label_lineage 0.0257, leg_ready+risk 0.3399, read 0.023
 OPA calls: 33
 
 **Notes.** Conversation 2 is C5's shape; V2 returns nothing (neighbourhood —). The classifier labels nothing in conversation 2, so only a crossing from conversation 1 can produce the alert at V3. Wanted under person-anchored: allow.

@@ -48,7 +48,7 @@ verdict at 5: expected on=block / off=allow, observed on=block / off=allow
 | 11 | A1>U | PUBLIC  | — | — |
 | 12 | A2>U | PUBLIC  | — | — |
 
-**Timing (on).** total 1.0938 s: reset 0.0855, receiver 0.0508, interactions 0.5617, data_lineage 0.1186, classification 0.0292, label_lineage 0.0178, leg_ready+risk 0.2115, read 0.0187
+**Timing (on).** total 1.3927 s: reset 0.0957, receiver 0.0512, interactions 0.7584, data_lineage 0.1684, classification 0.0325, label_lineage 0.0215, leg_ready+risk 0.2493, read 0.0157
 OPA calls: 16
 
 **Notes.** Picture 2 of #348 with the same value in both calls, so a wrong parent shows as an edge that should not exist: T1(A1)>V1 must inherit from A1's request (3>5), not from A2's, which arrived later (4>5). Before #348 the fold drew 4>5, and 3>5 and 4>7 were missing.

@@ -17,8 +17,14 @@ partner, `P` a store no sidecar sees). `s1` is a sensitive unit whose label the 
 (`units: {s1: MRN}`; `s2: [NAME, PN]` lists every type that counts as labelling it), `-` is content nobody cares about, `=s1` is bytes equal to s1 that are not
 that unit here, `s1@key` sets the JSON key the value travels under. `,` is the next payload of the
 conversation, `..P..` an invisible hop (two payloads, there and back, so the numbering stays the trunk's), `⚑` the egress the verdict is read at, `~10min>` a later
-conversation. Consecutive `A>T[...]`, `T>A[...]` pair into one exchange; an answer that comes later
-closes the open request it answers, so nested calls sit between request and response.
+conversation. `T>A[...]` answers the open `A>T[...]`, so nested calls sit between request and response;
+a request belongs to the one call its sender is serving, or to the call `T1(A1)>V1` names.
+
+**Nothing is guessed.** Everything the judge compares is stated by the case or read from the rows,
+and anything else fails loudly: the renderer refuses a request whose sender serves two calls and names
+neither, a response that could answer two open requests or none, two units with equal bytes, and two
+values under one JSON key; the loader refuses a case without `expect.edges`, an unknown key, and a
+classifier premise that leaves a present unit unstated.
 
 ## Run
 
@@ -53,14 +59,15 @@ recorded annotations through `Detector.detect`, so classification runs its own c
 own output; a payload with no recorded findings fails loudly. The case's `classifier.must_see` /
 `must_miss` state what the author assumed the model would do, leg by leg: every unit present on a leg
 is in exactly one of them there (the loader refuses a case that leaves one out or lists one in both).
-One rule decides whether the model labelled a unit (`Case.labelled`: any of its types among the
-leg's findings); `must_see` wants yes, `must_miss` no. Disagreements are printed in the report, never
-silently accepted.
+One rule decides whether the model labelled a unit (`Case.labelled`: a finding of one of its types on
+its own bytes); `must_see` wants yes, `must_miss` no. A disagreement, or a stated leg with no
+classification row, is red: the case would test something other than it says.
 
 **Authored classifier.** A case with `classifier.authored: true` treats the classifier as a parameter:
 calibration runs the real model, then subtracts its findings on the case's units at the `must_miss`
-legs (never invents one), records the subtraction in `findings.json`, and the report says
-"authored" on the case. Decided 2026-11-09: the real model labels an SSN or a date by value
+legs (never invents one), records in `findings.json` which values it removed from which payload, and
+the report says "authored" on the case. Every run checks that record against the case's current
+`must_miss`; a case edited since calibration fails until it is recalibrated. Decided 2026-11-09: the real model labels an SSN or a date by value
 under any key (the calibration shows it often labels the MRN too), so a wire-level classifier alone already blocks them; label lineage's claim does not
 depend on where one model happens to miss. The real-model cases (C1, C2, K0) keep the plumbing honest.
 
@@ -79,33 +86,35 @@ Units are rows, payloads are columns, and each result draws two grids: **expecte
 edges; `●` must_see, `○` must_miss) above **observed** (what the run drew and labelled, inherited
 labels on; labelled by the same rule as the classifier checks). `●` the unit is here and the
 classifier labelled it, `○` here but not labelled, `≡`
-bytes equal to the unit that are not the unit (`=s1`), `━` an edge the derivation drew into this cell, `┈` seen earlier but no edge arrived, `·` absent. An edge into a
-`≡` cell is a false positive; a `┈` cell is a miss. The `neighbourhood` row counts, per leg an edge arrives at,
-how many of the units born beside this one recur with it (`k of n`).
+bytes equal to the unit that are not the unit (`=s1`), `━` an edge into this cell (expected or drawn),
+`┈` held earlier but no edge into this cell, `·` absent. An edge into a `≡` cell is a false positive.
+The grid does not say which leg an edge came from; the reasons line names every missing and extra edge,
+and the rows table every edge's source. The `neighbourhood` row counts, per leg an edge arrives at, how
+many of the units born beside this one (at any of its origins, every route followed) recur with it
+(`k of n`).
 
 ## Status of a case
 
-`PENDING` (with `expect.pending: <reason>`) is a case the branch cannot pass yet, counted apart so the
-suite stays green; the day it passes while still marked pending it goes RED, so the mark is removed.
-An edge into a leg from an earlier holding of the same unit, beside the expected edge from the later
-holding, is true too (the agent remembers; the short chain says where the value was born, the long one
-which way it went). The case lists such edges in `expect.also`; drawn, they are reported as "also
-drawn", not red. The judge never infers them: any other extra edge is red.
+`expect.edges` lists every edge the fold must draw, and the judge compares sets: a missing edge and an
+extra edge are both red. Where the agent holds the same bytes twice (the LLM echoed them), its next
+request inherits from both holdings, so the case lists both edges (C3: `1>4` beside `3>4`).
 
-- **GREEN**: the verdict pair matches `expect.verdict`; the edges match `expect.edges` (or, when
-  `edges: derived`, the naive rule: a unit present here and at an earlier leg of the same
-  conversation with no invisible hop between gets an edge), up to the `also` edges; a miss or an
-  extra is red either way.
-- **RED**: it does not, and the case has no `cannot`. The test fails.
-- **RED-BY-DESIGN**: it does not, and `expect.cannot` says why no wire observer could get it right.
-- **PENDING**: it does not, and `expect.pending` says why this branch cannot pass it yet.
+- **GREEN**: the verdict pair matches `expect.verdict` (the risk record that evidences the flagged
+  leg, its `enforcement_type` as written) and the drawn edges are exactly `expect.edges`.
+- **RED**: anything else, and always when the rows cannot be read (an edge with an end on no line leg,
+  an edge carrying a type its unit does not list, no risk record or disagreeing ones at the flagged
+  leg), when the classifier premise is broken, or when the on and off runs drew different edges.
+- **PENDING**: the case states, in `expect.pending`, a reason and exactly what this branch gets wrong
+  (`missing` and `extra` edges, `verdict` modes), and the run differs in exactly that. A run that
+  passes, or fails in any other way, is RED.
+- **RED-BY-DESIGN**: the same, under `expect.cannot`, for what no wire observer could get right.
 
 ## Files
 
 | file | job |
 |---|---|
 | `cases.py` | load `case.yaml` into a `Case` and check its classifier premise; `Case.labelled`, the one label-matching rule |
-| `caseline.py` | parse the line; the naive expected-edge rule |
+| `caseline.py` | parse the line |
 | `render.py` | line to sidecar span rows (the `spans`-table row shape `tools/load_trace.py` replays) |
 | `classify.py`, `calibrate.py` | the replay detector and the calibrate command |
 | `engine.py` | receiver, the five drains, real OPA, rows; the neighbourhood measurement |
@@ -114,5 +123,5 @@ drawn", not red. The judge never infers them: any other extra edge is red.
 | `rules.py` | the suite's one rule, T-SENS |
 | `trunk_cases.py` | writes every `case.yaml` (the files are the record) |
 | `conftest.py`, `test_cases.py` | the containers and OPA per session; one test per case |
-| `test_judge.py` | the judge's branches, without containers |
+| `test_judge.py` | the judge, the loader and the renderer, without containers: every refusal and every branch |
 | `cases/<id>/` | `case.yaml`, `findings.json`, `result.md` (generated) |

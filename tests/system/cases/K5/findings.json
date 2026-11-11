@@ -1,7 +1,7 @@
 {
  "model_dir": "classification/model/20260304",
  "model_version": 2,
- "calibrated_at": "2026-11-10T15:42:50+00:00",
+ "calibrated_at": "2026-11-11T09:48:42+00:00",
  "by_text": {
   "{\"note\": \"please process at the usual priority\"}": [],
   "{\"note\": \"no further action needed\"}": [],
@@ -291,11 +291,47 @@
   }
  },
  "authored": {
-  "{\"account\": \"4471820\", \"note\": \"acknowledged\", \"subject\": \"123-45-6789\"}": 2,
-  "{\"account\": \"4471820\", \"note\": \"batch job window 02:00\", \"subject\": \"123-45-6789\"}": 2,
-  "{\"account\": \"4471820\", \"note\": \"routine refill request received\", \"subject\": \"123-45-6789\"}": 2,
-  "{\"account\": \"4471820\", \"note\": \"please process at the usual priority\", \"subject\": \"123-45-6789\"}": 2,
-  "{\"account\": \"4471820\", \"note\": \"no further action needed\", \"subject\": \"123-45-6789\"}": 2,
-  "{\"account\": \"4471820\", \"note\": \"forwarded for fulfilment\", \"subject\": \"123-45-6789\"}": 2
+  "{\"account\": \"4471820\", \"note\": \"acknowledged\", \"subject\": \"123-45-6789\"}": {
+   "values": [
+    "123-45-6789",
+    "4471820"
+   ],
+   "removed": 2
+  },
+  "{\"account\": \"4471820\", \"note\": \"batch job window 02:00\", \"subject\": \"123-45-6789\"}": {
+   "values": [
+    "123-45-6789",
+    "4471820"
+   ],
+   "removed": 2
+  },
+  "{\"account\": \"4471820\", \"note\": \"routine refill request received\", \"subject\": \"123-45-6789\"}": {
+   "values": [
+    "123-45-6789",
+    "4471820"
+   ],
+   "removed": 2
+  },
+  "{\"account\": \"4471820\", \"note\": \"please process at the usual priority\", \"subject\": \"123-45-6789\"}": {
+   "values": [
+    "123-45-6789",
+    "4471820"
+   ],
+   "removed": 2
+  },
+  "{\"account\": \"4471820\", \"note\": \"no further action needed\", \"subject\": \"123-45-6789\"}": {
+   "values": [
+    "123-45-6789",
+    "4471820"
+   ],
+   "removed": 2
+  },
+  "{\"account\": \"4471820\", \"note\": \"forwarded for fulfilment\", \"subject\": \"123-45-6789\"}": {
+   "values": [
+    "123-45-6789",
+    "4471820"
+   ],
+   "removed": 2
+  }
  }
 }

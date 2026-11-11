@@ -23,7 +23,6 @@ class Outcome:
     reasons: list[str]
     edge_diff: tuple[set, set]     # (missing vs expected, extra vs expected)
     classifier_notes: list[str]
-    origin_edges: set = dataclasses.field(default_factory=set)  # edges from an earlier holding of the same unit, beside the expected one
 
 
 class Results:
@@ -35,63 +34,73 @@ def _types(case: Case, unit: str) -> str:
     return "|".join([case.units[unit]] + sorted(case.accepts[unit] - {case.units[unit]}))
 
 
-def judge(case: Case, on: Observation, off: Observation) -> Outcome:
-    reasons: list[str] = []
-    want_on, want_off = case.verdict.get("on"), case.verdict.get("off")
-    ok = True
-    if case.line.sink is not None:
-        if want_on and on.verdict != want_on:
-            ok = False
-            reasons.append(f"verdict on: want {want_on}, got {on.verdict}")
-        if want_off and off.verdict != want_off:
-            ok = False
-            reasons.append(f"verdict off: want {want_off}, got {off.verdict}")
-    expected = case.expected_edges
-    observed = on.edges
-    missing = expected - observed
-    extra = observed - expected
-    # An origin edge: the same unit reaches the same leg from an earlier holding too
-    # (the agent remembers). The short chain says where the value was born, the long
-    # one which way it went; both are true. The case declares them (``also``), the
-    # judge never guesses them. Reported, not red.
-    origin_edges = extra & case.also
-    extra -= origin_edges
-    if missing:
-        reasons.append("edges missing: " + ", ".join(f"{u} {a}>{b}" for u, a, b in sorted(missing)))
-    if extra:
-        reasons.append("edges extra: " + ", ".join(f"{u} {a}>{b}" for u, a, b in sorted(extra)))
-    if origin_edges:
-        reasons.append("also drawn, from an earlier holding (where it was born): "
-                       + ", ".join(f"{u} {a}>{b}" for u, a, b in sorted(origin_edges)))
-    if missing or extra:
-        ok = False
+def _edges(edges) -> str:
+    return ", ".join(f"{u} {a}>{b}" for u, a, b in sorted(edges))
+
+
+def premise(case: Case, on: Observation) -> list[str]:
+    """Where the model's findings break what the case states about the classifier (red: the case then tests
+    something other than it says)."""
     notes: list[str] = []
-    for leg_index, units in case.must_see.items():
-        c = on.legs[leg_index].classification if leg_index in on.legs else None
-        tags = {t for t, _ in (c or {"findings": []})["findings"]}
-        for u in units:
-            if not case.labelled(u, tags):
-                notes.append(f"leg {leg_index}: the model did NOT label {u} ({_types(case, u)}); found {sorted(tags)}")
-    for leg_index, units in case.must_miss.items():
-        c = on.legs[leg_index].classification if leg_index in on.legs else None
-        tags = {t for t, _ in (c or {"findings": []})["findings"]}
-        for u in units:
-            if case.labelled(u, tags):
-                notes.append(f"leg {leg_index}: the model DID label {u} ({_types(case, u)}); the case assumed it would not")
-    if case.pending and not ok:
-        status = "PENDING"
-        reasons.insert(0, f"pending: {case.pending}")
-    elif case.pending and ok:
+    for want, cells in ((True, case.must_see), (False, case.must_miss)):
+        for leg_index, units in sorted(cells.items()):
+            c = on.legs[leg_index].classification if leg_index in on.legs else None
+            if c is None:
+                notes.append(f"leg {leg_index}: no classification row; the case states {', '.join(units)} there")
+                continue
+            for u in units:
+                if case.labelled(u, c["findings"]) != want:
+                    notes.append(f"leg {leg_index}: the model did NOT label {u} ({_types(case, u)}); "
+                                 f"found {sorted(c['findings'])}" if want else
+                                 f"leg {leg_index}: the model DID label {u} ({_types(case, u)}); "
+                                 f"the case assumed it would not")
+    return notes
+
+
+def judge(case: Case, on: Observation, off: Observation) -> Outcome:
+    """Exact: the observation is compared with what the case states and nothing else. Problems reading the rows,
+    a broken classifier premise and on/off runs that drew different edges are red whatever the case says;
+    a pending (or cannot) case is excused only for exactly the differences it states."""
+    wrong_verdict: set[str] = set()
+    reasons: list[str] = []
+    if case.line.sink is not None:
+        for mode, obs in (("on", on), ("off", off)):
+            if obs.verdict != case.verdict[mode]:
+                wrong_verdict.add(mode)
+                reasons.append(f"verdict {mode}: want {case.verdict[mode]}, got {obs.verdict}")
+    missing = case.edges - on.edges
+    extra = on.edges - case.edges
+    if missing:
+        reasons.append("edges missing: " + _edges(missing))
+    if extra:
+        reasons.append("edges extra: " + _edges(extra))
+
+    hard = [f"on: {p}" for p in on.problems] + [f"off: {p}" for p in off.problems]
+    if on.edges != off.edges:
+        hard.append(f"the on and off runs drew different edges: on only {_edges(on.edges - off.edges) or '-'}, "
+                    f"off only {_edges(off.edges - on.edges) or '-'}")
+    notes = premise(case, on)
+    hard += [f"classifier premise: {n}" for n in notes]
+
+    excuse = case.pending or case.cannot
+    word = "pending" if case.pending else "cannot"
+    diff = (frozenset(missing), frozenset(extra), frozenset(wrong_verdict))
+    if hard:
         status = "RED"
-        reasons.insert(0, f"passes while marked pending ({case.pending}): drop the pending line")
-    elif ok:
-        status = "GREEN"
-    elif case.cannot:
-        status = "RED-BY-DESIGN"
-        reasons.insert(0, f"cannot: {case.cannot}")
+        reasons = hard + reasons
+    elif excuse is None:
+        status = "GREEN" if not any(diff) else "RED"
+    elif not any(diff):
+        status = "RED"
+        reasons.insert(0, f"passes while marked {word} ({excuse.reason}): drop the {word} block")
+    elif diff == (excuse.missing, excuse.extra, excuse.verdict):
+        status = "PENDING" if case.pending else "RED-BY-DESIGN"
+        reasons.insert(0, f"{word}: {excuse.reason}")
     else:
         status = "RED"
-    return Outcome(case, on, off, status, reasons, (missing, extra), notes, origin_edges)
+        reasons.insert(0, f"differs from what {word} states (missing {_edges(excuse.missing) or '-'}; "
+                          f"extra {_edges(excuse.extra) or '-'}; verdict {sorted(excuse.verdict) or '-'})")
+    return Outcome(case, on, off, status, reasons, (missing, extra), notes)
 
 
 def case_markdown(o: Outcome) -> str:
@@ -103,8 +112,6 @@ def case_markdown(o: Outcome) -> str:
     lines += ["```", render_grid(c, o.on, o.off), "```", ""]
     if o.reasons:
         lines += ["**Reasons.** " + " · ".join(o.reasons), ""]
-    if o.classifier_notes:
-        lines += ["**Classifier calibration.**"] + [f"- {n}" for n in o.classifier_notes] + [""]
     if o.on:
         lines += ["**Rows (inherited labels on).**", "", "| leg | who | classification | inherited labels (from leg) | risk |", "|---|---|---|---|---|"]
         for leg in c.line.legs:

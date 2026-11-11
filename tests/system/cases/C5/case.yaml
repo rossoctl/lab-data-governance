@@ -29,11 +29,9 @@ expect:
   - s3 8>9
   - s3 9>10
   - s3 10>11
-  also:
   - s1 7>10
   - s2 7>10
   - s3 7>10
-  cannot: null
   pending: null
 classifier:
   must_see:

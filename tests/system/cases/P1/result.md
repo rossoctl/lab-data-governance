@@ -42,7 +42,7 @@ verdict at 5: expected on=block / off=allow, observed on=block / off=allow
 | 7 | T1>A | PUBLIC  | s1=123-45-6789 (SSN, from 2), s2=4471820 (MRN, from 4) | — |
 | 8 | A>U | PUBLIC  | — | — |
 
-**Timing (on).** total 0.8599 s: reset 0.1304, receiver 0.0652, interactions 0.3719, data_lineage 0.0718, classification 0.0207, label_lineage 0.0207, leg_ready+risk 0.1589, read 0.0203
+**Timing (on).** total 0.8637 s: reset 0.0961, receiver 0.0412, interactions 0.3712, data_lineage 0.1446, classification 0.0238, label_lineage 0.0204, leg_ready+risk 0.1497, read 0.0167
 OPA calls: 11
 
 **Notes.** Picture 1 of #348. Inside A's call, T1 asks V1, then asks V2 with what V1 returned, then answers A. T1's second request inherits from the call that opened it (s1 2>5) and from V1's answer inside the call (s2 4>5); its answer carries both (2>7, 4>7). Before #348 the fold drew s2 4>5 only, and no 4>7.

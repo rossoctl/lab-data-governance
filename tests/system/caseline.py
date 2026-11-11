@@ -1,4 +1,4 @@
-"""The case line: one line of text that is both the case and its oracle.
+"""The case line: one line of text, the conversation a case puts on the wire.
 
     U>A[-], A>T1[-], T1>A[s1 s2 s3 -], A>T2[s1@patient_ref -], T2>V[s1@external_id -]⚑
 
@@ -10,7 +10,7 @@
   ``=s1`` bytes equal to s1 that are NOT that unit here, ``s1@key`` the JSON key
   the value travels under (by default the label's own key: ``ssn``, ``mrn``, ``dob`` ...).
 - ``T1(A1)>V1[...]``: the request T1 sends belongs to the call A1 opened on T1 (the wire
-  parent). Without it a request belongs to the latest call its sender received.
+  parent). Without it the sender must be serving exactly one call; the renderer refuses the line otherwise.
 - ``,`` the next payload in the same conversation; ``..P..`` an invisible hop
   through P (two payloads, there and back, so the numbering stays the trunk's); ``⚑`` after a payload marks the egress the verdict is read at;
   ``~>`` (or ``~10min>``) a later conversation.
@@ -149,21 +149,3 @@ def parse(line: str) -> CaseLine:
         conversations.append(Conversation(tuple(legs), gap))
     return CaseLine(tuple(conversations))
 
-
-def naive_expected_edges(case: CaseLine) -> set[tuple[str, int, int]]:
-    """The author-free oracle: ``(unit, from_leg, to_leg)`` for every unit that
-    appears at a leg and appeared at an earlier leg of the same conversation,
-    linked to its nearest earlier appearance, unless an invisible hop lies between.
-    What the derivation draws beyond or short of this is the finding."""
-    out: set[tuple[str, int, int]] = set()
-    for conv in case.conversations:
-        last_seen: dict[str, int] = {}
-        for leg in conv.legs:
-            if leg.invisible:
-                last_seen.clear()
-                continue
-            for unit in leg.units:
-                if unit in last_seen:
-                    out.add((unit, last_seen[unit], leg.index))
-                last_seen[unit] = leg.index
-    return out

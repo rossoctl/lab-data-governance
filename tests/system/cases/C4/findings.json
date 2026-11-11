@@ -1,7 +1,7 @@
 {
  "model_dir": "classification/model/20260304",
  "model_version": 2,
- "calibrated_at": "2026-11-09T14:39:21+00:00",
+ "calibrated_at": "2026-11-11T09:48:40+00:00",
  "by_text": {
   "{\"diagnosis\": \"type 2 diabetes\", \"dob\": \"1961-03-14\", \"mrn\": \"4471820\", \"note\": \"please process at the usual priority\", \"ssn\": \"123-45-6789\"}": [
    [
@@ -159,8 +159,29 @@
   }
  },
  "authored": {
-  "{\"account\": \"4471820\", \"note\": \"forwarded for fulfilment\", \"ref\": \"1961-03-14\", \"subject\": \"123-45-6789\"}": 3,
-  "{\"account\": \"4471820\", \"note\": \"acknowledged\", \"ref\": \"1961-03-14\", \"subject\": \"123-45-6789\"}": 3,
-  "{\"account\": \"4471820\", \"note\": \"batch job window 02:00\", \"ref\": \"1961-03-14\", \"subject\": \"123-45-6789\"}": 3
+  "{\"account\": \"4471820\", \"note\": \"forwarded for fulfilment\", \"ref\": \"1961-03-14\", \"subject\": \"123-45-6789\"}": {
+   "values": [
+    "123-45-6789",
+    "1961-03-14",
+    "4471820"
+   ],
+   "removed": 3
+  },
+  "{\"account\": \"4471820\", \"note\": \"acknowledged\", \"ref\": \"1961-03-14\", \"subject\": \"123-45-6789\"}": {
+   "values": [
+    "123-45-6789",
+    "1961-03-14",
+    "4471820"
+   ],
+   "removed": 3
+  },
+  "{\"account\": \"4471820\", \"note\": \"batch job window 02:00\", \"ref\": \"1961-03-14\", \"subject\": \"123-45-6789\"}": {
+   "values": [
+    "123-45-6789",
+    "1961-03-14",
+    "4471820"
+   ],
+   "removed": 3
+  }
  }
 }

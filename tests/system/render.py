@@ -1,11 +1,15 @@
 """Render a case line to sidecar span rows (the ``spans``-table row shape that
 ``tools/load_trace.py`` replays over the OTLP wire).
 
-Every ``X>Y[...]`` is one wire payload. Consecutive ``A>T[...]`` then ``T>A[...]``
-pair into one exchange (request, response). An unpaired request gets a filler
-response; an unpaired response (``T1>A[...]`` out of the blue) gets a filler
-request. A conversation that does not start with ``U>A`` gets an entry
+Every ``X>Y[...]`` is one wire payload. ``Y>X[...]`` answers the open ``X>Y``
+call (request, response); a request still open when its conversation ends gets a
+filler response. A conversation that does not start with ``U>A`` gets an entry
 ``U>A[-]`` so the agent has an inbound to parent its calls on.
+
+Nothing is guessed: a request belongs to the one call its sender is serving (or
+the one ``T1(A1)>V1`` names), and the renderer refuses a line where that is not
+exactly one call, a response with no open request, a response with two, two
+units with equal bytes, and two values under one JSON key.
 
 Sidecars: agents and tools have one (both sides of an agent-tool call are
 emitted, caller CLIENT spans and callee SERVER echoes, as live clusters do);
@@ -25,7 +29,8 @@ from . import caseline as cl
 NAMESPACE = "lab"
 T0 = dt.datetime(2026, 11, 8, 9, 0, 0, tzinfo=dt.timezone.utc)
 
-# One value per label; a second unit with the same label takes the next value.
+# One value per label; a second unit with the same label takes the next value. NAME and PN share names: a
+# unit the model may find as either is declared ``[NAME, PN]``, and two units never travel as equal bytes.
 VALUES: dict[str, list[str]] = {
     "MRN": ["4471820", "5530917", "6618204"],
     "NAME": ["Rosa Alvarez", "Daniel Okafor", "Mei Lin"],
@@ -69,49 +74,59 @@ class Rendered:
     text_values: dict[str, str]   # unit name -> the rendered value
 
 
+def assign_values(case_id: str, units: dict[str, str]) -> dict[str, str]:
+    """unit -> its bytes on the wire. Two units with equal bytes are refused: edges and findings are tied to a
+    unit by its bytes."""
+    taken: dict[str, int] = {}
+    out: dict[str, str] = {}
+    for unit, label in units.items():
+        i = taken.get(label, 0)
+        if i >= len(VALUES[label]):
+            raise ValueError(f"{case_id}: more than {len(VALUES[label])} units of {label}; add values")
+        value = VALUES[label][i]
+        twin = next((u for u, v in out.items() if v == value), None)
+        if twin:
+            raise ValueError(f"{case_id}: {twin} and {unit} would travel as the same bytes {value!r}; "
+                             f"declare one unit with both types ([NAME, PN])")
+        out[unit] = value
+        taken[label] = i + 1
+    return out
+
+
 class Renderer:
     def __init__(self, case_id: str, units: dict[str, str]) -> None:
         self.case_id = case_id
         self.units = units                      # s1 -> "MRN"
-        self.values = self._assign_values()
+        self.values = assign_values(case_id, units)
         self.rows: list[dict[str, Any]] = []
         self.rendered: list[Rendered] = []
         self._n = 0
-
-    # --- values -----------------------------------------------------------
-    def _assign_values(self) -> dict[str, str]:
-        taken: dict[str, int] = {}
-        out: dict[str, str] = {}
-        for unit, label in self.units.items():
-            i = taken.get(label, 0)
-            if i >= len(VALUES[label]):
-                raise ValueError(f"{self.case_id}: more than {len(VALUES[label])} units of {label}; add values")
-            out[unit] = VALUES[label][i]
-            taken[label] = i + 1
-        return out
 
     def content_of(self, leg: cl.Leg) -> tuple[dict[str, Any], dict[str, str]]:
         body: dict[str, Any] = {}
         text_values: dict[str, str] = {}
         fill = 0
+
+        def put(key: str, value: str) -> None:
+            if key.startswith("note"):
+                raise ValueError(f"{self.case_id} leg {leg.index}: key {key!r} is reserved for filler")
+            if key in body:
+                raise ValueError(f"{self.case_id} leg {leg.index}: two values under the key {key!r}; give one an @key")
+            body[key] = value
+
         for e in leg.elements:
             if e.is_filler:
                 body[f"note{fill or ''}"] = FILLER[(leg.index + fill) % len(FILLER)]
                 fill += 1
             elif e.equal_to is not None:
-                label = self.units[e.equal_to]
-                body[e.key or KEYS[label]] = self.values[e.equal_to]
+                put(e.key or KEYS[self.units[e.equal_to]], self.values[e.equal_to])
             elif e.is_unit:
                 if e.name not in self.units:
                     raise ValueError(f"{self.case_id} leg {leg.index}: unit {e.name} is not declared in units")
-                label = self.units[e.name]
-                key = e.key or KEYS[label]
-                if key.startswith("note"):
-                    raise ValueError(f"{self.case_id} leg {leg.index}: key {key!r} is reserved for filler")
-                body[key] = self.values[e.name]
+                put(e.key or KEYS[self.units[e.name]], self.values[e.name])
                 text_values[e.name] = self.values[e.name]
             else:  # x1: recurring unnamed content
-                body[e.key or e.name] = f"ref {e.name} {hashlib.sha1((self.case_id + e.name).encode()).hexdigest()[:6]}"
+                put(e.key or e.name, f"ref {e.name} {hashlib.sha1((self.case_id + e.name).encode()).hexdigest()[:6]}")
         return body, text_values
 
     # --- ids ---------------------------------------------------------------
@@ -175,21 +190,25 @@ class Renderer:
             return {"inference.model": "qwen2.5:7b"}
         return {"http.method": "POST", "url.path": "/intake", "url.scheme": "http"}
 
+    def _serving(self, leg: cl.Leg, open_: list["Renderer._Open"]) -> "Renderer._Open | None":
+        """The one open call the sender of *leg* is serving: its request belongs to that call."""
+        calls = [ex for ex in open_ if ex.to == leg.frm and (leg.for_call is None or ex.frm == leg.for_call)]
+        if leg.for_call and len(calls) != 1:
+            raise ValueError(f"{self.case_id} leg {leg.index}: {len(calls)} open calls from {leg.for_call} on {leg.frm}")
+        if len(calls) > 1:
+            raise ValueError(f"{self.case_id} leg {leg.index}: {leg.frm} is serving {len(calls)} calls "
+                             f"({', '.join(ex.frm for ex in calls)}); name the one this request belongs to, "
+                             f"{leg.frm}(caller)>{leg.to}")
+        return calls[0] if calls else None
+
     def open_exchange(self, *, trace_id: str, leg: cl.Leg, frm: str, to: str, req: dict[str, Any],
-                      at: dt.datetime, inbound_of: dict[str, str],
-                      inbound_from: dict[tuple[str, str], str]) -> "_Open":
+                      at: dt.datetime, parent: str | None) -> "_Open":
         """Emit the request half of one exchange frm -> to (caller CLIENT span, callee
         SERVER echo). The response half is emitted by :meth:`close_exchange` when the
         answer appears on the line, so nested calls sit between request and response."""
         protocol = self._protocol(frm, to)
         caller_side, callee_side = self._sidecar(frm), self._sidecar(to)
         req_id = self._id("req")
-        if leg.for_call:
-            if (frm, leg.for_call) not in inbound_from:
-                raise ValueError(f"leg {leg.index}: no open call from {leg.for_call} on {frm}")
-            parent = inbound_from[(frm, leg.for_call)]
-        else:
-            parent = inbound_of.get(frm)
         proto_attrs = self._proto_attrs(protocol, to)
         if caller_side:
             self._row(trace_id=trace_id, span_id=req_id, parent=parent, kind="CLIENT", at=at, self_id=frm.lower(),
@@ -207,8 +226,6 @@ class Renderer:
                       attrs={"lineage.role": "request", "lineage.direction": "inbound", "lineage.protocol": protocol,
                              "lineage.exchange.id": echo_id, "lineage.peer.host": self._peer_host(to),
                              **proto_attrs, **inbound_attrs, "input.value": req})
-            inbound_of[to] = echo_id
-            inbound_from[(to, frm)] = echo_id
         return self._Open(leg, trace_id, frm, to, req_id if caller_side else (echo_id or req_id), echo_id, protocol)
 
     def close_exchange(self, ex: "_Open", resp: dict[str, Any], at: dt.datetime) -> None:
@@ -229,8 +246,6 @@ class Renderer:
         for c, conv in enumerate(case.conversations):
             trace_id = self._trace_id(c)
             at = at + dt.timedelta(seconds=conv.gap_seconds)
-            inbound_of: dict[str, str] = {}
-            inbound_from: dict[tuple[str, str], str] = {}
             open_: list[Renderer._Open] = []
             legs = list(conv.legs)
             if not legs or legs[0].invisible or cl.kind_of(legs[0].frm) != "user":
@@ -240,24 +255,23 @@ class Renderer:
                     continue
                 body, values = self.content_of(leg)
                 answering = [ex for ex in open_ if ex.frm == leg.to and ex.to == leg.frm]
+                if len(answering) > 1:
+                    raise ValueError(f"{self.case_id} leg {leg.index}: {leg.label()} could answer {len(answering)} "
+                                     f"open calls {leg.to}>{leg.frm}")
                 if answering:
                     if leg.for_call:
                         raise ValueError(f"leg {leg.index}: (caller) belongs on a request, {leg.label()} is a response")
-                    ex = answering[-1]
+                    ex = answering[0]
                     open_.remove(ex)
                     self.close_exchange(ex, body, at)
                     self.rendered.append(Rendered(leg, trace_id, ex.req_id, "response", body, values))
                 elif cl.kind_of(leg.to) == "agent" and cl.kind_of(leg.frm) in ("tool", "llm", "store"):
-                    # an answer to a request the line never wrote: synthesize it
-                    filler = {"note": FILLER[leg.index % len(FILLER)]}
-                    ex = self.open_exchange(trace_id=trace_id, leg=leg, frm=leg.to, to=leg.frm, req=filler,
-                                            at=at - dt.timedelta(seconds=1), inbound_of=inbound_of,
-                                            inbound_from=inbound_from)
-                    self.close_exchange(ex, body, at)
-                    self.rendered.append(Rendered(leg, trace_id, ex.req_id, "response", body, values))
+                    raise ValueError(f"{self.case_id} leg {leg.index}: {leg.label()} answers no open request; "
+                                     f"write the request {leg.to}>{leg.frm} before it")
                 else:
+                    call = self._serving(leg, open_)
                     ex = self.open_exchange(trace_id=trace_id, leg=leg, frm=leg.frm, to=leg.to, req=body, at=at,
-                                            inbound_of=inbound_of, inbound_from=inbound_from)
+                                            parent=call.echo_id if call else None)
                     open_.append(ex)
                     if leg.index:
                         self.rendered.append(Rendered(leg, trace_id, ex.req_id, "request", body, values))

@@ -5,7 +5,7 @@ produced, inherited labels on; ● where ``Case.labelled`` says the model labell
     ●  present and labelled by the classifier here
     ○  present, the classifier did not label it here
     ━  an edge the derivation drew into this leg for this unit
-    ┈  the unit is present here and was present earlier, but no edge arrived
+    ┈  the unit is present here and was present earlier, but no edge arrives (expected or drawn)
     ≡  bytes equal to the unit that are not the unit here (``=s1``); an edge
        drawn into this cell is a false positive
     ·  absent
@@ -39,9 +39,9 @@ def render_grid(case: Case, on: Observation | None, off: Observation | None) -> 
 
     def observed_found(leg_index: int, unit: str) -> bool:
         c = obs.legs[leg_index].classification if obs and leg_index in obs.legs else None
-        return bool(c) and case.labelled(unit, {t for t, _ in c["findings"]})
+        return bool(c) and case.labelled(unit, c["findings"])
 
-    lines = ["expected", _grid(case, case.expected_edges, lambda i, u: u in case.must_see.get(i, ())),
+    lines = ["expected", _grid(case, case.edges, lambda i, u: u in case.must_see.get(i, ())),
              "", "observed", _grid(case, obs.edges, observed_found) if obs else "(not run)"]
     if obs and obs.neighbourhood:
         for leg_index in sorted(obs.neighbourhood):

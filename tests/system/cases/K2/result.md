@@ -47,7 +47,7 @@ neighbourhood at 11: s1 2 of 2, s2 2 of 2, s3 2 of 2
 verdict at 27: expected on=block / off=allow, observed on=allow / off=allow
 ```
 
-**Reasons.** pending: cross-conversation lineage not on this branch: the cross-trace fold (#273) with its seed rule and window, and the risk engine forwarding a cross-trace origin (labels.forwarded keeps same-trace origins only) · verdict on: want block, got allow · edges missing: s1 11>23, s1 22>23, s1 23>24, s1 24>25, s1 25>26, s1 26>27 · also drawn, from an earlier holding (where it was born): s1 7>10, s2 7>10, s3 7>10
+**Reasons.** pending: cross-conversation lineage not on this branch: the cross-trace fold (#273) with its seed rule and window, and the risk engine forwarding a cross-trace origin (labels.forwarded keeps same-trace origins only) · verdict on: want block, got allow · edges missing: s1 11>23, s1 22>23, s1 23>24, s1 24>25, s1 25>26, s1 26>27
 
 **Rows (inherited labels on).**
 
@@ -85,7 +85,7 @@ verdict at 27: expected on=block / off=allow, observed on=allow / off=allow
 | 31 | L>A | PUBLIC  | — | — |
 | 32 | A>U | PUBLIC  | — | — |
 
-**Timing (on).** total 3.6898 s: reset 0.1082, receiver 0.1087, interactions 2.4853, data_lineage 0.4307, classification 0.0483, label_lineage 0.0323, leg_ready+risk 0.4572, read 0.0191
+**Timing (on).** total 2.7505 s: reset 0.088, receiver 0.0823, interactions 1.743, data_lineage 0.3566, classification 0.0477, label_lineage 0.0358, leg_ready+risk 0.3793, read 0.0178
 OPA calls: 33
 
 **Notes.** Conversation 2 is C5's shape; V2 returns s1 (neighbourhood 0 of 2). The classifier labels nothing in conversation 2, so only a crossing from conversation 1 can produce the alert at V3. Wanted under person-anchored: block.

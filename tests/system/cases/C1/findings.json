@@ -1,7 +1,7 @@
 {
  "model_dir": "classification/model/20260304",
  "model_version": 2,
- "calibrated_at": "2026-11-10T14:31:13+00:00",
+ "calibrated_at": "2026-11-11T09:48:39+00:00",
  "by_text": {
   "{\"note\": \"please process at the usual priority\"}": [],
   "{\"note\": \"no further action needed\"}": [],

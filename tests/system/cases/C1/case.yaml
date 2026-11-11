@@ -13,8 +13,6 @@ expect:
     'on': allow
     'off': allow
   edges: []
-  also: []
-  cannot: null
   pending: null
 classifier:
   must_see: {}

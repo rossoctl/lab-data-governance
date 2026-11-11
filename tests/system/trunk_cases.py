@@ -42,15 +42,16 @@ def chain(path: list[int], units=THREE) -> list[str]:
 
 
 def held_earlier(at: int, to: int, units=THREE) -> list[str]:
-    """The edges from an earlier holding the agent remembers, beside the expected chain (``also``)."""
+    """The edges from an earlier holding the agent remembers, beside the chain: the agent holds the same bytes
+    twice (the LLM echoed them), so its next request inherits from both holdings."""
     return [f"{u} {at}>{to}" for u in units]
 
 
-def case(id_, title, line, *, verdict, edges, must_see, must_miss, notes, cell, pending=None, authored=False,
-         also=()) -> None:
+def case(id_, title, line, *, verdict, edges, must_see, must_miss, notes, cell, pending=None,
+         authored=False) -> None:
     d = {
         "id": id_, "title": title, "cell": cell, "line": line, "units": UNITS,
-        "expect": {"verdict": verdict, "edges": edges, "also": list(also), "cannot": None, "pending": pending},
+        "expect": {"verdict": verdict, "edges": edges, "pending": pending},
         "classifier": {"must_see": {str(k): v for k, v in must_see.items()},
                        "must_miss": {str(k): v for k, v in must_miss.items()}, "authored": authored},
         "notes": notes,
@@ -69,25 +70,25 @@ def main() -> None:
          notes="No route. Nothing sensitive is on the wire; the control for the rule and the harness.")
 
     case("C2", "seen throughout", legs({1: "s1 s2 s3 s4", 2: SEEN, 3: SEEN, 4: SEEN, 5: SEEN}, flag=5),
-         cell="trunk/one/root-to-left-leaf", verdict=bb, edges=chain([1, 2, 3, 4, 5]), also=held_earlier(1, 4),
+         cell="trunk/one/root-to-left-leaf", verdict=bb, edges=chain([1, 2, 3, 4, 5]) + held_earlier(1, 4),
          must_see={1: all4, 2: THREE, 3: THREE, 4: THREE, 5: THREE}, must_miss={},
          notes="Root to the left leaf, U>A>T1>V1. The classifier labels the three on every leg; lineage draws the chain, "
                "the classifier alone already decides.")
 
     case("C3", "lost after the prompt", legs({1: "s1 s2 s3 s4", 2: SEEN, 3: MISS, 4: MISS, 5: MISS}, flag=5),
-         cell="trunk/one/root-to-left-leaf", verdict=ba, edges=chain([1, 2, 3, 4, 5]), also=held_earlier(1, 4),
+         cell="trunk/one/root-to-left-leaf", verdict=ba, edges=chain([1, 2, 3, 4, 5]) + held_earlier(1, 4),
          must_see={1: all4, 2: THREE}, must_miss={3: THREE, 4: THREE, 5: THREE}, authored=True,
          notes="Same route as C2. From the LLM's answer on the facts travel under keys the model does not recognise; "
                "only lineage carries the label to V1.")
 
     case("C4", "held for the second vendor", legs({1: "s1 s2 s3 s4", 8: SEEN, 9: MISS, 10: MISS, 11: MISS}, flag=11),
-         cell="trunk/one/root-to-right-leaf", verdict=ba, edges=chain([1, 8, 9, 10, 11]), also=held_earlier(1, 10),
+         cell="trunk/one/root-to-right-leaf", verdict=ba, edges=chain([1, 8, 9, 10, 11]) + held_earlier(1, 10),
          must_see={1: all4, 8: THREE}, must_miss={9: THREE, 10: THREE, 11: THREE}, authored=True,
          notes="Root to the right leaf, the left branch benign: legs 4 to 7 carry nothing, the agent held the facts "
                "across a clean exchange.")
 
     case("C5", "returned by the first vendor", legs({6: "s1 s2 s3 s4", 7: SEEN, 8: MISS, 9: MISS, 10: MISS, 11: MISS}, flag=11),
-         cell="trunk/one/leaf-to-leaf", verdict=ba, edges=chain([6, 7, 8, 9, 10, 11]), also=held_earlier(7, 10),
+         cell="trunk/one/leaf-to-leaf", verdict=ba, edges=chain([6, 7, 8, 9, 10, 11]) + held_earlier(7, 10),
          must_see={6: all4, 7: THREE}, must_miss={8: THREE, 9: THREE, 10: THREE, 11: THREE}, authored=True,
          notes="Leaf to leaf, starting from a response: born in the insurer's answer. T1 forgets, so leg 7 inherits leg 6 "
                "only through the invocation-scope fix of #348 (a response inherits what its child calls returned).")
@@ -96,15 +97,15 @@ def main() -> None:
     c6 = (f"U>A[-], A>L[-], L>A[-], A>T1[-], ..V1.., T1>A[{SEEN} -], A>L[{MISS} -], L>A[{MISS} -], "
           f"A>T2[{MISS} -], T2>V2[{MISS} -]⚑, V2>T2[-], T2>A[-], A>L[-], L>A[-], A>U[-]")
     case("C6", "returned unseen", c6, cell="trunk/one/leaf-to-leaf (leaf invisible)", verdict=ba,
-         edges=chain([7, 8, 9, 10, 11]), must_see={7: THREE}, must_miss={8: THREE, 9: THREE, 10: THREE, 11: THREE},
-         authored=True, also=held_earlier(7, 10),
+         edges=chain([7, 8, 9, 10, 11]) + held_earlier(7, 10), must_see={7: THREE},
+         must_miss={8: THREE, 9: THREE, 10: THREE, 11: THREE}, authored=True,
          notes="C5 with V1 off the wire: T1 is the leaf, the origin is T1's answer at leg 7; legs 5 and 6 are the unseen hop.")
 
     # K: conversation 1 is C6's flow with no verdict (the three leave through V2 at leg 11);
     # conversation 2 (legs 17-32) is C5's shape with the origin one conversation back.
     conv1 = (f"U>A[-], A>L[-], L>A[-], A>T1[-], ..V1.., T1>A[{SEEN} -], A>L[{SEEN} -], L>A[{SEEN} -], "
              f"A>T2[{SEEN} -], T2>V2[{SEEN} -], V2>T2[-], T2>A[-], A>L[-], L>A[-], A>U[-]")
-    conv1_chain = chain([7, 8, 9, 10, 11])
+    conv1_chain = chain([7, 8, 9, 10, 11]) + held_earlier(7, 10)
     ks = {
         "K0": ([], "reborn, nothing", "allow"),
         "K1": (["s1", "s2", "s3"], "reborn, all three", "block"),
@@ -123,18 +124,20 @@ def main() -> None:
                  f"A>T3[{body}], T3>V3[{body}]⚑, V3>T3[-], T3>A[-], A>L[-], L>A[-], A>U[-]")
         line = f"{conv1} ~10min> {conv2}"
         edges = list(conv1_chain)
+        pending = None
         if k and want == "block":
             # within conversation 2: 22 -> 23 -> ... -> 27; the crossing attaches at T2's answer (23), one hop late,
-            # from T2's last holding in conversation 1 (11).
-            edges += chain([22, 23, 24, 25, 26, 27], units=k) + [f"{u} 11>23" for u in k]
+            # from T2's last holding in conversation 1 (11). This branch draws none of them and does not block.
+            conv2_edges = chain([22, 23, 24, 25, 26, 27], units=k) + [f"{u} 11>23" for u in k]
+            edges += conv2_edges
+            pending = {"reason": PENDING, "missing": conv2_edges, "verdict": ["on"]}
         must_miss = {str(i): list(k) for i in range(22, 28)} if k else {}
         wanted = {"on": want, "off": "allow"}
-        pending = PENDING if want == "block" else None
         n = len(k)
         nb = {0: "—", 1: "0 of 2", 2: "1 of 2", 3: "2 of 2"}[n]
         case(id_, title, line, cell="trunk/cross", verdict=wanted, edges=edges, must_see={i: THREE for i in range(7, 12)},
              must_miss=must_miss,
-             pending=pending, authored=bool(k), also=held_earlier(7, 10),
+             pending=pending, authored=bool(k),
              notes=f"Conversation 2 is C5's shape; V2 returns {' '.join(k) or 'nothing'} (neighbourhood {nb}). The classifier "
                    f"labels nothing in conversation 2, so only a crossing from conversation 1 can produce the alert at V3. "
                    f"Wanted under person-anchored: {want}.")

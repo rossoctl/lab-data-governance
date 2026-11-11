@@ -67,7 +67,7 @@ class LegRows:
     payload_hash: str | None
     classification: dict[str, Any] | None      # sensitivity, tags, findings [(tag, text)]
     inherited: list[dict[str, Any]]            # edges INTO this leg: unit, value, from_leg
-    risk: dict[str, Any] | None                # latest risk record for the interaction (sink only)
+    risk: dict[str, Any] | None                # the risk record that evidences this leg (sink only)
 
 
 @dataclasses.dataclass
@@ -76,10 +76,11 @@ class Observation:
     legs: dict[int, LegRows]
     edges: set[tuple[str, int, int]]           # (unit, from_leg, to_leg) resolved to line legs
     raw_edges: list[dict[str, Any]]
-    verdict: str | None                        # at the sink
+    verdict: str | None                        # at the sink: enforcement_type as the record writes it
     timings: dict[str, float]
     neighbourhood: dict[int, dict[str, str]]   # leg -> unit -> "k of n"
     opa_calls: int
+    problems: list[str] = dataclasses.field(default_factory=list)   # rows the judge cannot read: always red
 
 
 def _send(rows: list[dict[str, Any]], grpc_endpoint: str) -> None:
@@ -102,10 +103,40 @@ def _wait_rows(dsn: str, n: int, timeout: float = 5.0) -> None:
     raise TimeoutError(f"receiver stored fewer than {n} spans")
 
 
-def _verdict_of(risk: dict[str, Any] | None) -> str | None:
-    if risk is None:
-        return None
-    return "block" if risk["enforcement_type"] == "block" else "allow"
+def verdict_at(records: list[dict[str, Any]], role: str) -> tuple[dict[str, Any] | None, str | None]:
+    """The risk record that evidences the flagged leg (*role* in its ``legs``), and a problem when there is
+    none or several that disagree. The verdict is its ``enforcement_type``, as written."""
+    mine = [r for r in records if role in r["legs"]]
+    if not mine:
+        return None, f"no risk record evidences the flagged {role} leg"
+    if len({r["enforcement_type"] for r in mine}) > 1:
+        return None, ("risk records disagree at the flagged leg: "
+                      + ", ".join(f"v{r['version']} {r['enforcement_type']}" for r in mine))
+    return mine[-1], None
+
+
+def resolve_edges(case: Case, rows, leg_of_key: dict[tuple[str, str], int]):
+    """Edges as (unit, from_leg, to_leg). A unit is found by its bytes (``assign_values`` refuses twins); an
+    edge whose value is no unit's is kept as ``?value`` (an extra, so red). An edge with an end on no line leg, or
+    carrying a label that is not one of its unit's types, is a problem."""
+    value_unit = {v: u for u, v in case.values.items()}
+    resolved: set[tuple[str, int, int]] = set()
+    raw: list[dict[str, Any]] = []
+    inherited: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    problems: list[str] = []
+    for fi, flt, ti, tlt, etype, value, matched, kind in rows:
+        f = leg_of_key.get((fi, flt))
+        to = leg_of_key.get((ti, tlt))
+        unit = value_unit.get(value, f"?{value}")
+        raw.append({"from": f, "to": to, "unit": unit, "label": etype, "value": value, "kind": kind})
+        if f is None or to is None:
+            problems.append(f"edge {unit} {f}>{to} ({etype}) has an end on no line leg")
+            continue
+        if unit in case.accepts and etype not in case.accepts[unit]:
+            problems.append(f"edge {unit} {f}>{to} carries {etype}, not one of {sorted(case.accepts[unit])}")
+        resolved.add((unit, f, to))
+        inherited[to].append({"unit": unit, "label": etype, "value": value, "from": f})
+    return resolved, raw, inherited, problems
 
 
 def run_case(case: Case, *, dsn: str, grpc_endpoint: str, opa_client, mode: str) -> Observation:
@@ -134,6 +165,7 @@ def run_case(case: Case, *, dsn: str, grpc_endpoint: str, opa_client, mode: str)
     data_lineage.drain(0)
     lap("data_lineage")
     detector = classify.load(case.dir)
+    classify.check_authored(case, renderer, detector.authored)
     classification.drain(0, detector=detector, model_version=detector.model_version)
     lap("classification")
     label_lineage.drain(0, _label_config())
@@ -188,11 +220,11 @@ def _read(case: Case, rendered: list[Rendered], dsn: str, mode: str) -> Observat
             "SELECT interaction_id, version, risk_level, enforcement_type, triggered_rule_ids, legs_evidenced, "
             "classification_summary FROM interaction_risk_records ORDER BY interaction_id, version").fetchall()
 
-    latest_risk: dict[str, dict[str, Any]] = {}
+    records: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for iid, version, level, enf, rules, legs_ev, summary in risk_rows:
-        latest_risk[iid] = {"version": version, "risk_level": level, "enforcement_type": enf,
-                            "rules": list(rules or []), "legs": list(legs_ev or []),
-                            "summary": summary if isinstance(summary, dict) else json.loads(summary or "{}")}
+        records[iid].append({"version": version, "risk_level": level, "enforcement_type": enf,
+                             "rules": list(rules or []), "legs": list(legs_ev or []),
+                             "summary": summary if isinstance(summary, dict) else json.loads(summary or "{}")})
 
     # line leg -> (interaction, leg_type)
     key_of_leg: dict[int, tuple[str, str]] = {}
@@ -204,19 +236,18 @@ def _read(case: Case, rendered: list[Rendered], dsn: str, mode: str) -> Observat
         key_of_leg[r.leg.index] = (iid, r.role)
         leg_of_key[(iid, r.role)] = r.leg.index
 
-    value_unit = {v: u for u, v in render(case.id, case.units, case.line).values.items()}
-
-    resolved: set[tuple[str, int, int]] = set()
-    raw: list[dict[str, Any]] = []
-    inherited: dict[int, list[dict[str, Any]]] = defaultdict(list)
-    for fi, flt, ti, tlt, etype, value, matched, kind in edges:
-        f = leg_of_key.get((fi, flt))
-        to = leg_of_key.get((ti, tlt))
-        unit = value_unit.get(value, f"?{value}")
-        raw.append({"from": f, "to": to, "unit": unit, "label": etype, "value": value, "kind": kind})
-        if f is not None and to is not None:
-            resolved.add((unit, f, to))
-            inherited[to].append({"unit": unit, "label": etype, "value": value, "from": f})
+    resolved, raw, inherited, problems = resolve_edges(case, edges, leg_of_key)
+    sink = case.line.sink
+    sink_record, verdict = None, None
+    if sink:
+        key = key_of_leg.get(sink.index)
+        if key is None:
+            problems.append(f"the flagged leg {sink.index} was not derived")
+        else:
+            sink_record, problem = verdict_at(records.get(key[0], []), key[1])
+            if problem:
+                problems.append(problem)
+            verdict = sink_record["enforcement_type"] if sink_record else None
 
     legs: dict[int, LegRows] = {}
     for r in rendered:
@@ -230,35 +261,41 @@ def _read(case: Case, rendered: list[Rendered], dsn: str, mode: str) -> Observat
         legs[r.leg.index] = LegRows(
             leg_index=r.leg.index, interaction_id=key[0] if key else None, leg_type=r.role, payload_hash=h,
             classification=c, inherited=inherited.get(r.leg.index, []),
-            risk=latest_risk.get(key[0]) if key else None,
+            risk=sink_record if sink and r.leg.index == sink.index else None,
         )
 
-    sink = case.line.sink
-    verdict = _verdict_of(legs[sink.index].risk) if sink and sink.index in legs else None
     return Observation(mode=mode, legs=legs, edges=resolved, raw_edges=raw, verdict=verdict, timings={},
-                       neighbourhood=neighbourhood(case, resolved), opa_calls=0)
+                       neighbourhood=neighbourhood(case, resolved), opa_calls=0, problems=problems)
 
 
 def neighbourhood(case: Case, edges: set[tuple[str, int, int]]) -> dict[int, dict[str, str]]:
     """For every unit carried into a leg: of the OTHER units present at the unit's
     origin leg, how many were also carried into this leg. ``k of n``."""
     legs = {leg.index: leg for leg in case.line.legs}
-    incoming: dict[int, dict[str, int]] = defaultdict(dict)       # to -> unit -> from
+    incoming: dict[int, dict[str, set[int]]] = defaultdict(lambda: defaultdict(set))   # to -> unit -> froms
     for unit, f, to in edges:
-        incoming[to][unit] = f
+        incoming[to][unit].add(f)
 
-    def origin(unit: str, leg: int) -> int:
-        seen = set()
-        while unit in incoming.get(leg, {}) and leg not in seen:
-            seen.add(leg)
-            leg = incoming[leg][unit]
-        return leg
+    def origins(unit: str, leg: int) -> frozenset[int]:
+        """Every leg the unit's edges lead back to that no edge of the unit enters (all routes, no choice)."""
+        out, seen, todo = set(), set(), [leg]
+        while todo:
+            x = todo.pop()
+            if x in seen:
+                continue
+            seen.add(x)
+            froms = incoming.get(x, {}).get(unit)
+            if froms:
+                todo.extend(froms)
+            else:
+                out.add(x)
+        return frozenset(out or {leg})
 
     out: dict[int, dict[str, str]] = {}
     for to, units in incoming.items():
         for unit in units:
-            o = origin(unit, to)
-            siblings = [u for u in legs[o].units if u != unit] if o in legs else []
-            k = sum(1 for s in siblings if s in units and origin(s, to) == o)
+            o = origins(unit, to)
+            siblings = sorted({u for leg in o if leg in legs for u in legs[leg].units} - {unit})
+            k = sum(1 for s in siblings if s in units and origins(s, to) & o)
             out.setdefault(to, {})[unit] = f"{k} of {len(siblings)}"
     return out

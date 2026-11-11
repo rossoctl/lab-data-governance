@@ -19,21 +19,6 @@ from .cases import load_case
 from .render import payload_texts, render
 
 
-def authored_map(case, renderer) -> dict[str, set[str]]:
-    """Payload text -> unit values to subtract, from the case's must_miss legs.
-    A text shared by a must_see leg is refused: subtraction must not touch it."""
-    from data_governance.processors.classification import projection
-
-    text_of = {r.leg.index: projection.project(r.content) for r in renderer.rendered}
-    out: dict[str, set[str]] = {}
-    for leg, units in case.must_miss.items():
-        out.setdefault(text_of[leg], set()).update(renderer.values[u] for u in units)
-    for leg in case.must_see:
-        if text_of.get(leg) in out:
-            raise ValueError(f"{case.id}: leg {leg} must_see shares its payload text with a must_miss leg")
-    return out
-
-
 def main(argv: list[str]) -> int:
     from data_governance.processors.classification.detector import ModelDetector
 
@@ -45,10 +30,10 @@ def main(argv: list[str]) -> int:
         case = load_case(case_dir)
         renderer = render(case.id, case.units, case.line)
         texts = payload_texts(renderer)
-        authored = authored_map(case, renderer) if case.authored else None
+        authored = classify.authored_map(case, renderer) if case.authored else None
         t = time.time()
         out = classify.calibrate(case_dir, texts, detector, authored)
-        n_auth = sum(out["authored"].values()) if out.get("authored") else 0
+        n_auth = sum(r["removed"] for r in out["authored"].values()) if out.get("authored") else 0
         print(f"{case.id}: {len(texts)} payloads in {time.time() - t:.2f} s"
               + (f"; authored: {n_auth} findings subtracted at legs {sorted(case.must_miss)}" if case.authored else ""))
         for text, s in out["summary"].items():

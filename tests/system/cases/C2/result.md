@@ -29,8 +29,6 @@ neighbourhood at 5: s1 2 of 3, s2 2 of 3, s3 2 of 3
 verdict at 5: expected on=block / off=block, observed on=block / off=block
 ```
 
-**Reasons.** also drawn, from an earlier holding (where it was born): s1 1>4, s2 1>4, s3 1>4
-
 **Rows (inherited labels on).**
 
 | leg | who | classification | inherited labels (from leg) | risk |
@@ -52,7 +50,7 @@ verdict at 5: expected on=block / off=block, observed on=block / off=block
 | 15 | L>A | PUBLIC  | — | — |
 | 16 | A>U | PUBLIC  | — | — |
 
-**Timing (on).** total 1.9486 s: reset 0.1153, receiver 0.071, interactions 1.175, data_lineage 0.2291, classification 0.0297, label_lineage 0.0401, leg_ready+risk 0.2658, read 0.0226
+**Timing (on).** total 1.8513 s: reset 0.1052, receiver 0.0612, interactions 1.0937, data_lineage 0.22, classification 0.0283, label_lineage 0.04, leg_ready+risk 0.2877, read 0.0152
 OPA calls: 19
 
 **Notes.** Root to the left leaf, U>A>T1>V1. The classifier labels the three on every leg; lineage draws the chain, the classifier alone already decides.

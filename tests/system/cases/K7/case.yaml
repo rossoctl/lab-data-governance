@@ -27,6 +27,9 @@ expect:
   - s3 8>9
   - s3 9>10
   - s3 10>11
+  - s1 7>10
+  - s2 7>10
+  - s3 7>10
   - s2 22>23
   - s2 23>24
   - s2 24>25
@@ -39,13 +42,24 @@ expect:
   - s3 26>27
   - s2 11>23
   - s3 11>23
-  also:
-  - s1 7>10
-  - s2 7>10
-  - s3 7>10
-  cannot: null
-  pending: 'cross-conversation lineage not on this branch: the cross-trace fold (#273) with its seed rule and window, and
-    the risk engine forwarding a cross-trace origin (labels.forwarded keeps same-trace origins only)'
+  pending:
+    reason: 'cross-conversation lineage not on this branch: the cross-trace fold (#273) with its seed rule and window, and
+      the risk engine forwarding a cross-trace origin (labels.forwarded keeps same-trace origins only)'
+    missing:
+    - s2 22>23
+    - s2 23>24
+    - s2 24>25
+    - s2 25>26
+    - s2 26>27
+    - s3 22>23
+    - s3 23>24
+    - s3 24>25
+    - s3 25>26
+    - s3 26>27
+    - s2 11>23
+    - s3 11>23
+    verdict:
+    - 'on'
 classifier:
   must_see:
     '7':
