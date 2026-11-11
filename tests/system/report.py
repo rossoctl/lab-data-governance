@@ -103,7 +103,9 @@ def judge(case: Case, on: Observation, off: Observation) -> Outcome:
     return Outcome(case, on, off, status, reasons, (missing, extra), notes)
 
 
-def case_markdown(o: Outcome) -> str:
+def case_markdown(o: Outcome, timings: bool = True) -> str:
+    """One case's record. ``timings=False`` (``result.md``) leaves out what changes on every run, so a run that
+    changes nothing rewrites no case file."""
     c = o.case
     authored = (f"  ·  classifier **authored**: the model's findings subtracted at legs {sorted(c.must_miss)}"
                 if c.authored else "")
@@ -131,8 +133,10 @@ def case_markdown(o: Outcome) -> str:
             lines.append(f"| {leg.index} | {leg.label()}{'⚑' if leg.sink else ''} | {cls} | {inh} | {risk} |")
         lines.append("")
         t = o.on.timings
-        lines += [f"**Timing (on).** total {t.get('total')} s: " + ", ".join(f"{k} {v}" for k, v in t.items() if k != "total"),
-                  f"OPA calls: {o.on.opa_calls}", ""]
+        if timings:
+            lines.append(f"**Timing (on).** total {t.get('total')} s: "
+                         + ", ".join(f"{k} {v}" for k, v in t.items() if k != "total"))
+        lines += [f"OPA calls: {o.on.opa_calls}", ""]
     if c.notes:
         lines += ["**Notes.** " + c.notes.strip(), ""]
     return "\n".join(lines)
@@ -163,5 +167,5 @@ def write(results: Results, expected_cases: int | None = None) -> None:
     for o in results.outcomes:
         rows += ["---", "", case_markdown(o)]
         if full and not tag:
-            (o.case.dir / "result.md").write_text(case_markdown(o) + "\n")
+            (o.case.dir / "result.md").write_text(case_markdown(o, timings=False) + "\n")
     target.write_text("\n".join(rows) + "\n")

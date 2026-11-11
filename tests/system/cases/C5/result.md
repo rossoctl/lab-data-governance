@@ -51,7 +51,6 @@ verdict at 11: expected on=block / off=allow, observed on=block / off=allow
 | 15 | L>A | PUBLIC  | — | — |
 | 16 | A>U | PUBLIC  | — | — |
 
-**Timing (on).** total 1.8579 s: reset 0.1051, receiver 0.0901, interactions 1.1063, data_lineage 0.2126, classification 0.0303, label_lineage 0.0237, leg_ready+risk 0.273, read 0.0168
 OPA calls: 20
 
 **Notes.** Leaf to leaf, starting from a response: born in the insurer's answer. T1 forgets, so leg 7 inherits leg 6 only through the invocation-scope fix of #348 (a response inherits what its child calls returned).

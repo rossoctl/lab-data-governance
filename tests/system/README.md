@@ -39,6 +39,8 @@ LABEL_CROSS_TRACE_WINDOW_HOURS=0.25 ...              # window for cross-conversa
 ```
 
 The `opa` mark is excluded by the repository default (`-m 'not opa and not live'`); pass `-m opa`.
+`REPORT.md` carries the run's time and per-case timings; `cases/<id>/result.md` carries neither, so a
+run that changes nothing leaves every case file as it was.
 One Postgres container and one OPA container start per session (a few seconds); each case then
 takes about two seconds per mode.
 

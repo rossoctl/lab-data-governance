@@ -331,3 +331,12 @@ def test_flagged_line_needs_a_verdict(tmp_path: Path):
 def test_verdict_keys_must_be_quoted(tmp_path: Path):
     with pytest.raises(ValueError, match="quoted"):
         load_case(_yaml(tmp_path, "expect:\n  verdict: {on: block, off: allow}\n  edges: []\n"))
+
+
+def test_the_case_record_carries_no_timing():
+    from .report import case_markdown
+    obs = _obs("on", EDGES, "block")
+    obs.timings = {"reset": 0.1, "total": 0.1}
+    out = judge(_case(), obs, _obs("off", EDGES, "allow"))
+    assert "Timing (on)" in case_markdown(out) and "Timing (on)" not in case_markdown(out, timings=False)
+    assert "OPA calls: 0" in case_markdown(out, timings=False)

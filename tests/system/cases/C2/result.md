@@ -50,7 +50,6 @@ verdict at 5: expected on=block / off=block, observed on=block / off=block
 | 15 | L>A | PUBLIC  | — | — |
 | 16 | A>U | PUBLIC  | — | — |
 
-**Timing (on).** total 1.8513 s: reset 0.1052, receiver 0.0612, interactions 1.0937, data_lineage 0.22, classification 0.0283, label_lineage 0.04, leg_ready+risk 0.2877, read 0.0152
 OPA calls: 19
 
 **Notes.** Root to the left leaf, U>A>T1>V1. The classifier labels the three on every leg; lineage draws the chain, the classifier alone already decides.

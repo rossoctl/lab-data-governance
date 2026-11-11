@@ -83,7 +83,6 @@ verdict at 27: expected on=allow / off=allow, observed on=allow / off=allow
 | 31 | L>A | PUBLIC  | — | — |
 | 32 | A>U | PUBLIC  | — | — |
 
-**Timing (on).** total 2.955 s: reset 0.0827, receiver 0.092, interactions 2.0707, data_lineage 0.2927, classification 0.0283, label_lineage 0.0257, leg_ready+risk 0.3399, read 0.023
 OPA calls: 33
 
 **Notes.** Conversation 2 is C5's shape; V2 returns nothing (neighbourhood —). The classifier labels nothing in conversation 2, so only a crossing from conversation 1 can produce the alert at V3. Wanted under person-anchored: allow.
