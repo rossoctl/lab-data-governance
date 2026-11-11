@@ -38,8 +38,6 @@ export TESTCONTAINERS_RYUK_DISABLED=true
 .venv/bin/pytest tests/system -m opa                 # all cases; writes tests/system/REPORT.md and cases/*/result.md
                                                      # a subset (-k, -x) or SYSTEM_REPORT_TAG=x writes REPORT-partial.md / REPORT-x.md only
 .venv/bin/pytest tests/system -m opa -k C1           # one case
-LABEL_CROSS_TRACE_WINDOW_HOURS=0.25 ...              # window for cross-conversation cases (branches with slice 2;
-                                                     # here, like LABEL_SEED_RULE, it has no Config field and no effect)
 ```
 
 The `opa` mark is excluded by the repository default (`-m 'not opa and not live'`); pass `-m opa`.

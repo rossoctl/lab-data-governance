@@ -31,23 +31,6 @@ from .cases import Case
 from .render import Rendered, render
 
 _KEEP = {"alembic_version"}
-WINDOW_ENV = "LABEL_CROSS_TRACE_WINDOW_HOURS"
-
-
-def window_hours() -> float:
-    import os
-    return float(os.environ.get(WINDOW_ENV, "0.25"))
-
-
-def _label_config():
-    import os
-    fields = {f.name for f in dataclasses.fields(label_lineage.Config)}
-    kw = {}
-    if "window_hours" in fields:
-        kw["window_hours"] = window_hours()
-    if "seed_rule" in fields:
-        kw["seed_rule"] = os.environ.get("LABEL_SEED_RULE", "off") or "off"
-    return label_lineage.Config(find.exact, "exact", **kw)
 
 
 def reset(dsn: str) -> None:
@@ -79,7 +62,7 @@ class Observation:
     verdict: str | None                        # at the sink: enforcement_type as the record writes it
     timings: dict[str, float]
     neighbourhood: dict[int, dict[str, str]]   # leg -> unit -> "k of n"
-    opa_calls: int
+    observer_calls: int                        # risk-observer invocations (one per evidence state)
     problems: list[str] = dataclasses.field(default_factory=list)   # rows the judge cannot read: always red
 
 
@@ -115,16 +98,19 @@ def verdict_at(records: list[dict[str, Any]], role: str) -> tuple[dict[str, Any]
     return mine[-1], None
 
 
-def map_legs(rendered: list[Rendered], ix_of: dict[str, str]):
-    """line leg -> (interaction, leg_type) and back. Every leg the line put on the wire must have been derived;
-    one that was not is a problem."""
+def map_legs(rendered: list[Rendered], ix_of: dict[str, str], hash_of: dict[tuple[str, str], str],
+             payloads: set[str]):
+    """line leg -> (interaction, leg_type) and back. Every leg the line put on the wire must have been derived:
+    its interaction, its leg row and its stored payload; a leg missing any of them is a problem."""
     key_of_leg: dict[int, tuple[str, str]] = {}
     leg_of_key: dict[tuple[str, str], int] = {}
     problems: list[str] = []
     for r in rendered:
         iid = ix_of.get(r.request_span_id)
-        if iid is None:
-            problems.append(f"leg {r.leg.index} ({r.leg.label()}) was not derived")
+        missing = ("interaction" if iid is None else "leg row" if (iid, r.role) not in hash_of
+                   else "payload" if hash_of[(iid, r.role)] not in payloads else None)
+        if missing:
+            problems.append(f"leg {r.leg.index} ({r.leg.label()}) was not derived: no {missing}")
             continue
         key_of_leg[r.leg.index] = (iid, r.role)
         leg_of_key[(iid, r.role)] = r.leg.index
@@ -133,8 +119,9 @@ def map_legs(rendered: list[Rendered], ix_of: dict[str, str]):
 
 def resolve_edges(case: Case, rows, leg_of_key: dict[tuple[str, str], int]):
     """Edges as (unit, from_leg, to_leg). A unit is found by its bytes (``assign_values`` refuses twins); an
-    edge whose value is no unit's is kept as ``?value`` (an extra, so red). An edge with an end on no line leg, or
-    carrying a label that is not one of its unit's types, is a problem."""
+    edge whose value is no unit's is kept as ``?value`` (an extra, so red). An edge with an end on no line leg,
+    carrying a label that is not one of its unit's types, or whose evidence is not a whole match of the value's
+    own bytes (the suite runs the exact finder), is a problem."""
     value_unit = {v: u for u, v in case.values.items()}
     resolved: set[tuple[str, int, int]] = set()
     raw: list[dict[str, Any]] = []
@@ -150,6 +137,8 @@ def resolve_edges(case: Case, rows, leg_of_key: dict[tuple[str, str], int]):
             continue
         if unit in case.accepts and etype not in case.accepts[unit]:
             problems.append(f"edge {unit} {f}>{to} carries {etype}, not one of {sorted(case.accepts[unit])}")
+        if kind != "whole" or matched != value:
+            problems.append(f"edge {unit} {f}>{to} matched {matched!r} as {kind!r}, not the whole value")
         resolved.add((unit, f, to))
         inherited[to].append({"unit": unit, "label": etype, "value": value, "from": f})
     return resolved, raw, inherited, problems
@@ -184,7 +173,7 @@ def run_case(case: Case, *, dsn: str, grpc_endpoint: str, opa_client, mode: str)
     classify.check_authored(case, renderer, detector.authored)
     classification.drain(0, detector=detector, model_version=detector.model_version)
     lap("classification")
-    label_lineage.drain(0, _label_config())
+    label_lineage.drain(0, label_lineage.Config(find.exact, "exact"))
     lap("label_lineage")
 
     saved = risk_config.inherited_labels_mode
@@ -207,7 +196,7 @@ def run_case(case: Case, *, dsn: str, grpc_endpoint: str, opa_client, mode: str)
 
     obs = _read(case, renderer.rendered, dsn, mode)
     obs.timings = timings
-    obs.opa_calls = calls["n"]
+    obs.observer_calls = calls["n"]
     lap("read")
     obs.timings["total"] = round(sum(timings.values()), 4)
     return obs
@@ -242,7 +231,7 @@ def _read(case: Case, rendered: list[Rendered], dsn: str, mode: str) -> Observat
                              "rules": list(rules or []), "legs": list(legs_ev or []),
                              "summary": summary if isinstance(summary, dict) else json.loads(summary or "{}")})
 
-    key_of_leg, leg_of_key, problems = map_legs(rendered, ix_of)
+    key_of_leg, leg_of_key, problems = map_legs(rendered, ix_of, hash_of, set(payload_text))
     resolved, raw, inherited, edge_problems = resolve_edges(case, edges, leg_of_key)
     problems += edge_problems
     sink = case.line.sink
@@ -270,7 +259,7 @@ def _read(case: Case, rendered: list[Rendered], dsn: str, mode: str) -> Observat
         )
 
     return Observation(mode=mode, legs=legs, edges=resolved, raw_edges=raw, verdict=verdict, timings={},
-                       neighbourhood=neighbourhood(case, resolved), opa_calls=0, problems=problems)
+                       neighbourhood=neighbourhood(case, resolved), observer_calls=0, problems=problems)
 
 
 def neighbourhood(case: Case, edges: set[tuple[str, int, int]]) -> dict[int, dict[str, str]]:

@@ -16,7 +16,7 @@ from .grid import render_grid
 from .render import render
 from .report import judge
 
-LINE = "U>A[s1 -], A>T1[s1 -], T1>V1[s1 -]⚑"
+LINE = "U>A[s1 -], A>T1[s1 -], T1>V1[s1 -]⚑, V1>T1[-], T1>A[-], A>U[-]"
 EDGES = {("s1", 1, 2), ("s1", 2, 3)}
 MRN = "4471820"   # s1's bytes as an MRN
 
@@ -32,7 +32,7 @@ def _case(**over) -> Case:
 
 def _obs(mode: str, edges: set, verdict: str | None, legs: dict | None = None, problems=()) -> Observation:
     return Observation(mode=mode, legs=legs or {}, edges=edges, raw_edges=[], verdict=verdict, timings={},
-                       neighbourhood={}, opa_calls=0, problems=list(problems))
+                       neighbourhood={}, observer_calls=0, problems=list(problems))
 
 
 def _at(index: int, *findings: tuple[str, str]) -> LegRows:
@@ -45,9 +45,11 @@ def _judge(case: Case, on_edges=EDGES, on="block", off="allow", legs=None, probl
                  _obs("off", set(on_edges if off_edges is None else off_edges), off, legs))
 
 
-def _yaml(tmp_path: Path, body: str, line: str = LINE) -> Path:
-    (tmp_path / "case.yaml").write_text(f"id: Y\nline: \"{line}\"\nunits: {{s1: MRN}}\n" + body)
-    return tmp_path
+def _yaml(tmp_path: Path, body: str, line: str = LINE, units: str = "{s1: MRN}") -> Path:
+    d = tmp_path / "Y"
+    d.mkdir(exist_ok=True)
+    (d / "case.yaml").write_text(f"id: Y\nline: \"{line}\"\nunits: {units}\n" + body)
+    return d
 
 
 # --- the judge: exact comparison --------------------------------------------------------------------------------
@@ -148,29 +150,37 @@ def test_a_unit_counts_as_labelled_under_any_of_its_types_everywhere():
     legs = {1: _at(1, ("PN", name)), 2: _at(2, ("NAME", name)), 3: _at(3, ("PN", name))}
     out = _judge(case, legs=legs)
     assert out.status == "RED" and out.classifier_notes == [
-        "leg 3: the model DID label s1 (NAME|PN); the case assumed it would not"]   # must_see at 1 and 2 met
+        f"{mode}: leg 3: the model DID label s1 (NAME|PN); the case assumed it would not"
+        for mode in ("on", "off")]   # must_see at 1 and 2 met
     observed = render_grid(case, _obs("on", EDGES, "block", legs), None).split("observed\n", 1)[1]
-    assert observed.splitlines()[2].rstrip().endswith("●")   # the grid labels leg 3 by the same rule
+    assert [ch for ch in observed.splitlines()[2] if ch in "●○"] == ["●", "●", "●"]   # leg 3 by the same rule
 
 
 def test_a_type_the_unit_does_not_list_does_not_count():
     case = _case(units={"s1": "NAME"}, must_see={1: ["s1"]})
     out = _judge(case, legs={1: _at(1, ("PN", case.values["s1"]))})
     assert out.status == "RED" and out.classifier_notes == [
-        "leg 1: the model did NOT label s1 (NAME); found [('PN', 'Rosa Alvarez')]"]
+        f"{mode}: leg 1: the model did NOT label s1 (NAME); found [('PN', 'Rosa Alvarez')]" for mode in ("on", "off")]
 
 
 def test_a_finding_on_other_bytes_does_not_label_the_unit():
     case = _case(must_see={1: ["s1"]}, must_miss={2: ["s1"]})
     legs = {1: _at(1, ("MRN", "9999999")), 2: _at(2, ("MRN", "9999999"))}   # right type, another value
     out = _judge(case, legs=legs)
-    assert out.classifier_notes == ["leg 1: the model did NOT label s1 (MRN); found [('MRN', '9999999')]"]
+    assert out.classifier_notes == [f"{mode}: leg 1: the model did NOT label s1 (MRN); found [('MRN', '9999999')]"
+                                    for mode in ("on", "off")]
 
 
 def test_a_stated_leg_with_no_classification_row_is_red():
     out = _judge(_case(must_miss={2: ["s1"]}), legs={})
     assert out.status == "RED" and out.classifier_notes == [
-        "leg 2: no classification row; the case states s1 there"]
+        f"{mode}: leg 2: no classification row; the case states s1 there" for mode in ("on", "off")]
+
+
+def test_the_off_run_is_held_to_the_premise_too():
+    case = _case(must_miss={2: ["s1"]})
+    out = judge(case, _obs("on", EDGES, "block", {2: _at(2)}), _obs("off", EDGES, "allow", {}))
+    assert out.status == "RED" and out.classifier_notes == ["off: leg 2: no classification row; the case states s1 there"]
 
 
 def test_the_expected_grid_draws_must_see_full_and_must_miss_hollow():
@@ -191,10 +201,8 @@ def test_every_present_unit_is_stated_exactly_once(tmp_path: Path, see, miss, er
 
 
 def test_a_unit_may_list_several_types(tmp_path: Path):
-    (tmp_path / "case.yaml").write_text(
-        f"id: Y\nline: \"{LINE}\"\nunits: {{s1: [NAME, PN]}}\nexpect:\n  verdict: {{'on': block, 'off': allow}}\n"
-        f"  edges: []\nclassifier:\n  must_see: {{1: [s1], 2: [s1], 3: [s1]}}\n")
-    case = load_case(tmp_path)
+    case = load_case(_yaml(tmp_path, "expect:\n  verdict: {'on': block, 'off': allow}\n  edges: []\n"
+                                     "classifier:\n  must_see: {1: [s1], 2: [s1], 3: [s1]}\n", units="{s1: [NAME, PN]}"))
     assert case.units == {"s1": "NAME"} and case.accepts == {"s1": frozenset({"NAME", "PN"})}
 
 
@@ -216,7 +224,7 @@ def test_a_stale_authored_record_fails_loudly():
 def test_an_edge_with_an_end_on_no_line_leg_is_a_problem():
     case = _case()
     leg_of_key = {("i1", "request"): 1, ("i2", "request"): 2}
-    resolved, _, _, problems = resolve_edges(case, [("i1", "request", "i9", "response", "MRN", MRN, MRN, "exact")],
+    resolved, _, _, problems = resolve_edges(case, [("i1", "request", "i9", "response", "MRN", MRN, MRN, "whole")],
                                              leg_of_key)
     assert resolved == set() and problems == ["edge s1 1>None (MRN) has an end on no line leg"]
 
@@ -224,15 +232,23 @@ def test_an_edge_with_an_end_on_no_line_leg_is_a_problem():
 def test_an_edge_carrying_another_type_is_a_problem():
     case = _case()
     leg_of_key = {("i1", "request"): 1, ("i2", "request"): 2}
-    resolved, _, _, problems = resolve_edges(case, [("i1", "request", "i2", "request", "SSN", MRN, MRN, "exact")],
+    resolved, _, _, problems = resolve_edges(case, [("i1", "request", "i2", "request", "SSN", MRN, MRN, "whole")],
                                              leg_of_key)
     assert resolved == {("s1", 1, 2)} and problems == ["edge s1 1>2 carries SSN, not one of ['MRN']"]
+
+
+@pytest.mark.parametrize("matched, kind", [("4471", "whole"), (MRN, "fragment")])
+def test_an_edge_whose_evidence_is_not_the_whole_value_is_a_problem(matched, kind):
+    leg_of_key = {("i1", "request"): 1, ("i2", "request"): 2}
+    _, _, _, problems = resolve_edges(_case(), [("i1", "request", "i2", "request", "MRN", MRN, matched, kind)],
+                                      leg_of_key)
+    assert problems == [f"edge s1 1>2 matched {matched!r} as {kind!r}, not the whole value"]
 
 
 def test_an_edge_on_bytes_of_no_unit_is_an_extra():
     case = _case()
     leg_of_key = {("i1", "request"): 1, ("i2", "request"): 2}
-    resolved, _, _, _ = resolve_edges(case, [("i1", "request", "i2", "request", "MRN", "123", "123", "exact")],
+    resolved, _, _, _ = resolve_edges(case, [("i1", "request", "i2", "request", "MRN", "123", "123", "whole")],
                                       leg_of_key)
     assert resolved == {("?123", 1, 2)}
 
@@ -299,8 +315,9 @@ def test_an_ambiguous_line_is_refused(line, error):
 
 
 def test_a_named_call_resolves_the_ambiguity():
-    r = render("Y", {"s1": "MRN"}, cl.parse("U>A1[-], U>A2[-], A1>T1[-], A2>T1[-], T1(A1)>V1[s1 -]"))
-    assert [x.leg.index for x in r.rendered] == [1, 2, 3, 4, 5]
+    r = render("Y", {"s1": "MRN"}, cl.parse("U>A1[-], U>A2[-], A1>T1[-], A2>T1[-], T1(A1)>V1[s1 -], V1>T1[-], "
+                                            "T1>A1[-], T1>A2[-], A1>U[-], A2>U[-]"))
+    assert [x.leg.index for x in r.rendered] == list(range(1, 11))
 
 
 # --- the report, the line --------------------------------------------------------------------------------------
@@ -339,7 +356,7 @@ def test_the_case_record_carries_no_timing():
     obs.timings = {"reset": 0.1, "total": 0.1}
     out = judge(_case(), obs, _obs("off", EDGES, "allow"))
     assert "Timing (on)" in case_markdown(out) and "Timing (on)" not in case_markdown(out, timings=False)
-    assert "OPA calls: 0" in case_markdown(out, timings=False)
+    assert "Risk observer calls: 0" in case_markdown(out, timings=False)
 
 
 # --- every remaining refusal ----------------------------------------------------------------------------------
@@ -382,14 +399,25 @@ def test_the_renderer_refuses_a_line_it_would_have_to_guess(line, error):
 def test_a_leg_the_derivation_never_produced_is_a_problem():
     from .engine import map_legs
     r = render("Y", {"s1": "MRN"}, cl.parse(LINE))
-    ix_of = {x.request_span_id: f"i{x.leg.index}" for x in r.rendered if x.leg.index != 2}
-    key_of_leg, _, problems = map_legs(r.rendered, ix_of)
-    assert 2 not in key_of_leg and problems == ["leg 2 (A>T1) was not derived"]
+    ix_of = {x.request_span_id: f"i{x.request_span_id}" for x in r.rendered}
+    hash_of = {(ix_of[x.request_span_id], x.role): f"h{x.leg.index}" for x in r.rendered}
+    payloads = set(hash_of.values())
+    _, _, ok = map_legs(r.rendered, ix_of, hash_of, payloads)
+    assert ok == []
+    gone = next(x for x in r.rendered if x.leg.index == 2)
+    for broken, what in (({**ix_of, gone.request_span_id: None}, "interaction"),):
+        assert map_legs(r.rendered, {k: v for k, v in broken.items() if v}, hash_of, payloads)[2] == [
+            f"leg 2 (A>T1) was not derived: no {what}", f"leg 5 (T1>A) was not derived: no {what}"]  # one exchange
+    row = (ix_of[gone.request_span_id], gone.role)
+    assert map_legs(r.rendered, ix_of, {k: v for k, v in hash_of.items() if k != row}, payloads)[2] == [
+        "leg 2 (A>T1) was not derived: no leg row"]
+    assert map_legs(r.rendered, ix_of, hash_of, payloads - {"h2"})[2] == ["leg 2 (A>T1) was not derived: no payload"]
 
 
 def test_authored_subtraction_never_touches_a_text_a_must_see_leg_shares():
     from .classify import authored_map
-    case = _case(line_text="U>A[s1], A>T1[s1]", line=cl.parse("U>A[s1], A>T1[s1]"), verdict={},
+    case = _case(line_text="U>A[s1], A>T1[s1], T1>A[-], A>U[-]", line=cl.parse("U>A[s1], A>T1[s1], T1>A[-], A>U[-]"),
+                 verdict={},
                  edges={("s1", 1, 2)}, must_see={1: ["s1"]}, must_miss={2: ["s1"]}, authored=True)
     with pytest.raises(ValueError, match="must_see shares its payload text with a must_miss leg"):
         authored_map(case, render(case.id, case.units, case.line))

@@ -2,16 +2,16 @@
 ``tools/load_trace.py`` replays over the OTLP wire).
 
 Every ``X>Y[...]`` is one wire payload. ``Y>X[...]`` answers the open ``X>Y``
-call (request, response); a request still open when its conversation ends gets a
-filler response. A conversation that does not start with ``U>A`` gets an entry
-``U>A[-]`` so the agent has an inbound to parent its calls on.
+call (request, response). The renderer puts on the wire exactly the payloads the
+line writes, nothing more.
 
 Nothing is guessed: a request belongs to the one call its sender is serving (or
 the one ``T1(A1)>V1`` names), and the renderer refuses a line where that is not
 exactly one call (only the user sends a request serving none), a response with
 no open request (a payload to the user, from an LLM, a partner or a store, or
-from a tool to an agent is always a response), a response with two, two units
-with equal bytes, and two values under one JSON key.
+from a tool to an agent is always a response), a response with two, a
+conversation that does not start with the user, a request the conversation never
+answers, two units with equal bytes, and two values under one JSON key.
 
 Sidecars: agents and tools have one (both sides of an agent-tool call are
 emitted, caller CLIENT spans and callee SERVER echoes, as live clusters do);
@@ -251,7 +251,7 @@ class Renderer:
             open_: list[Renderer._Open] = []
             legs = list(conv.legs)
             if not legs or legs[0].invisible or cl.kind_of(legs[0].frm) != "user":
-                legs.insert(0, cl.Leg(0, "U", "A", (cl.Element("-", None, None),)))
+                raise ValueError(f"{self.case_id}: a conversation starts with the user (U>...); write its first request")
             for leg in legs:
                 if leg.invisible:
                     continue
@@ -278,13 +278,12 @@ class Renderer:
                     ex = self.open_exchange(trace_id=trace_id, leg=leg, frm=leg.frm, to=leg.to, req=body, at=at,
                                             parent=call.echo_id if call else None)
                     open_.append(ex)
-                    if leg.index:
-                        self.rendered.append(Rendered(leg, trace_id, ex.req_id, "request", body, values))
+                    self.rendered.append(Rendered(leg, trace_id, ex.req_id, "request", body, values))
                 at = at + dt.timedelta(seconds=2)
-            # whatever is still open answers with filler, innermost first
-            for ex in reversed(open_):
-                self.close_exchange(ex, {"note": FILLER[(ex.leg.index + 3) % len(FILLER)]}, at)
-                at = at + dt.timedelta(seconds=1)
+            if open_:
+                raise ValueError(f"{self.case_id}: requests the conversation never answers: "
+                                 + ", ".join(f"{ex.leg.index} {ex.leg.label()}" for ex in open_)
+                                 + "; write each answer on the line")
         return self.rows
 
 

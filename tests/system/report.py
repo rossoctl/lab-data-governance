@@ -79,8 +79,8 @@ def judge(case: Case, on: Observation, off: Observation) -> Outcome:
     if on.edges != off.edges:
         hard.append(f"the on and off runs drew different edges: on only {_edges(on.edges - off.edges) or '-'}, "
                     f"off only {_edges(off.edges - on.edges) or '-'}")
-    notes = premise(case, on)
-    hard += [f"classifier premise: {n}" for n in notes]
+    notes = [f"{mode}: {n}" for mode, obs in (("on", on), ("off", off)) for n in premise(case, obs)]
+    hard += [f"classifier premise, {n}" for n in notes]
 
     excuse = case.pending or case.cannot
     word = "pending" if case.pending else "cannot"
@@ -136,7 +136,7 @@ def case_markdown(o: Outcome, timings: bool = True) -> str:
         if timings:
             lines.append(f"**Timing (on).** total {t.get('total')} s: "
                          + ", ".join(f"{k} {v}" for k, v in t.items() if k != "total"))
-        lines += [f"OPA calls: {o.on.opa_calls}", ""]
+        lines += [f"Risk observer calls: {o.on.observer_calls}", ""]
     if c.notes:
         lines += ["**Notes.** " + c.notes.strip(), ""]
     return "\n".join(lines)

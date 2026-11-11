@@ -100,9 +100,29 @@ def _excuse(name: str, key: str, d: Any) -> Excuse | None:
                   extra=frozenset(_edge(e) for e in d.get("extra") or []), verdict=frozenset(d.get("verdict") or []))
 
 
+class _StrictLoader(yaml.SafeLoader):
+    """A mapping that names one key twice is an error, not "the last one wins"."""
+
+    def construct_mapping(self, node, deep=False):
+        keys = [self.construct_object(k, deep=deep) for k, _ in node.value]
+        twice = sorted({str(k) for k in keys if keys.count(k) > 1})
+        if twice:
+            raise ValueError(f"duplicated key(s) {twice} at line {node.start_mark.line + 1}")
+        return super().construct_mapping(node, deep=deep)
+
+
+TOP_KEYS = {"id", "title", "cell", "line", "units", "expect", "classifier", "notes"}
+CLASSIFIER_KEYS = {"must_see", "must_miss", "authored"}
+
+
 def load_case(case_dir: Path) -> Case:
     name = case_dir.name
-    d: dict[str, Any] = yaml.safe_load((case_dir / "case.yaml").read_text())
+    d: dict[str, Any] = yaml.load((case_dir / "case.yaml").read_text(), Loader=_StrictLoader)
+    for where, keys, allowed in (("", d, TOP_KEYS), ("classifier.", d.get("classifier") or {}, CLASSIFIER_KEYS)):
+        if set(keys) - allowed:
+            raise ValueError(f"{name}: unknown {where or 'top-level '}keys {sorted(set(keys) - allowed)}")
+    if d.get("id") != name:
+        raise ValueError(f"{name}: id {d.get('id')!r} is not the case directory's name")
     expect = d.get("expect", {})
     classifier = d.get("classifier", {})
     verdict = expect.get("verdict") or {}
