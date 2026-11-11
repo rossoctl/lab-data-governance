@@ -4,10 +4,8 @@ produced, inherited labels on; ● where ``Case.labelled`` says the model labell
 
     ●  present and labelled by the classifier here
     ○  present, the classifier did not label it here
-    ━  an edge the derivation drew into this leg for this unit
+    ━  an edge into this cell (expected, or drawn by the run)
     ┈  the unit is present here and was present earlier, but no edge arrives (expected or drawn)
-    ≡  bytes equal to the unit that are not the unit here (``=s1``); an edge
-       drawn into this cell is a false positive
     ·  absent
 """
 
@@ -27,11 +25,6 @@ def _present(case: Case, leg_index: int, unit: str) -> bool:
     return unit in leg.units
 
 
-def _equal(case: Case, leg_index: int, unit: str) -> bool:
-    leg = next(l for l in case.line.legs if l.index == leg_index)
-    return any(e.equal_to == unit for e in leg.elements)
-
-
 def render_grid(case: Case, on: Observation | None, off: Observation | None) -> str:
     """The expected grid above the observed one; in each, one block per
     conversation, leg numbers running on across conversations."""
@@ -43,10 +36,6 @@ def render_grid(case: Case, on: Observation | None, off: Observation | None) -> 
 
     lines = ["expected", _grid(case, case.edges, lambda i, u: u in case.must_see.get(i, ())),
              "", "observed", _grid(case, obs.edges, observed_found) if obs else "(not run)"]
-    if obs and obs.neighbourhood:
-        for leg_index in sorted(obs.neighbourhood):
-            cell = ", ".join(f"{u} {v}" for u, v in sorted(obs.neighbourhood[leg_index].items()))
-            lines.append(f"neighbourhood at {leg_index}: {cell}")
     sink = case.line.sink
     if sink:
         v_on = on.verdict if on else "?"
@@ -79,8 +68,8 @@ def _block(case: Case, legs, edges: set, found: Callable[[int, str], bool], conv
                 continue
             present = _present(case, leg.index, unit)
             edge_in = any(u == unit and to == leg.index for u, _, to in edges)
-            if present or _equal(case, leg.index, unit):
-                dot = ("●" if found(leg.index, unit) else "○") if present else "≡"
+            if present:
+                dot = "●" if found(leg.index, unit) else "○"
                 lead = "━" if edge_in else ("┈" if seen_before else " ")
                 cells.append(f"{lead * (W - 1)}{dot}" if (edge_in or seen_before) else f"{dot:<{W}}")
                 seen_before = seen_before or present

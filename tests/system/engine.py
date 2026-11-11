@@ -61,7 +61,6 @@ class Observation:
     raw_edges: list[dict[str, Any]]
     verdict: str | None                        # at the sink: enforcement_type as the record writes it
     timings: dict[str, float]
-    neighbourhood: dict[int, dict[str, str]]   # leg -> unit -> "k of n"
     observer_calls: int                        # risk-observer invocations (one per evidence state)
     problems: list[str] = dataclasses.field(default_factory=list)   # rows the judge cannot read: always red
 
@@ -87,8 +86,11 @@ def _wait_rows(dsn: str, n: int, timeout: float = 5.0) -> None:
 
 
 def verdict_at(records: list[dict[str, Any]], role: str) -> tuple[dict[str, Any] | None, str | None]:
-    """The risk record that evidences the flagged leg (*role* in its ``legs``), and a problem when there is
-    none or several that disagree. The verdict is its ``enforcement_type``, as written."""
+    """The risk record of the flagged exchange that evidences the flagged leg (*role* in its ``legs``), and a
+    problem when there is none or several that disagree. The verdict is its ``enforcement_type``, as written.
+    The harness sends every span before the processors run, so the record evidences the exchange's response
+    too; the renderer refuses a flagged exchange whose response carries a unit, and the judge one whose
+    response the model labelled."""
     mine = [r for r in records if role in r["legs"]]
     if not mine:
         return None, f"no risk record evidences the flagged {role} leg"
@@ -96,6 +98,19 @@ def verdict_at(records: list[dict[str, Any]], role: str) -> tuple[dict[str, Any]
         return None, ("risk records disagree at the flagged leg: "
                       + ", ".join(f"v{r['version']} {r['enforcement_type']}" for r in mine))
     return mine[-1], None
+
+
+def flagged_response_problems(rendered: list[Rendered], legs: dict[int, "LegRows"], sink: int) -> list[str]:
+    """The flagged exchange's response must reach the verdict with nothing labelled in it."""
+    req = next(r.request_span_id for r in rendered if r.leg.index == sink)
+    resp = next(r.leg.index for r in rendered if r.request_span_id == req and r.role == "response")
+    c = legs[resp].classification if resp in legs else None
+    if c is None:
+        return [f"the flagged exchange's response (leg {resp}) has no classification row"]
+    if c["findings"]:
+        return [f"the flagged exchange's response (leg {resp}) was labelled {sorted(c['findings'])}; "
+                f"the exchange's verdict would rest on it"]
+    return []
 
 
 def map_legs(rendered: list[Rendered], ix_of: dict[str, str], hash_of: dict[tuple[str, str], str],
@@ -258,38 +273,8 @@ def _read(case: Case, rendered: list[Rendered], dsn: str, mode: str) -> Observat
             risk=sink_record if sink and r.leg.index == sink.index else None,
         )
 
+    if sink:
+        problems += flagged_response_problems(rendered, legs, sink.index)
     return Observation(mode=mode, legs=legs, edges=resolved, raw_edges=raw, verdict=verdict, timings={},
-                       neighbourhood=neighbourhood(case, resolved), observer_calls=0, problems=problems)
+                       observer_calls=0, problems=problems)
 
-
-def neighbourhood(case: Case, edges: set[tuple[str, int, int]]) -> dict[int, dict[str, str]]:
-    """For every unit carried into a leg: of the OTHER units present at the unit's
-    origin leg, how many were also carried into this leg. ``k of n``."""
-    legs = {leg.index: leg for leg in case.line.legs}
-    incoming: dict[int, dict[str, set[int]]] = defaultdict(lambda: defaultdict(set))   # to -> unit -> froms
-    for unit, f, to in edges:
-        incoming[to][unit].add(f)
-
-    def origins(unit: str, leg: int) -> frozenset[int]:
-        """Every leg the unit's edges lead back to that no edge of the unit enters (all routes, no choice)."""
-        out, seen, todo = set(), set(), [leg]
-        while todo:
-            x = todo.pop()
-            if x in seen:
-                continue
-            seen.add(x)
-            froms = incoming.get(x, {}).get(unit)
-            if froms:
-                todo.extend(froms)
-            else:
-                out.add(x)
-        return frozenset(out or {leg})
-
-    out: dict[int, dict[str, str]] = {}
-    for to, units in incoming.items():
-        for unit in units:
-            o = origins(unit, to)
-            siblings = sorted({u for leg in o if leg in legs for u in legs[leg].units} - {unit})
-            k = sum(1 for s in siblings if s in units and origins(s, to) & o)
-            out.setdefault(to, {})[unit] = f"{k} of {len(siblings)}"
-    return out

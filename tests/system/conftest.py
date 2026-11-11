@@ -1,5 +1,5 @@
 """Fixtures for the system tests: the OTLP harness (real receiver + Postgres),
-one real OPA with the suite's one rule (T-SENS), and the report writer."""
+and one real OPA with the suite's one rule (T-SENS)."""
 
 from __future__ import annotations
 
@@ -14,8 +14,7 @@ from data_governance.risk.rules.rego import compile_policy
 # The real-OPA container fixture of the rules suite, reused as is.
 from tests.risk.rules.conftest import opa_base_url  # noqa: F401
 
-from .cases import all_cases
-from . import report, rules
+from . import rules
 
 
 @pytest.fixture(scope="session")
@@ -32,9 +31,3 @@ def trunk_opa(opa_base_url: str) -> Iterator[object]:
         finally:
             http.delete("/v1/policies/data_governance")
 
-
-@pytest.fixture(scope="session")
-def results() -> Iterator[report.Results]:
-    res = report.Results()
-    yield res
-    report.write(res, expected_cases=len(all_cases()))

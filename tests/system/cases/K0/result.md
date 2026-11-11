@@ -1,4 +1,4 @@
-# K0 — reborn, nothing
+# K0 — nothing crosses
 
 cell `trunk/cross`  ·  status **GREEN**
 
@@ -40,10 +40,6 @@ SSN     s1    ·      ·      ·      ·      ·      ·      ·      ·      ·
 MRN     s2    ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      
 DOB     s3    ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      
 DIS     s4    ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      
-neighbourhood at 8: s1 2 of 2, s2 2 of 2, s3 2 of 2
-neighbourhood at 9: s1 2 of 2, s2 2 of 2, s3 2 of 2
-neighbourhood at 10: s1 2 of 2, s2 2 of 2, s3 2 of 2
-neighbourhood at 11: s1 2 of 2, s2 2 of 2, s3 2 of 2
 verdict at 27: expected on=allow / off=allow, observed on=allow / off=allow
 ```
 
@@ -83,7 +79,7 @@ verdict at 27: expected on=allow / off=allow, observed on=allow / off=allow
 | 31 | L>A | PUBLIC  | — | — |
 | 32 | A>U | PUBLIC  | — | — |
 
-OPA calls: 33
+Risk observer calls: 33
 
-**Notes.** Conversation 2 is C5's shape; V2 returns nothing (neighbourhood —). The classifier labels nothing in conversation 2, so only a crossing from conversation 1 can produce the alert at V3. Wanted under person-anchored: allow.
+**Notes.** Two conversations of one agent, ten minutes apart; the second carries no value. Nothing crosses: no edge reaches conversation 2 and V3 is allowed.
 

@@ -9,9 +9,9 @@ from pathlib import Path
 import pytest
 
 from . import caseline as cl
-from .cases import CASES_DIR, Case, Excuse, load_case
+from .cases import CASES_DIR, Case, load_case
 from .classify import check_authored
-from .engine import LegRows, Observation, neighbourhood, resolve_edges, verdict_at
+from .engine import LegRows, Observation, flagged_response_problems, resolve_edges, verdict_at
 from .grid import render_grid
 from .render import render
 from .report import judge
@@ -23,8 +23,8 @@ MRN = "4471820"   # s1's bytes as an MRN
 
 def _case(**over) -> Case:
     base = dict(id="J", title="", cell="", line_text=LINE, line=cl.parse(LINE), units={"s1": "MRN"},
-                verdict={"on": "block", "off": "allow"}, edges=set(EDGES), cannot=None,
-                pending=None, must_see={}, must_miss={}, authored=False, notes="", dir=Path("."))
+                verdict={"on": "block", "off": "allow"}, edges=set(EDGES),
+                must_see={}, must_miss={}, authored=False, notes="", dir=Path("."))
     base.update(over)
     base.setdefault("accepts", {u: frozenset({t}) for u, t in base["units"].items()})
     return Case(**base)
@@ -32,7 +32,7 @@ def _case(**over) -> Case:
 
 def _obs(mode: str, edges: set, verdict: str | None, legs: dict | None = None, problems=()) -> Observation:
     return Observation(mode=mode, legs=legs or {}, edges=edges, raw_edges=[], verdict=verdict, timings={},
-                       neighbourhood={}, observer_calls=0, problems=list(problems))
+                       observer_calls=0, problems=list(problems))
 
 
 def _at(index: int, *findings: tuple[str, str]) -> LegRows:
@@ -101,44 +101,9 @@ def test_on_and_off_runs_that_draw_different_edges_are_red():
     assert out.status == "RED" and out.reasons[0].startswith("the on and off runs drew different edges")
 
 
-def test_a_problem_reading_the_rows_is_red_even_for_a_pending_case():
-    case = _case(pending=Excuse("waits", missing=frozenset({("s1", 2, 3)}), verdict=frozenset({"on"})))
-    out = _judge(case, on_edges={("s1", 1, 2)}, on="allow", off_edges={("s1", 1, 2)},
-                 problems=["edge s1 1>None (MRN) has an end on no line leg"])
-    assert out.status == "RED" and out.reasons[0] == "on: edge s1 1>None (MRN) has an end on no line leg"
-
-
-# --- pending and cannot excuse exactly what they state ----------------------------------------------------------
-
-WAITS = Excuse("waits", missing=frozenset({("s1", 2, 3)}), verdict=frozenset({"on"}))
-
-
-def test_a_pending_case_that_fails_exactly_as_stated_is_pending():
-    out = _judge(_case(pending=WAITS), on_edges={("s1", 1, 2)}, on="allow")
-    assert out.status == "PENDING" and out.reasons[0] == "pending: waits"
-
-
-def test_a_pending_case_that_fails_otherwise_is_red():
-    out = _judge(_case(pending=WAITS), on_edges=set(), on="allow")   # 1>2 is missing too, which pending does not state
-    assert out.status == "RED" and out.reasons[0].startswith("differs from what pending states")
-
-
-def test_a_pending_case_that_passes_is_red():
-    out = _judge(_case(pending=WAITS))
-    assert out.status == "RED" and out.reasons[0].startswith("passes while marked pending")
-
-
-def test_a_cannot_case_that_fails_exactly_as_stated_is_red_by_design():
-    case = _case(cannot=Excuse("the value leaves through a hop no sidecar sees", missing=frozenset(EDGES),
-                               verdict=frozenset({"on"})))
-    out = _judge(case, on_edges=set(), on="allow")
-    assert out.status == "RED-BY-DESIGN" and out.reasons[0].startswith("cannot: ")
-
-
-def test_pending_must_state_what_it_excuses(tmp_path: Path):
-    with pytest.raises(ValueError, match="states reason and exactly what it gets wrong"):
-        load_case(_yaml(tmp_path, "expect:\n  verdict: {'on': block, 'off': allow}\n  edges: []\n  pending: waits\n"
-                                  "classifier:\n  must_see: {1: [s1], 2: [s1], 3: [s1]}\n"))
+def test_a_problem_reading_the_rows_is_red():
+    out = _judge(_case(), problems=["edge s1 1>None (MRN) has an end on no line leg"])
+    assert out.status == "RED" and out.reasons == ["on: edge s1 1>None (MRN) has an end on no line leg"]
 
 
 # --- the classifier premise -------------------------------------------------------------------------------------
@@ -269,14 +234,6 @@ def test_the_verdict_is_the_record_that_evidences_the_flagged_leg(records, role,
     assert (record["enforcement_type"] if record else None, got) == (verdict, problem)
 
 
-def test_neighbourhood_follows_every_route_back():
-    # s1 reaches 4 from two origins: 1 (born beside s2) and 3 (born alone). Both count, neither is chosen.
-    line = "U>A[s1 s2 -], A>L[-], L>A[s1 -], A>T1[s1 s2 -]"
-    case = _case(line_text=line, line=cl.parse(line), units={"s1": "MRN", "s2": "SSN"}, verdict={})
-    edges = {("s1", 1, 4), ("s1", 3, 4), ("s2", 1, 4)}
-    assert neighbourhood(case, edges)[4] == {"s1": "1 of 1", "s2": "1 of 1"}
-
-
 # --- the case states everything; the renderer refuses an ambiguous line ------------------------------------------
 
 def test_edges_are_required(tmp_path: Path):
@@ -296,12 +253,12 @@ def test_two_units_never_travel_as_the_same_bytes():
 
 @pytest.mark.parametrize("line, error", [
     ("U>A[s1 s1 -]", "two values under the key 'mrn'"),
-    ("U>A[s1@id x1@id -]", "two values under the key 'id'"),
-    ("U>A[x1@note -]", "key 'note' is reserved for filler"),
+    ("U>A[s1@id s2@id -]", "two values under the key 'id'"),
+    ("U>A[s1@note -]", "key 'note' is reserved for filler"),
 ])
 def test_a_payload_never_loses_a_value(line, error):
     with pytest.raises(ValueError, match=re.escape(error)):
-        render("Y", {"s1": "MRN"}, cl.parse(line))
+        render("Y", {"s1": "MRN", "s2": "SSN"}, cl.parse(line))
 
 
 @pytest.mark.parametrize("line, error", [
@@ -354,9 +311,8 @@ def test_the_case_record_carries_no_timing():
     from .report import case_markdown
     obs = _obs("on", EDGES, "block")
     obs.timings = {"reset": 0.1, "total": 0.1}
-    out = judge(_case(), obs, _obs("off", EDGES, "allow"))
-    assert "Timing (on)" in case_markdown(out) and "Timing (on)" not in case_markdown(out, timings=False)
-    assert "Risk observer calls: 0" in case_markdown(out, timings=False)
+    record = case_markdown(judge(_case(), obs, _obs("off", EDGES, "allow")))
+    assert "0.1" not in record and "Risk observer calls: 0" in record
 
 
 # --- every remaining refusal ----------------------------------------------------------------------------------
@@ -366,12 +322,8 @@ VERDICT = "  verdict: {'on': block, 'off': allow}\n"
 
 
 @pytest.mark.parametrize("expect, error", [
-    ("  edges: []\n  pending: {reason: a}\n  cannot: {reason: b}\n", "pending or cannot, not both"),
-    ("  edges: []\n  pending: {reason: a, verdict: [both]}\n", "verdict lists modes 'on'/'off'"),
     ("  edges: [s2 1>2]\n", "naming an undeclared unit or a leg the line lacks"),
     ("  edges: [s1 1>9]\n", "naming an undeclared unit or a leg the line lacks"),
-    ("  edges: [s1 1>2]\n  pending: {reason: a, missing: [s1 2>3]}\n", "excused missing edges that expect.edges does not list"),
-    ("  edges: [s1 1>2]\n  pending: {reason: a, extra: [s1 1>2]}\n", "excused extra edges that expect.edges lists"),
 ])
 def test_the_loader_refuses_an_inconsistent_expectation(tmp_path: Path, expect, error):
     with pytest.raises(ValueError, match=re.escape(error)):
@@ -390,6 +342,15 @@ def test_an_expected_edge_joins_legs_that_carry_its_unit(tmp_path: Path):
     ("U>A[-], A>T1[-], T1(A)>A[s1 -]", "(caller) belongs on a request"),
     ("U>A[-], A>T1[-], V1>T1[s1 -]", "V1>T1 answers no open request"),
     ("U>A[-], A>U[-], A>T1[s1 -]", "A sends A>T1 while serving no call"),
+    ("A>T1[-], T1>A[-]", "a conversation starts with the user"),
+    ("U>A[-], A>T1[-]", "requests the conversation never answers: 1 U>A, 2 A>T1"),
+    ("U>A[-], A>T1[-], T1>A[-]⚑, A>U[-]", "⚑ marks a request; T1>A is a response"),
+    ("U>A[-], A>T1[-], T1>V1[-]⚑, V1>T1[s1 -], T1>A[-], A>U[-]", "the flagged exchange's response carries s1"),
+    ("Q>A[-]", "unknown party 'Q'"),
+    ("U>A[y1]", "bad element 'y1'"),
+    ("U>A[-", "bad leg"),
+    ("[-]", "leg needs parties"),
+    ("U>A[s2 -], A>U[-]", "unit s2 is not declared in units"),
 ])
 def test_the_renderer_refuses_a_line_it_would_have_to_guess(line, error):
     with pytest.raises(ValueError, match=re.escape(error)):
@@ -421,3 +382,41 @@ def test_authored_subtraction_never_touches_a_text_a_must_see_leg_shares():
                  edges={("s1", 1, 2)}, must_see={1: ["s1"]}, must_miss={2: ["s1"]}, authored=True)
     with pytest.raises(ValueError, match="must_see shares its payload text with a must_miss leg"):
         authored_map(case, render(case.id, case.units, case.line))
+
+
+def test_a_case_cannot_have_more_units_of_a_type_than_values():
+    with pytest.raises(ValueError, match="more than 2 units of SSN"):
+        render("Y", {"s1": "SSN", "s2": "SSN", "s3": "SSN"}, cl.parse(LINE))
+
+
+def test_an_uncalibrated_payload_fails_loudly():
+    from .classify import ReplayDetector, UncalibratedPayload
+    with pytest.raises(UncalibratedPayload, match="not in findings.json"):
+        ReplayDetector({"by_text": {}}).detect("a payload nobody calibrated")
+
+
+@pytest.mark.parametrize("body, error", [
+    ("notes: a\nnote: b\n", "unknown top-level keys ['note']"),
+    ("classifier:\n  must_see: {1: [s1], 2: [s1], 3: [s1]}\n  authord: true\n", "unknown classifier.keys ['authord']"),
+    ("notes: a\nnotes: b\n", "duplicated key(s) ['notes']"),
+])
+def test_the_loader_refuses_a_typo(tmp_path: Path, body, error):
+    with pytest.raises(ValueError, match=re.escape(error)):
+        load_case(_yaml(tmp_path, "expect:\n" + VERDICT + "  edges: []\n" + body))
+
+
+def test_a_case_id_is_its_directory_name(tmp_path: Path):
+    d = _yaml(tmp_path, "expect:\n" + VERDICT + "  edges: []\n" + SEE_ALL)
+    moved = d.rename(tmp_path / "Z")
+    with pytest.raises(ValueError, match="id 'Y' is not the case directory's name"):
+        load_case(moved)
+
+
+def test_the_flagged_exchange_response_must_carry_no_finding():
+    r = render("Y", {"s1": "MRN"}, cl.parse(LINE))
+    clean = {4: _at(4)}
+    assert flagged_response_problems(r.rendered, clean, 3) == []
+    assert flagged_response_problems(r.rendered, {}, 3) == [
+        "the flagged exchange's response (leg 4) has no classification row"]
+    assert flagged_response_problems(r.rendered, {4: _at(4, ("DATE", "02:00"))}, 3) == [
+        "the flagged exchange's response (leg 4) was labelled [('DATE', '02:00')]; the exchange's verdict would rest on it"]

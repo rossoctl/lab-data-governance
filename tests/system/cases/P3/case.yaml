@@ -19,7 +19,6 @@ expect:
   - s1 4>7
   - s1 3>9
   - s1 4>10
-  pending: null
 classifier:
   must_see:
     '1':

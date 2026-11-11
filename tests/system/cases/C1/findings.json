@@ -10,43 +10,5 @@
   "{\"note\": \"batch job window 02:00\"}": [],
   "{\"note\": \"routine refill request received\"}": []
  },
- "summary": {
-  "{\"note\": \"please process at the usual priority\"}": {
-   "sensitivity_level": "PUBLIC",
-   "regulatory_tags": [],
-   "identity_bundle": false,
-   "findings": []
-  },
-  "{\"note\": \"no further action needed\"}": {
-   "sensitivity_level": "PUBLIC",
-   "regulatory_tags": [],
-   "identity_bundle": false,
-   "findings": []
-  },
-  "{\"note\": \"forwarded for fulfilment\"}": {
-   "sensitivity_level": "PUBLIC",
-   "regulatory_tags": [],
-   "identity_bundle": false,
-   "findings": []
-  },
-  "{\"note\": \"acknowledged\"}": {
-   "sensitivity_level": "PUBLIC",
-   "regulatory_tags": [],
-   "identity_bundle": false,
-   "findings": []
-  },
-  "{\"note\": \"batch job window 02:00\"}": {
-   "sensitivity_level": "PUBLIC",
-   "regulatory_tags": [],
-   "identity_bundle": false,
-   "findings": []
-  },
-  "{\"note\": \"routine refill request received\"}": {
-   "sensitivity_level": "PUBLIC",
-   "regulatory_tags": [],
-   "identity_bundle": false,
-   "findings": []
-  }
- },
  "authored": null
 }

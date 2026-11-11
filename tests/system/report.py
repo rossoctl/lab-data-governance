@@ -1,17 +1,12 @@
-"""Collect every case's outcome and write ``tests/system/REPORT.md`` plus one
-``result.md`` per case directory, grids included."""
+"""Judge a case and write its record, ``cases/<id>/result.md``, grids included."""
 
 from __future__ import annotations
 
 import dataclasses
-import datetime as dt
-from pathlib import Path
 
 from .cases import Case
 from .engine import Observation
 from .grid import render_grid
-
-REPORT = Path(__file__).parent / "REPORT.md"
 
 
 @dataclasses.dataclass
@@ -19,15 +14,10 @@ class Outcome:
     case: Case
     on: Observation | None
     off: Observation | None
-    status: str                    # GREEN | RED | RED-BY-DESIGN | PENDING
+    status: str                    # GREEN | RED
     reasons: list[str]
     edge_diff: tuple[set, set]     # (missing vs expected, extra vs expected)
     classifier_notes: list[str]
-
-
-class Results:
-    def __init__(self) -> None:
-        self.outcomes: list[Outcome] = []
 
 
 def _types(case: Case, unit: str) -> str:
@@ -58,15 +48,12 @@ def premise(case: Case, on: Observation) -> list[str]:
 
 
 def judge(case: Case, on: Observation, off: Observation) -> Outcome:
-    """Exact: the observation is compared with what the case states and nothing else. Problems reading the rows,
-    a broken classifier premise and on/off runs that drew different edges are red whatever the case says;
-    a pending (or cannot) case is excused only for exactly the differences it states."""
-    wrong_verdict: set[str] = set()
+    """Exact: GREEN when the observation is what the case states, RED otherwise. Problems reading the rows, a
+    broken classifier premise and on/off runs that drew different edges are red too."""
     reasons: list[str] = []
     if case.line.sink is not None:
         for mode, obs in (("on", on), ("off", off)):
             if obs.verdict != case.verdict[mode]:
-                wrong_verdict.add(mode)
                 reasons.append(f"verdict {mode}: want {case.verdict[mode]}, got {obs.verdict}")
     missing = case.edges - on.edges
     extra = on.edges - case.edges
@@ -81,31 +68,14 @@ def judge(case: Case, on: Observation, off: Observation) -> Outcome:
                     f"off only {_edges(off.edges - on.edges) or '-'}")
     notes = [f"{mode}: {n}" for mode, obs in (("on", on), ("off", off)) for n in premise(case, obs)]
     hard += [f"classifier premise, {n}" for n in notes]
-
-    excuse = case.pending or case.cannot
-    word = "pending" if case.pending else "cannot"
-    diff = (frozenset(missing), frozenset(extra), frozenset(wrong_verdict))
-    if hard:
-        status = "RED"
-        reasons = hard + reasons
-    elif excuse is None:
-        status = "GREEN" if not any(diff) else "RED"
-    elif not any(diff):
-        status = "RED"
-        reasons.insert(0, f"passes while marked {word} ({excuse.reason}): drop the {word} block")
-    elif diff == (excuse.missing, excuse.extra, excuse.verdict):
-        status = "PENDING" if case.pending else "RED-BY-DESIGN"
-        reasons.insert(0, f"{word}: {excuse.reason}")
-    else:
-        status = "RED"
-        reasons.insert(0, f"differs from what {word} states (missing {_edges(excuse.missing) or '-'}; "
-                          f"extra {_edges(excuse.extra) or '-'}; verdict {sorted(excuse.verdict) or '-'})")
+    reasons = hard + reasons
+    status = "RED" if reasons else "GREEN"
     return Outcome(case, on, off, status, reasons, (missing, extra), notes)
 
 
-def case_markdown(o: Outcome, timings: bool = True) -> str:
-    """One case's record. ``timings=False`` (``result.md``) leaves out what changes on every run, so a run that
-    changes nothing rewrites no case file."""
+def case_markdown(o: Outcome) -> str:
+    """One case's record, ``cases/<id>/result.md``. Nothing in it changes from run to run unless the result does
+    (timings go to the test's output), so a run that changes nothing rewrites no file."""
     c = o.case
     authored = (f"  ·  classifier **authored**: the model's findings subtracted at legs {sorted(c.must_miss)}"
                 if c.authored else "")
@@ -132,40 +102,12 @@ def case_markdown(o: Outcome, timings: bool = True) -> str:
                 risk = f"{r.risk['risk_level']} {r.risk['enforcement_type']} {r.risk['rules']} v{r.risk['version']}"
             lines.append(f"| {leg.index} | {leg.label()}{'⚑' if leg.sink else ''} | {cls} | {inh} | {risk} |")
         lines.append("")
-        t = o.on.timings
-        if timings:
-            lines.append(f"**Timing (on).** total {t.get('total')} s: "
-                         + ", ".join(f"{k} {v}" for k, v in t.items() if k != "total"))
         lines += [f"Risk observer calls: {o.on.observer_calls}", ""]
     if c.notes:
         lines += ["**Notes.** " + c.notes.strip(), ""]
     return "\n".join(lines)
 
 
-def write(results: Results, expected_cases: int | None = None) -> None:
-    import os
-    now = dt.datetime.now(dt.timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M %Z")
-    tag = os.environ.get("SYSTEM_REPORT_TAG", "")
-    full = expected_cases is None or len(results.outcomes) >= expected_cases
-    if not full and not tag:
-        tag = "partial"   # a subset ran (-k, -x): never overwrite the full record
-    env = {k: v for k, v in os.environ.items()   # not RISK_INHERITED_LABELS: each run sets the mode itself
-           if k.startswith(("LABEL_", "RISK_")) and k != "RISK_INHERITED_LABELS"}
-    target = REPORT if not tag else REPORT.with_name(f"REPORT-{tag}.md")
-    rows = ["# System tests — label lineage, exact match" + (f" ({tag})" if tag else ""), "",
-            f"*Generated {now} by `pytest tests/system`; environment {env}.*", "",
-            "| case | cell | classifier | line | on / off | status | note |", "|---|---|---|---|---|---|---|"]
-    for o in results.outcomes:
-        v = f"{o.on.verdict if o.on else '?'} / {o.off.verdict if o.off else '?'}"
-        note = o.reasons[0] if o.reasons else ""
-        clf = "authored" if o.case.authored else "real"
-        rows.append(f"| [{o.case.id}](cases/{o.case.id}/result.md) | `{o.case.cell}` | {clf} | `{o.case.line_text}` | {v} | **{o.status}** | {note} |")
-    counts = {}
-    for o in results.outcomes:
-        counts[o.status] = counts.get(o.status, 0) + 1
-    rows += ["", "**" + " · ".join(f"{k} {v}" for k, v in sorted(counts.items())) + "**", ""]
-    for o in results.outcomes:
-        rows += ["---", "", case_markdown(o)]
-        if full and not tag:
-            (o.case.dir / "result.md").write_text(case_markdown(o, timings=False) + "\n")
-    target.write_text("\n".join(rows) + "\n")
+
+def write(o: Outcome) -> None:
+    (o.case.dir / "result.md").write_text(case_markdown(o) + "\n")

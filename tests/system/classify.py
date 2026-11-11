@@ -117,8 +117,7 @@ def calibrate(case_dir: Path, texts: dict[str, dict[str, Any]], detector,
         "model_version": MODEL_VERSION,
         "calibrated_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
         "by_text": by_text,
-        "summary": summary,
         "authored": subtracted if authored else None,
     }
     (case_dir / "findings.json").write_text(json.dumps(out, indent=1, ensure_ascii=False) + "\n")
-    return out
+    return {**out, "summary": summary}   # the summary is printed by calibrate for the author, not stored

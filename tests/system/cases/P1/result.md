@@ -22,10 +22,6 @@ SSN     s1    ●           ━━━━━━━━━━━●━━━━━�
 MRN     s2    ·           ·           ·           ●           ━━━━━━━━━━━○·           ━━━━━━━━━━━○·           
 DOB     s3    ·           ·           ·           ·           ·           ·           ·           ·           
 DIS     s4    ·           ·           ·           ·           ·           ·           ·           ·           
-neighbourhood at 2: s1 0 of 0
-neighbourhood at 3: s1 0 of 0
-neighbourhood at 5: s1 0 of 0, s2 0 of 0
-neighbourhood at 7: s1 0 of 0, s2 0 of 0
 verdict at 5: expected on=block / off=allow, observed on=block / off=allow
 ```
 
@@ -42,7 +38,7 @@ verdict at 5: expected on=block / off=allow, observed on=block / off=allow
 | 7 | T1>A | PUBLIC  | s1=123-45-6789 (SSN, from 2), s2=4471820 (MRN, from 4) | — |
 | 8 | A>U | PUBLIC  | — | — |
 
-OPA calls: 11
+Risk observer calls: 11
 
 **Notes.** Picture 1 of #348. Inside A's call, T1 asks V1, then asks V2 with what V1 returned, then answers A. T1's second request inherits from the call that opened it (s1 2>5) and from V1's answer inside the call (s2 4>5); its answer carries both (2>7, 4>7). Before #348 the fold drew s2 4>5 only, and no 4>7.
 

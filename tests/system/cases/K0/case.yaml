@@ -1,5 +1,5 @@
 id: K0
-title: reborn, nothing
+title: nothing crosses
 cell: trunk/cross
 line: U>A[-], A>L[-], L>A[-], A>T1[-], ..V1.., T1>A[s1 s2 s3 -], A>L[s1 s2 s3 -], L>A[s1 s2 s3 -], A>T2[s1 s2 s3 -], T2>V2[s1
   s2 s3 -], V2>T2[-], T2>A[-], A>L[-], L>A[-], A>U[-] ~10min> U>A[-], A>L[-], L>A[-], A>T2[-], T2>V2[-], V2>T2[-], T2>A[-],
@@ -29,7 +29,6 @@ expect:
   - s1 7>10
   - s2 7>10
   - s3 7>10
-  pending: null
 classifier:
   must_see:
     '7':
@@ -54,5 +53,5 @@ classifier:
     - s3
   must_miss: {}
   authored: false
-notes: 'Conversation 2 is C5''s shape; V2 returns nothing (neighbourhood —). The classifier labels nothing in conversation
-  2, so only a crossing from conversation 1 can produce the alert at V3. Wanted under person-anchored: allow.'
+notes: 'Two conversations of one agent, ten minutes apart; the second carries no value. Nothing crosses: no edge reaches conversation
+  2 and V3 is allowed.'

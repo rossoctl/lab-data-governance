@@ -46,7 +46,7 @@ verdict at 5: expected on=allow / off=allow, observed on=allow / off=allow
 | 15 | L>A | PUBLIC  | — | — |
 | 16 | A>U | PUBLIC  | — | — |
 
-OPA calls: 16
+Risk observer calls: 16
 
 **Notes.** No route. Nothing sensitive is on the wire; the control for the rule and the harness.
 

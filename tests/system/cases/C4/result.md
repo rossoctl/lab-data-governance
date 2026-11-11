@@ -22,10 +22,6 @@ SSN     s1    ●      ·      ·      ·      ·      ·      ·      ━━━
 MRN     s2    ●      ·      ·      ·      ·      ·      ·      ━━━━━━●━━━━━━○━━━━━━○━━━━━━○·      ·      ·      ·      ·      
 DOB     s3    ●      ·      ·      ·      ·      ·      ·      ━━━━━━●━━━━━━○━━━━━━○━━━━━━○·      ·      ·      ·      ·      
 DIS     s4    ●      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      
-neighbourhood at 8: s1 2 of 3, s2 2 of 3, s3 2 of 3
-neighbourhood at 9: s1 2 of 3, s2 2 of 3, s3 2 of 3
-neighbourhood at 10: s1 2 of 3, s2 2 of 3, s3 2 of 3
-neighbourhood at 11: s1 2 of 3, s2 2 of 3, s3 2 of 3
 verdict at 11: expected on=block / off=allow, observed on=block / off=allow
 ```
 
@@ -50,7 +46,7 @@ verdict at 11: expected on=block / off=allow, observed on=block / off=allow
 | 15 | L>A | PUBLIC  | — | — |
 | 16 | A>U | PUBLIC  | — | — |
 
-OPA calls: 19
+Risk observer calls: 19
 
 **Notes.** Root to the right leaf, the left branch benign: legs 4 to 7 carry nothing, the agent held the facts across a clean exchange.
 

@@ -8,14 +8,16 @@ line writes, nothing more.
 Nothing is guessed: a request belongs to the one call its sender is serving (or
 the one ``T1(A1)>V1`` names), and the renderer refuses a line where that is not
 exactly one call (only the user sends a request serving none), a response with
-no open request (a payload to the user, from an LLM, a partner or a store, or
+no open request (a payload to the user, from an LLM or a partner, or
 from a tool to an agent is always a response), a response with two, a
 conversation that does not start with the user, a request the conversation never
-answers, two units with equal bytes, and two values under one JSON key.
+answers, ⚑ on a response, a flagged request whose response carries a unit (the
+verdict is the flagged exchange's risk record), two units with equal bytes, and
+two values under one JSON key.
 
 Sidecars: agents and tools have one (both sides of an agent-tool call are
 emitted, caller CLIENT spans and callee SERVER echoes, as live clusters do);
-users, LLMs, external partners and stores have none.
+users, LLMs and external partners have none.
 """
 
 from __future__ import annotations
@@ -120,15 +122,11 @@ class Renderer:
             if e.is_filler:
                 body[f"note{fill or ''}"] = FILLER[(leg.index + fill) % len(FILLER)]
                 fill += 1
-            elif e.equal_to is not None:
-                put(e.key or KEYS[self.units[e.equal_to]], self.values[e.equal_to])
-            elif e.is_unit:
+            else:
                 if e.name not in self.units:
                     raise ValueError(f"{self.case_id} leg {leg.index}: unit {e.name} is not declared in units")
                 put(e.key or KEYS[self.units[e.name]], self.values[e.name])
                 text_values[e.name] = self.values[e.name]
-            else:  # x1: recurring unnamed content
-                put(e.key or e.name, f"ref {e.name} {hashlib.sha1((self.case_id + e.name).encode()).hexdigest()[:6]}")
         return body, text_values
 
     # --- ids ---------------------------------------------------------------
@@ -157,7 +155,7 @@ class Renderer:
             return "inference"
         if k2 == "tool":
             return "mcp"
-        if k2 == "external" or k2 == "store":
+        if k2 == "external":
             return "http"
         return "a2a"   # agent to agent, user to agent
 
@@ -263,7 +261,13 @@ class Renderer:
                 if answering:
                     if leg.for_call:
                         raise ValueError(f"leg {leg.index}: (caller) belongs on a request, {leg.label()} is a response")
+                    if leg.sink:
+                        raise ValueError(f"{self.case_id} leg {leg.index}: ⚑ marks a request; {leg.label()} is a response")
                     ex = answering[0]
+                    if ex.leg.sink and leg.units:
+                        raise ValueError(f"{self.case_id} leg {leg.index}: the flagged exchange's response carries "
+                                         f"{' '.join(leg.units)}; the verdict is the exchange's risk record, so it "
+                                         f"must rest on the request alone")
                     open_.remove(ex)
                     self.close_exchange(ex, body, at)
                     self.rendered.append(Rendered(leg, trace_id, ex.req_id, "response", body, values))
@@ -288,10 +292,10 @@ class Renderer:
 
 
 def _answer_only(leg: cl.Leg) -> bool:
-    """A payload that can only be a response: to the user, from a party that never calls (an LLM, a partner, a
-    store), or from a tool to an agent."""
+    """A payload that can only be a response: to the user, from a party that never calls (an LLM, a partner),
+    or from a tool to an agent."""
     frm, to = cl.kind_of(leg.frm), cl.kind_of(leg.to)
-    return to == "user" or frm in ("llm", "external", "store") or (frm == "tool" and to == "agent")
+    return to == "user" or frm in ("llm", "external") or (frm == "tool" and to == "agent")
 
 
 def render(case_id: str, units: dict[str, str], case: cl.CaseLine) -> Renderer:

@@ -22,10 +22,6 @@ SSN     s1    ●      ━━━━━━●━━━━━━○━━━━━
 MRN     s2    ●      ━━━━━━●━━━━━━○━━━━━━○━━━━━━○·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      
 DOB     s3    ●      ━━━━━━●━━━━━━○━━━━━━○━━━━━━○·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      
 DIS     s4    ●      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      
-neighbourhood at 2: s1 2 of 3, s2 2 of 3, s3 2 of 3
-neighbourhood at 3: s1 2 of 3, s2 2 of 3, s3 2 of 3
-neighbourhood at 4: s1 2 of 3, s2 2 of 3, s3 2 of 3
-neighbourhood at 5: s1 2 of 3, s2 2 of 3, s3 2 of 3
 verdict at 5: expected on=block / off=allow, observed on=block / off=allow
 ```
 
@@ -50,7 +46,7 @@ verdict at 5: expected on=block / off=allow, observed on=block / off=allow
 | 15 | L>A | PUBLIC  | — | — |
 | 16 | A>U | PUBLIC  | — | — |
 
-OPA calls: 19
+Risk observer calls: 19
 
 **Notes.** Same route as C2. From the LLM's answer on the facts travel under keys the model does not recognise; only lineage carries the label to V1.
 

@@ -22,10 +22,6 @@ SSN     s1    ·      ·      ·      ·             ●      ━━━━━━
 MRN     s2    ·      ·      ·      ·             ●      ━━━━━━○━━━━━━○━━━━━━○━━━━━━○·      ·      ·      ·      ·      
 DOB     s3    ·      ·      ·      ·             ●      ━━━━━━○━━━━━━○━━━━━━○━━━━━━○·      ·      ·      ·      ·      
 DIS     s4    ·      ·      ·      ·             ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      
-neighbourhood at 8: s1 2 of 2, s2 2 of 2, s3 2 of 2
-neighbourhood at 9: s1 2 of 2, s2 2 of 2, s3 2 of 2
-neighbourhood at 10: s1 2 of 2, s2 2 of 2, s3 2 of 2
-neighbourhood at 11: s1 2 of 2, s2 2 of 2, s3 2 of 2
 verdict at 11: expected on=block / off=allow, observed on=block / off=allow
 ```
 
@@ -49,7 +45,7 @@ verdict at 11: expected on=block / off=allow, observed on=block / off=allow
 | 15 | L>A | PUBLIC  | — | — |
 | 16 | A>U | PUBLIC  | — | — |
 
-OPA calls: 17
+Risk observer calls: 17
 
 **Notes.** C5 with V1 off the wire: T1 is the leaf, the origin is T1's answer at leg 7; legs 5 and 6 are the unseen hop.
 

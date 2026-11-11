@@ -1,18 +1,17 @@
 """The case line: one line of text, the conversation a case puts on the wire.
 
-    U>A[-], A>T1[-], T1>A[s1 s2 s3 -], A>T2[s1@patient_ref -], T2>V[s1@external_id -]⚑
+    U>A[-], A>T1[-], T1>A[s1 s2 s3 -], A>T2[s1@patient_ref -], T2>V[s1@external_id -]⚑, V>T2[-], T2>A[-], A>U[-]
 
 - ``X>Y[...]`` is one wire payload sent by X to Y. Party letters give the kind:
-  ``U`` user, ``A`` agent, ``T`` tool, ``L`` LLM, ``V`` external partner,
-  ``P`` a store no sidecar sees. A digit suffix distinguishes parties of one kind.
+  ``U`` user, ``A`` agent, ``T`` tool, ``L`` LLM, ``V`` external partner.
+  A digit suffix distinguishes parties of one kind.
 - Inside ``[...]``: ``s1`` a sensitive unit (its label is declared once per case),
-  ``-`` some content nobody cares about, ``x1`` content that recurs later,
-  ``=s1`` bytes equal to s1 that are NOT that unit here, ``s1@key`` the JSON key
-  the value travels under (by default the label's own key: ``ssn``, ``mrn``, ``dob`` ...).
+  ``-`` some content nobody cares about, ``s1@key`` the JSON key the value travels
+  under (by default the label's own key: ``ssn``, ``mrn``, ``dob`` ...).
 - ``T1(A1)>V1[...]``: the request T1 sends belongs to the call A1 opened on T1 (the wire
   parent). Without it the sender must be serving exactly one call; the renderer refuses the line otherwise.
-- ``,`` the next payload in the same conversation; ``..P..`` an invisible hop
-  through P (two payloads, there and back, so the numbering stays the trunk's); ``⚑`` after a payload marks the egress the verdict is read at;
+- ``,`` the next payload in the same conversation; ``..V1..`` an invisible hop
+  through V1 (two payloads, there and back, so the numbering stays the trunk's); ``⚑`` after a payload marks the egress the verdict is read at;
   ``~>`` (or ``~10min>``) a later conversation.
 """
 
@@ -21,18 +20,17 @@ from __future__ import annotations
 import dataclasses
 import re
 
-PARTY_KINDS = {"U": "user", "A": "agent", "T": "tool", "L": "llm", "V": "external", "P": "store"}
+PARTY_KINDS = {"U": "user", "A": "agent", "T": "tool", "L": "llm", "V": "external"}
 
 
 @dataclasses.dataclass(frozen=True)
 class Element:
-    name: str            # "s1", "x1", "-"
+    name: str            # "s1", "-"
     key: str | None      # JSON key override
-    equal_to: str | None # for "=s1": the unit whose bytes this copies
 
     @property
     def is_unit(self) -> bool:
-        return self.equal_to is None and self.name != "-" and not self.name.startswith("x")
+        return self.name != "-"
 
     @property
     def is_filler(self) -> bool:
@@ -104,12 +102,10 @@ def _element(token: str) -> Element:
     if "@" in token:
         token, key = token.split("@", 1)
     if token == "-":
-        return Element("-", None, None)
-    if token.startswith("="):
-        return Element(token, key, token[1:])
-    if not re.fullmatch(r"[sx]\d+|[a-z]+\d*", token):
+        return Element("-", None)
+    if not re.fullmatch(r"s\d+", token):
         raise ValueError(f"bad element {token!r}")
-    return Element(token, key, None)
+    return Element(token, key)
 
 
 def _split_legs(text: str) -> list[str]:

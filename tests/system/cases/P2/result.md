@@ -22,12 +22,6 @@ SSN     s1    ●      ·      ━━━━━━●·      ━━━━━━�
 MRN     s2    ·      ●      ·      ━━━━━━●·      ·      ━━━━━━○·      ·      ━━━━━━○·      ·      
 DOB     s3    ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      
 DIS     s4    ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      
-neighbourhood at 3: s1 0 of 0
-neighbourhood at 4: s2 0 of 0
-neighbourhood at 5: s1 0 of 0
-neighbourhood at 7: s2 0 of 0
-neighbourhood at 9: s1 0 of 0
-neighbourhood at 10: s2 0 of 0
 verdict at 5: expected on=block / off=allow, observed on=block / off=allow
 ```
 
@@ -48,7 +42,7 @@ verdict at 5: expected on=block / off=allow, observed on=block / off=allow
 | 11 | A1>U | PUBLIC  | — | — |
 | 12 | A2>U | PUBLIC  | — | — |
 
-OPA calls: 16
+Risk observer calls: 16
 
 **Notes.** Picture 2 of #348. A1 and A2 call T1; A2's request arrives before T1 serves A1. T1(A1)>V1 belongs to A1's call, so it carries s1 (3>5) and nothing of A2's; before #348 the fold routed it from the latest inbound (A2's) and V1 saw no label: verdict allow.
 
