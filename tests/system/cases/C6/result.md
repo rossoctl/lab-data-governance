@@ -51,7 +51,7 @@ verdict at 11: expected on=block / off=allow, observed on=block / off=allow
 | 15 | L>A | PUBLIC  | — | — |
 | 16 | A>U | PUBLIC  | — | — |
 
-**Timing (on).** total 1.5581 s: reset 0.0885, receiver 0.061, interactions 0.9309, data_lineage 0.156, classification 0.0211, label_lineage 0.0229, leg_ready+risk 0.257, read 0.0207
+**Timing (on).** total 1.2124 s: reset 0.0875, receiver 0.0474, interactions 0.6816, data_lineage 0.1537, classification 0.0219, label_lineage 0.0184, leg_ready+risk 0.1855, read 0.0164
 OPA calls: 17
 
 **Notes.** C5 with V1 off the wire: T1 is the leaf, the origin is T1's answer at leg 7; legs 5 and 6 are the unseen hop.

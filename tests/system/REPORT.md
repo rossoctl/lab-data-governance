@@ -1,6 +1,6 @@
 # System tests — label lineage, exact match
 
-*Generated 2026-11-11 05:33 IST by `pytest tests/system`; environment {}.*
+*Generated 2026-11-11 10:38 IST by `pytest tests/system`; environment {}.*
 
 | case | cell | classifier | line | on / off | status | note |
 |---|---|---|---|---|---|---|
@@ -74,7 +74,7 @@ verdict at 5: expected on=allow / off=allow, observed on=allow / off=allow
 | 15 | L>A | PUBLIC  | — | — |
 | 16 | A>U | PUBLIC  | — | — |
 
-**Timing (on).** total 1.5401 s: reset 0.0968, receiver 0.0642, interactions 0.779, data_lineage 0.2818, classification 0.0234, label_lineage 0.0226, leg_ready+risk 0.2529, read 0.0194
+**Timing (on).** total 1.761 s: reset 0.1189, receiver 0.071, interactions 1.0745, data_lineage 0.2422, classification 0.0206, label_lineage 0.0176, leg_ready+risk 0.1999, read 0.0163
 OPA calls: 16
 
 **Notes.** No route. Nothing sensitive is on the wire; the control for the rule and the harness.
@@ -135,7 +135,7 @@ verdict at 5: expected on=block / off=block, observed on=block / off=block
 | 15 | L>A | PUBLIC  | — | — |
 | 16 | A>U | PUBLIC  | — | — |
 
-**Timing (on).** total 1.7831 s: reset 0.1093, receiver 0.06, interactions 1.0673, data_lineage 0.1942, classification 0.0217, label_lineage 0.0393, leg_ready+risk 0.2603, read 0.031
+**Timing (on).** total 1.9486 s: reset 0.1153, receiver 0.071, interactions 1.175, data_lineage 0.2291, classification 0.0297, label_lineage 0.0401, leg_ready+risk 0.2658, read 0.0226
 OPA calls: 19
 
 **Notes.** Root to the left leaf, U>A>T1>V1. The classifier labels the three on every leg; lineage draws the chain, the classifier alone already decides.
@@ -196,7 +196,7 @@ verdict at 5: expected on=block / off=allow, observed on=block / off=allow
 | 15 | L>A | PUBLIC  | — | — |
 | 16 | A>U | PUBLIC  | — | — |
 
-**Timing (on).** total 1.8047 s: reset 0.0975, receiver 0.0596, interactions 1.07, data_lineage 0.2709, classification 0.0306, label_lineage 0.0236, leg_ready+risk 0.237, read 0.0155
+**Timing (on).** total 1.6171 s: reset 0.0882, receiver 0.064, interactions 1.0102, data_lineage 0.176, classification 0.0273, label_lineage 0.0184, leg_ready+risk 0.2172, read 0.0158
 OPA calls: 19
 
 **Notes.** Same route as C2. From the LLM's answer on the facts travel under keys the model does not recognise; only lineage carries the label to V1.
@@ -257,7 +257,7 @@ verdict at 11: expected on=block / off=allow, observed on=block / off=allow
 | 15 | L>A | PUBLIC  | — | — |
 | 16 | A>U | PUBLIC  | — | — |
 
-**Timing (on).** total 1.8631 s: reset 0.0878, receiver 0.0615, interactions 1.1658, data_lineage 0.1882, classification 0.1104, label_lineage 0.0186, leg_ready+risk 0.2156, read 0.0152
+**Timing (on).** total 1.5054 s: reset 0.0919, receiver 0.0587, interactions 0.9029, data_lineage 0.1639, classification 0.0226, label_lineage 0.0198, leg_ready+risk 0.2297, read 0.0159
 OPA calls: 19
 
 **Notes.** Root to the right leaf, the left branch benign: legs 4 to 7 carry nothing, the agent held the facts across a clean exchange.
@@ -319,7 +319,7 @@ verdict at 11: expected on=block / off=allow, observed on=block / off=allow
 | 15 | L>A | PUBLIC  | — | — |
 | 16 | A>U | PUBLIC  | — | — |
 
-**Timing (on).** total 1.8104 s: reset 0.092, receiver 0.0633, interactions 1.1421, data_lineage 0.2034, classification 0.0374, label_lineage 0.0253, leg_ready+risk 0.2314, read 0.0155
+**Timing (on).** total 1.5477 s: reset 0.0828, receiver 0.0558, interactions 0.868, data_lineage 0.1641, classification 0.0362, label_lineage 0.0193, leg_ready+risk 0.3031, read 0.0184
 OPA calls: 20
 
 **Notes.** Leaf to leaf, starting from a response: born in the insurer's answer. T1 forgets, so leg 7 inherits leg 6 only through the invocation-scope fix of #348 (a response inherits what its child calls returned).
@@ -379,7 +379,7 @@ verdict at 11: expected on=block / off=allow, observed on=block / off=allow
 | 15 | L>A | PUBLIC  | — | — |
 | 16 | A>U | PUBLIC  | — | — |
 
-**Timing (on).** total 1.5581 s: reset 0.0885, receiver 0.061, interactions 0.9309, data_lineage 0.156, classification 0.0211, label_lineage 0.0229, leg_ready+risk 0.257, read 0.0207
+**Timing (on).** total 1.2124 s: reset 0.0875, receiver 0.0474, interactions 0.6816, data_lineage 0.1537, classification 0.0219, label_lineage 0.0184, leg_ready+risk 0.1855, read 0.0164
 OPA calls: 17
 
 **Notes.** C5 with V1 off the wire: T1 is the leaf, the origin is T1's answer at leg 7; legs 5 and 6 are the unseen hop.
@@ -399,9 +399,9 @@ expected
 conversation 1
               1      2      3      4      5-6    7      8      9      10     11     12     13     14     15     16     
               U>A    A>L    L>A    A>T1   ..V1.. T1>A   A>L    L>A    A>T2   T2>V2  V2>T2  T2>A   A>L    L>A    A>U    
-SSN     s1    ·      ·      ·      ·             ○      ━━━━━━○━━━━━━○━━━━━━○━━━━━━○·      ·      ·      ·      ·      
-MRN     s2    ·      ·      ·      ·             ○      ━━━━━━○━━━━━━○━━━━━━○━━━━━━○·      ·      ·      ·      ·      
-DOB     s3    ·      ·      ·      ·             ○      ━━━━━━○━━━━━━○━━━━━━○━━━━━━○·      ·      ·      ·      ·      
+SSN     s1    ·      ·      ·      ·             ●      ━━━━━━●━━━━━━●━━━━━━●━━━━━━●·      ·      ·      ·      ·      
+MRN     s2    ·      ·      ·      ·             ●      ━━━━━━●━━━━━━●━━━━━━●━━━━━━●·      ·      ·      ·      ·      
+DOB     s3    ·      ·      ·      ·             ●      ━━━━━━●━━━━━━●━━━━━━●━━━━━━●·      ·      ·      ·      ·      
 DIS     s4    ·      ·      ·      ·             ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      
 
 conversation 2
@@ -473,7 +473,7 @@ verdict at 27: expected on=allow / off=allow, observed on=allow / off=allow
 | 31 | L>A | PUBLIC  | — | — |
 | 32 | A>U | PUBLIC  | — | — |
 
-**Timing (on).** total 2.7249 s: reset 0.1043, receiver 0.1133, interactions 1.6146, data_lineage 0.3723, classification 0.035, label_lineage 0.0336, leg_ready+risk 0.4325, read 0.0193
+**Timing (on).** total 2.4576 s: reset 0.0977, receiver 0.0869, interactions 1.5095, data_lineage 0.3435, classification 0.0243, label_lineage 0.0253, leg_ready+risk 0.3556, read 0.0148
 OPA calls: 33
 
 **Notes.** Conversation 2 is C5's shape; V2 returns nothing (neighbourhood —). The classifier labels nothing in conversation 2, so only a crossing from conversation 1 can produce the alert at V3. Wanted under person-anchored: allow.
@@ -493,9 +493,9 @@ expected
 conversation 1
               1      2      3      4      5-6    7      8      9      10     11     12     13     14     15     16     
               U>A    A>L    L>A    A>T1   ..V1.. T1>A   A>L    L>A    A>T2   T2>V2  V2>T2  T2>A   A>L    L>A    A>U    
-SSN     s1    ·      ·      ·      ·             ○      ━━━━━━○━━━━━━○━━━━━━○━━━━━━○·      ·      ·      ·      ·      
-MRN     s2    ·      ·      ·      ·             ○      ━━━━━━○━━━━━━○━━━━━━○━━━━━━○·      ·      ·      ·      ·      
-DOB     s3    ·      ·      ·      ·             ○      ━━━━━━○━━━━━━○━━━━━━○━━━━━━○·      ·      ·      ·      ·      
+SSN     s1    ·      ·      ·      ·             ●      ━━━━━━●━━━━━━●━━━━━━●━━━━━━●·      ·      ·      ·      ·      
+MRN     s2    ·      ·      ·      ·             ●      ━━━━━━●━━━━━━●━━━━━━●━━━━━━●·      ·      ·      ·      ·      
+DOB     s3    ·      ·      ·      ·             ●      ━━━━━━●━━━━━━●━━━━━━●━━━━━━●·      ·      ·      ·      ·      
 DIS     s4    ·      ·      ·      ·             ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      
 
 conversation 2
@@ -567,7 +567,7 @@ verdict at 27: expected on=block / off=allow, observed on=allow / off=allow
 | 31 | L>A | PUBLIC  | — | — |
 | 32 | A>U | PUBLIC  | — | — |
 
-**Timing (on).** total 2.6399 s: reset 0.0867, receiver 0.0848, interactions 1.5557, data_lineage 0.4001, classification 0.0432, label_lineage 0.0347, leg_ready+risk 0.4195, read 0.0152
+**Timing (on).** total 3.3899 s: reset 0.0937, receiver 0.1238, interactions 2.0515, data_lineage 0.504, classification 0.0658, label_lineage 0.0428, leg_ready+risk 0.4742, read 0.0341
 OPA calls: 33
 
 **Notes.** Conversation 2 is C5's shape; V2 returns s1 s2 s3 (neighbourhood 2 of 2). The classifier labels nothing in conversation 2, so only a crossing from conversation 1 can produce the alert at V3. Wanted under person-anchored: block.
@@ -587,9 +587,9 @@ expected
 conversation 1
               1      2      3      4      5-6    7      8      9      10     11     12     13     14     15     16     
               U>A    A>L    L>A    A>T1   ..V1.. T1>A   A>L    L>A    A>T2   T2>V2  V2>T2  T2>A   A>L    L>A    A>U    
-SSN     s1    ·      ·      ·      ·             ○      ━━━━━━○━━━━━━○━━━━━━○━━━━━━○·      ·      ·      ·      ·      
-MRN     s2    ·      ·      ·      ·             ○      ━━━━━━○━━━━━━○━━━━━━○━━━━━━○·      ·      ·      ·      ·      
-DOB     s3    ·      ·      ·      ·             ○      ━━━━━━○━━━━━━○━━━━━━○━━━━━━○·      ·      ·      ·      ·      
+SSN     s1    ·      ·      ·      ·             ●      ━━━━━━●━━━━━━●━━━━━━●━━━━━━●·      ·      ·      ·      ·      
+MRN     s2    ·      ·      ·      ·             ●      ━━━━━━●━━━━━━●━━━━━━●━━━━━━●·      ·      ·      ·      ·      
+DOB     s3    ·      ·      ·      ·             ●      ━━━━━━●━━━━━━●━━━━━━●━━━━━━●·      ·      ·      ·      ·      
 DIS     s4    ·      ·      ·      ·             ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      
 
 conversation 2
@@ -661,7 +661,7 @@ verdict at 27: expected on=block / off=allow, observed on=allow / off=allow
 | 31 | L>A | PUBLIC  | — | — |
 | 32 | A>U | PUBLIC  | — | — |
 
-**Timing (on).** total 2.8853 s: reset 0.0907, receiver 0.0936, interactions 1.7174, data_lineage 0.4585, classification 0.0542, label_lineage 0.0327, leg_ready+risk 0.4237, read 0.0145
+**Timing (on).** total 3.6898 s: reset 0.1082, receiver 0.1087, interactions 2.4853, data_lineage 0.4307, classification 0.0483, label_lineage 0.0323, leg_ready+risk 0.4572, read 0.0191
 OPA calls: 33
 
 **Notes.** Conversation 2 is C5's shape; V2 returns s1 (neighbourhood 0 of 2). The classifier labels nothing in conversation 2, so only a crossing from conversation 1 can produce the alert at V3. Wanted under person-anchored: block.
@@ -681,9 +681,9 @@ expected
 conversation 1
               1      2      3      4      5-6    7      8      9      10     11     12     13     14     15     16     
               U>A    A>L    L>A    A>T1   ..V1.. T1>A   A>L    L>A    A>T2   T2>V2  V2>T2  T2>A   A>L    L>A    A>U    
-SSN     s1    ·      ·      ·      ·             ○      ━━━━━━○━━━━━━○━━━━━━○━━━━━━○·      ·      ·      ·      ·      
-MRN     s2    ·      ·      ·      ·             ○      ━━━━━━○━━━━━━○━━━━━━○━━━━━━○·      ·      ·      ·      ·      
-DOB     s3    ·      ·      ·      ·             ○      ━━━━━━○━━━━━━○━━━━━━○━━━━━━○·      ·      ·      ·      ·      
+SSN     s1    ·      ·      ·      ·             ●      ━━━━━━●━━━━━━●━━━━━━●━━━━━━●·      ·      ·      ·      ·      
+MRN     s2    ·      ·      ·      ·             ●      ━━━━━━●━━━━━━●━━━━━━●━━━━━━●·      ·      ·      ·      ·      
+DOB     s3    ·      ·      ·      ·             ●      ━━━━━━●━━━━━━●━━━━━━●━━━━━━●·      ·      ·      ·      ·      
 DIS     s4    ·      ·      ·      ·             ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      
 
 conversation 2
@@ -755,7 +755,7 @@ verdict at 27: expected on=block / off=allow, observed on=allow / off=allow
 | 31 | L>A | PUBLIC  | — | — |
 | 32 | A>U | PUBLIC  | — | — |
 
-**Timing (on).** total 2.7202 s: reset 0.0932, receiver 0.1039, interactions 1.6844, data_lineage 0.298, classification 0.0469, label_lineage 0.033, leg_ready+risk 0.4407, read 0.0201
+**Timing (on).** total 3.2523 s: reset 0.1685, receiver 0.1012, interactions 2.0991, data_lineage 0.2954, classification 0.0364, label_lineage 0.0253, leg_ready+risk 0.5004, read 0.026
 OPA calls: 33
 
 **Notes.** Conversation 2 is C5's shape; V2 returns s2 (neighbourhood 0 of 2). The classifier labels nothing in conversation 2, so only a crossing from conversation 1 can produce the alert at V3. Wanted under person-anchored: block.
@@ -775,9 +775,9 @@ expected
 conversation 1
               1      2      3      4      5-6    7      8      9      10     11     12     13     14     15     16     
               U>A    A>L    L>A    A>T1   ..V1.. T1>A   A>L    L>A    A>T2   T2>V2  V2>T2  T2>A   A>L    L>A    A>U    
-SSN     s1    ·      ·      ·      ·             ○      ━━━━━━○━━━━━━○━━━━━━○━━━━━━○·      ·      ·      ·      ·      
-MRN     s2    ·      ·      ·      ·             ○      ━━━━━━○━━━━━━○━━━━━━○━━━━━━○·      ·      ·      ·      ·      
-DOB     s3    ·      ·      ·      ·             ○      ━━━━━━○━━━━━━○━━━━━━○━━━━━━○·      ·      ·      ·      ·      
+SSN     s1    ·      ·      ·      ·             ●      ━━━━━━●━━━━━━●━━━━━━●━━━━━━●·      ·      ·      ·      ·      
+MRN     s2    ·      ·      ·      ·             ●      ━━━━━━●━━━━━━●━━━━━━●━━━━━━●·      ·      ·      ·      ·      
+DOB     s3    ·      ·      ·      ·             ●      ━━━━━━●━━━━━━●━━━━━━●━━━━━━●·      ·      ·      ·      ·      
 DIS     s4    ·      ·      ·      ·             ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      
 
 conversation 2
@@ -849,7 +849,7 @@ verdict at 27: expected on=allow / off=allow, observed on=allow / off=allow
 | 31 | L>A | PUBLIC  | — | — |
 | 32 | A>U | PUBLIC  | — | — |
 
-**Timing (on).** total 3.3688 s: reset 0.0954, receiver 0.0993, interactions 2.2065, data_lineage 0.4474, classification 0.039, label_lineage 0.0285, leg_ready+risk 0.4312, read 0.0215
+**Timing (on).** total 3.4942 s: reset 0.0867, receiver 0.0829, interactions 2.2521, data_lineage 0.5103, classification 0.0583, label_lineage 0.0339, leg_ready+risk 0.4498, read 0.0202
 OPA calls: 33
 
 **Notes.** Conversation 2 is C5's shape; V2 returns s3 (neighbourhood 0 of 2). The classifier labels nothing in conversation 2, so only a crossing from conversation 1 can produce the alert at V3. Wanted under person-anchored: allow.
@@ -869,9 +869,9 @@ expected
 conversation 1
               1      2      3      4      5-6    7      8      9      10     11     12     13     14     15     16     
               U>A    A>L    L>A    A>T1   ..V1.. T1>A   A>L    L>A    A>T2   T2>V2  V2>T2  T2>A   A>L    L>A    A>U    
-SSN     s1    ·      ·      ·      ·             ○      ━━━━━━○━━━━━━○━━━━━━○━━━━━━○·      ·      ·      ·      ·      
-MRN     s2    ·      ·      ·      ·             ○      ━━━━━━○━━━━━━○━━━━━━○━━━━━━○·      ·      ·      ·      ·      
-DOB     s3    ·      ·      ·      ·             ○      ━━━━━━○━━━━━━○━━━━━━○━━━━━━○·      ·      ·      ·      ·      
+SSN     s1    ·      ·      ·      ·             ●      ━━━━━━●━━━━━━●━━━━━━●━━━━━━●·      ·      ·      ·      ·      
+MRN     s2    ·      ·      ·      ·             ●      ━━━━━━●━━━━━━●━━━━━━●━━━━━━●·      ·      ·      ·      ·      
+DOB     s3    ·      ·      ·      ·             ●      ━━━━━━●━━━━━━●━━━━━━●━━━━━━●·      ·      ·      ·      ·      
 DIS     s4    ·      ·      ·      ·             ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      
 
 conversation 2
@@ -943,7 +943,7 @@ verdict at 27: expected on=block / off=allow, observed on=allow / off=allow
 | 31 | L>A | PUBLIC  | — | — |
 | 32 | A>U | PUBLIC  | — | — |
 
-**Timing (on).** total 2.43 s: reset 0.0993, receiver 0.0881, interactions 1.4787, data_lineage 0.381, classification 0.0314, label_lineage 0.0236, leg_ready+risk 0.3119, read 0.016
+**Timing (on).** total 2.3098 s: reset 0.0943, receiver 0.0887, interactions 1.4382, data_lineage 0.2842, classification 0.0281, label_lineage 0.0243, leg_ready+risk 0.337, read 0.015
 OPA calls: 33
 
 **Notes.** Conversation 2 is C5's shape; V2 returns s1 s2 (neighbourhood 1 of 2). The classifier labels nothing in conversation 2, so only a crossing from conversation 1 can produce the alert at V3. Wanted under person-anchored: block.
@@ -963,9 +963,9 @@ expected
 conversation 1
               1      2      3      4      5-6    7      8      9      10     11     12     13     14     15     16     
               U>A    A>L    L>A    A>T1   ..V1.. T1>A   A>L    L>A    A>T2   T2>V2  V2>T2  T2>A   A>L    L>A    A>U    
-SSN     s1    ·      ·      ·      ·             ○      ━━━━━━○━━━━━━○━━━━━━○━━━━━━○·      ·      ·      ·      ·      
-MRN     s2    ·      ·      ·      ·             ○      ━━━━━━○━━━━━━○━━━━━━○━━━━━━○·      ·      ·      ·      ·      
-DOB     s3    ·      ·      ·      ·             ○      ━━━━━━○━━━━━━○━━━━━━○━━━━━━○·      ·      ·      ·      ·      
+SSN     s1    ·      ·      ·      ·             ●      ━━━━━━●━━━━━━●━━━━━━●━━━━━━●·      ·      ·      ·      ·      
+MRN     s2    ·      ·      ·      ·             ●      ━━━━━━●━━━━━━●━━━━━━●━━━━━━●·      ·      ·      ·      ·      
+DOB     s3    ·      ·      ·      ·             ●      ━━━━━━●━━━━━━●━━━━━━●━━━━━━●·      ·      ·      ·      ·      
 DIS     s4    ·      ·      ·      ·             ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      
 
 conversation 2
@@ -1037,7 +1037,7 @@ verdict at 27: expected on=block / off=allow, observed on=allow / off=allow
 | 31 | L>A | PUBLIC  | — | — |
 | 32 | A>U | PUBLIC  | — | — |
 
-**Timing (on).** total 2.7978 s: reset 0.0899, receiver 0.1004, interactions 1.8421, data_lineage 0.3071, classification 0.0399, label_lineage 0.0251, leg_ready+risk 0.3727, read 0.0206
+**Timing (on).** total 2.4943 s: reset 0.1131, receiver 0.0987, interactions 1.5305, data_lineage 0.2831, classification 0.0353, label_lineage 0.0256, leg_ready+risk 0.3899, read 0.0181
 OPA calls: 33
 
 **Notes.** Conversation 2 is C5's shape; V2 returns s1 s3 (neighbourhood 1 of 2). The classifier labels nothing in conversation 2, so only a crossing from conversation 1 can produce the alert at V3. Wanted under person-anchored: block.
@@ -1057,9 +1057,9 @@ expected
 conversation 1
               1      2      3      4      5-6    7      8      9      10     11     12     13     14     15     16     
               U>A    A>L    L>A    A>T1   ..V1.. T1>A   A>L    L>A    A>T2   T2>V2  V2>T2  T2>A   A>L    L>A    A>U    
-SSN     s1    ·      ·      ·      ·             ○      ━━━━━━○━━━━━━○━━━━━━○━━━━━━○·      ·      ·      ·      ·      
-MRN     s2    ·      ·      ·      ·             ○      ━━━━━━○━━━━━━○━━━━━━○━━━━━━○·      ·      ·      ·      ·      
-DOB     s3    ·      ·      ·      ·             ○      ━━━━━━○━━━━━━○━━━━━━○━━━━━━○·      ·      ·      ·      ·      
+SSN     s1    ·      ·      ·      ·             ●      ━━━━━━●━━━━━━●━━━━━━●━━━━━━●·      ·      ·      ·      ·      
+MRN     s2    ·      ·      ·      ·             ●      ━━━━━━●━━━━━━●━━━━━━●━━━━━━●·      ·      ·      ·      ·      
+DOB     s3    ·      ·      ·      ·             ●      ━━━━━━●━━━━━━●━━━━━━●━━━━━━●·      ·      ·      ·      ·      
 DIS     s4    ·      ·      ·      ·             ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      
 
 conversation 2
@@ -1131,7 +1131,7 @@ verdict at 27: expected on=block / off=allow, observed on=allow / off=allow
 | 31 | L>A | PUBLIC  | — | — |
 | 32 | A>U | PUBLIC  | — | — |
 
-**Timing (on).** total 2.7966 s: reset 0.0854, receiver 0.0905, interactions 1.8288, data_lineage 0.2834, classification 0.0369, label_lineage 0.0228, leg_ready+risk 0.4291, read 0.0197
+**Timing (on).** total 2.3866 s: reset 0.0903, receiver 0.0867, interactions 1.5268, data_lineage 0.2882, classification 0.0309, label_lineage 0.0239, leg_ready+risk 0.3254, read 0.0144
 OPA calls: 33
 
 **Notes.** Conversation 2 is C5's shape; V2 returns s2 s3 (neighbourhood 1 of 2). The classifier labels nothing in conversation 2, so only a crossing from conversation 1 can produce the alert at V3. Wanted under person-anchored: block.
@@ -1182,7 +1182,7 @@ verdict at 5: expected on=block / off=allow, observed on=block / off=allow
 | 7 | T1>A | PUBLIC  | s1=123-45-6789 (SSN, from 2), s2=4471820 (MRN, from 4) | — |
 | 8 | A>U | PUBLIC  | — | — |
 
-**Timing (on).** total 0.7834 s: reset 0.1036, receiver 0.052, interactions 0.3606, data_lineage 0.0666, classification 0.0221, label_lineage 0.0194, leg_ready+risk 0.1442, read 0.0149
+**Timing (on).** total 0.8599 s: reset 0.1304, receiver 0.0652, interactions 0.3719, data_lineage 0.0718, classification 0.0207, label_lineage 0.0207, leg_ready+risk 0.1589, read 0.0203
 OPA calls: 11
 
 **Notes.** Picture 1 of #348. Inside A's call, T1 asks V1, then asks V2 with what V1 returned, then answers A. T1's second request inherits from the call that opened it (s1 2>5) and from V1's answer inside the call (s2 4>5); its answer carries both (2>7, 4>7). Before #348 the fold drew s2 4>5 only, and no 4>7.
@@ -1239,7 +1239,7 @@ verdict at 5: expected on=block / off=allow, observed on=block / off=allow
 | 11 | A1>U | PUBLIC  | — | — |
 | 12 | A2>U | PUBLIC  | — | — |
 
-**Timing (on).** total 1.2998 s: reset 0.0768, receiver 0.052, interactions 0.7281, data_lineage 0.1723, classification 0.0415, label_lineage 0.0215, leg_ready+risk 0.1916, read 0.016
+**Timing (on).** total 1.0363 s: reset 0.0934, receiver 0.0511, interactions 0.5769, data_lineage 0.099, classification 0.0232, label_lineage 0.0164, leg_ready+risk 0.1628, read 0.0135
 OPA calls: 16
 
 **Notes.** Picture 2 of #348. A1 and A2 call T1; A2's request arrives before T1 serves A1. T1(A1)>V1 belongs to A1's call, so it carries s1 (3>5) and nothing of A2's; before #348 the fold routed it from the latest inbound (A2's) and V1 saw no label: verdict allow.
@@ -1296,7 +1296,7 @@ verdict at 5: expected on=block / off=allow, observed on=block / off=allow
 | 11 | A1>U | PUBLIC  | — | — |
 | 12 | A2>U | PUBLIC  | — | — |
 
-**Timing (on).** total 1.3262 s: reset 0.0827, receiver 0.0583, interactions 0.6949, data_lineage 0.1651, classification 0.0409, label_lineage 0.0232, leg_ready+risk 0.2466, read 0.0145
+**Timing (on).** total 1.0938 s: reset 0.0855, receiver 0.0508, interactions 0.5617, data_lineage 0.1186, classification 0.0292, label_lineage 0.0178, leg_ready+risk 0.2115, read 0.0187
 OPA calls: 16
 
 **Notes.** Picture 2 of #348 with the same value in both calls, so a wrong parent shows as an edge that should not exist: T1(A1)>V1 must inherit from A1's request (3>5), not from A2's, which arrived later (4>5). Before #348 the fold drew 4>5, and 3>5 and 4>7 were missing.

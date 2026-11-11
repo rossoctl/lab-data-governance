@@ -7,7 +7,7 @@ import dataclasses
 import datetime as dt
 from pathlib import Path
 
-from .cases import Case, labelled
+from .cases import Case
 from .engine import Observation
 from .grid import render_grid
 
@@ -29,6 +29,10 @@ class Outcome:
 class Results:
     def __init__(self) -> None:
         self.outcomes: list[Outcome] = []
+
+
+def _types(case: Case, unit: str) -> str:
+    return "|".join([case.units[unit]] + sorted(case.accepts[unit] - {case.units[unit]}))
 
 
 def judge(case: Case, on: Observation, off: Observation) -> Outcome:
@@ -66,16 +70,14 @@ def judge(case: Case, on: Observation, off: Observation) -> Outcome:
         c = on.legs[leg_index].classification if leg_index in on.legs else None
         tags = {t for t, _ in (c or {"findings": []})["findings"]}
         for u in units:
-            lab = case.units[u]
-            if not labelled(lab, tags):
-                notes.append(f"leg {leg_index}: the model did NOT label {u} ({lab}); found {sorted(tags)}")
+            if not case.labelled(u, tags):
+                notes.append(f"leg {leg_index}: the model did NOT label {u} ({_types(case, u)}); found {sorted(tags)}")
     for leg_index, units in case.must_miss.items():
         c = on.legs[leg_index].classification if leg_index in on.legs else None
         tags = {t for t, _ in (c or {"findings": []})["findings"]}
         for u in units:
-            lab = case.units[u]
-            if labelled(lab, tags):
-                notes.append(f"leg {leg_index}: the model DID label {u} ({lab}); the case assumed it would not")
+            if case.labelled(u, tags):
+                notes.append(f"leg {leg_index}: the model DID label {u} ({_types(case, u)}); the case assumed it would not")
     if case.pending and not ok:
         status = "PENDING"
         reasons.insert(0, f"pending: {case.pending}")

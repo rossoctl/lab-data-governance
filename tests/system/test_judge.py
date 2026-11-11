@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -20,6 +21,7 @@ def _case(**over) -> Case:
                 verdict={"on": "block", "off": "allow"}, edges={("s1", 1, 2), ("s1", 2, 3)}, also=set(), cannot=None,
                 pending=None, must_see={}, must_miss={}, authored=False, notes="", dir=Path("."))
     base.update(over)
+    base.setdefault("accepts", {u: frozenset({t}) for u, t in base["units"].items()})
     return Case(**base)
 
 
@@ -72,15 +74,50 @@ def test_derived_edges_are_compared_too():
     assert out.status == "RED" and any(r.startswith("edges missing") for r in out.reasons)
 
 
-def test_a_name_found_as_pn_counts_as_labelled_everywhere():
-    case = _case(units={"s1": "NAME"}, must_see={1: ["s1"]}, must_miss={3: ["s1"]})
-    legs = {1: _found(1, "PN"), 3: _found(3, "PN")}
+def test_a_unit_counts_as_labelled_under_any_of_its_types_everywhere():
+    case = _case(units={"s1": "NAME"}, accepts={"s1": frozenset({"NAME", "PN"})},
+                 must_see={1: ["s1"], 2: ["s1"]}, must_miss={3: ["s1"]})
+    legs = {1: _found(1, "PN"), 2: _found(2, "NAME"), 3: _found(3, "PN")}
     out = judge(case, _obs("on", case.expected_edges, "block", legs), _obs("off", set(), "allow"))
     assert out.classifier_notes == [
-        "leg 3: the model DID label s1 (NAME); the case assumed it would not"]   # must_see at 1 is met by PN
+        "leg 3: the model DID label s1 (NAME|PN); the case assumed it would not"]   # must_see at 1 and 2 met
     grid = render_grid(case, _obs("on", case.expected_edges, "block", legs), None)
     observed = grid.split("observed\n", 1)[1]
     assert observed.splitlines()[2].rstrip().endswith("●")   # the grid labels leg 3 by the same rule
+
+
+def test_a_type_the_unit_does_not_list_does_not_count():
+    case = _case(units={"s1": "NAME"}, must_see={1: ["s1"]}, must_miss={3: ["s1"]})
+    legs = {1: _found(1, "PN"), 3: _found(3, "PN")}
+    out = judge(case, _obs("on", case.expected_edges, "block", legs), _obs("off", set(), "allow"))
+    assert out.classifier_notes == ["leg 1: the model did NOT label s1 (NAME); found ['PN']"]
+
+
+def test_the_expected_grid_draws_must_see_full_and_must_miss_hollow():
+    case = _case(must_see={1: ["s1"], 2: ["s1"]}, must_miss={3: ["s1"]})
+    expected = render_grid(case, None, None).split("\n\nobserved")[0]
+    assert [ch for ch in expected.splitlines()[3] if ch in "●○"] == ["●", "●", "○"]
+
+
+@pytest.mark.parametrize("see, miss, error", [
+    ("{1: [s1], 2: [s1], 3: [s1]}", "{3: [s1]}", "in both must_see and must_miss: s1@3"),
+    ("{1: [s1], 2: [s1]}", "{}", "in neither must_see nor must_miss: s1@3"),
+    ("{1: [s1], 2: [s1], 3: [s1]}", "{4: [s1]}", "a unit the leg does not carry: s1@4"),
+])
+def test_every_present_unit_is_stated_exactly_once(tmp_path: Path, see, miss, error):
+    (tmp_path / "case.yaml").write_text(
+        f"id: Y\nline: \"{LINE}\"\nunits: {{s1: MRN}}\nexpect:\n  verdict: {{'on': block, 'off': allow}}\n"
+        f"classifier:\n  must_see: {see}\n  must_miss: {miss}\n")
+    with pytest.raises(ValueError, match=re.escape(error)):
+        load_case(tmp_path)
+
+
+def test_a_unit_may_list_several_types(tmp_path: Path):
+    (tmp_path / "case.yaml").write_text(
+        f"id: Y\nline: \"{LINE}\"\nunits: {{s1: [NAME, PN]}}\nexpect:\n  verdict: {{'on': block, 'off': allow}}\n"
+        f"classifier:\n  must_see: {{1: [s1], 2: [s1], 3: [s1]}}\n")
+    case = load_case(tmp_path)
+    assert case.units == {"s1": "NAME"} and case.accepts == {"s1": frozenset({"NAME", "PN"})}
 
 
 def test_the_report_draws_the_expected_grid_above_the_observed():

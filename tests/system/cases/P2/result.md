@@ -48,7 +48,7 @@ verdict at 5: expected on=block / off=allow, observed on=block / off=allow
 | 11 | A1>U | PUBLIC  | — | — |
 | 12 | A2>U | PUBLIC  | — | — |
 
-**Timing (on).** total 1.2998 s: reset 0.0768, receiver 0.052, interactions 0.7281, data_lineage 0.1723, classification 0.0415, label_lineage 0.0215, leg_ready+risk 0.1916, read 0.016
+**Timing (on).** total 1.0363 s: reset 0.0934, receiver 0.0511, interactions 0.5769, data_lineage 0.099, classification 0.0232, label_lineage 0.0164, leg_ready+risk 0.1628, read 0.0135
 OPA calls: 16
 
 **Notes.** Picture 2 of #348. A1 and A2 call T1; A2's request arrives before T1 serves A1. T1(A1)>V1 belongs to A1's call, so it carries s1 (3>5) and nothing of A2's; before #348 the fold routed it from the latest inbound (A2's) and V1 saw no label: verdict allow.

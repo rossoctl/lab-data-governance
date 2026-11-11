@@ -132,7 +132,8 @@ def main() -> None:
         pending = PENDING if want == "block" else None
         n = len(k)
         nb = {0: "—", 1: "0 of 2", 2: "1 of 2", 3: "2 of 2"}[n]
-        case(id_, title, line, cell="trunk/cross", verdict=wanted, edges=edges, must_see={}, must_miss=must_miss,
+        case(id_, title, line, cell="trunk/cross", verdict=wanted, edges=edges, must_see={i: THREE for i in range(7, 12)},
+             must_miss=must_miss,
              pending=pending, authored=bool(k), also=held_earlier(7, 10),
              notes=f"Conversation 2 is C5's shape; V2 returns {' '.join(k) or 'nothing'} (neighbourhood {nb}). The classifier "
                    f"labels nothing in conversation 2, so only a crossing from conversation 1 can produce the alert at V3. "

@@ -52,7 +52,7 @@ verdict at 5: expected on=block / off=allow, observed on=block / off=allow
 | 15 | L>A | PUBLIC  | — | — |
 | 16 | A>U | PUBLIC  | — | — |
 
-**Timing (on).** total 1.8047 s: reset 0.0975, receiver 0.0596, interactions 1.07, data_lineage 0.2709, classification 0.0306, label_lineage 0.0236, leg_ready+risk 0.237, read 0.0155
+**Timing (on).** total 1.6171 s: reset 0.0882, receiver 0.064, interactions 1.0102, data_lineage 0.176, classification 0.0273, label_lineage 0.0184, leg_ready+risk 0.2172, read 0.0158
 OPA calls: 19
 
 **Notes.** Same route as C2. From the LLM's answer on the facts travel under keys the model does not recognise; only lineage carries the label to V1.

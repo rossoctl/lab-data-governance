@@ -14,7 +14,7 @@ U>A[-], A>T1[-], T1>A[s1 s2 s3 -], A>T2[s1@patient_ref -], T2>V[s1@external_id -
 
 `X>Y[...]` is one payload X sends to Y (`U` user, `A` agent, `T` tool, `L` LLM, `V` external
 partner, `P` a store no sidecar sees). `s1` is a sensitive unit whose label the case declares
-(`units: {s1: MRN}`), `-` is content nobody cares about, `=s1` is bytes equal to s1 that are not
+(`units: {s1: MRN}`; `s2: [NAME, PN]` lists every type that counts as labelling it), `-` is content nobody cares about, `=s1` is bytes equal to s1 that are not
 that unit here, `s1@key` sets the JSON key the value travels under. `,` is the next payload of the
 conversation, `..P..` an invisible hop (two payloads, there and back, so the numbering stays the trunk's), `⚑` the egress the verdict is read at, `~10min>` a later
 conversation. Consecutive `A>T[...]`, `T>A[...]` pair into one exchange; an answer that comes later
@@ -51,8 +51,11 @@ uv pip install --python .venv-classif/bin/python -e '.[classification]'
 The model loads once (about 20 s); each payload takes well under a second. The test replays the
 recorded annotations through `Detector.detect`, so classification runs its own code on the model's
 own output; a payload with no recorded findings fails loudly. The case's `classifier.must_see` /
-`must_miss` state what the author assumed the model would do; disagreements are printed in the
-report, never silently accepted.
+`must_miss` state what the author assumed the model would do, leg by leg: every unit present on a leg
+is in exactly one of them there (the loader refuses a case that leaves one out or lists one in both).
+One rule decides whether the model labelled a unit (`Case.labelled`: any of its types among the
+leg's findings); `must_see` wants yes, `must_miss` no. Disagreements are printed in the report, never
+silently accepted.
 
 **Authored classifier.** A case with `classifier.authored: true` treats the classifier as a parameter:
 calibration runs the real model, then subtracts its findings on the case's units at the `must_miss`
@@ -73,9 +76,9 @@ with one value in both calls (`T1(A1)>V1` names the call a request belongs to).
 ## The grid
 
 Units are rows, payloads are columns, and each result draws two grids: **expected** (the case's
-edges; `●` where `must_see` says the model labels the unit) above **observed** (what the run drew and
-labelled, inherited labels on). `●` the unit is here and the classifier labelled it (a `NAME` found
-as `PN` counts, in the grid and in the classifier checks alike), `○` here but not labelled, `≡`
+edges; `●` must_see, `○` must_miss) above **observed** (what the run drew and labelled, inherited
+labels on; labelled by the same rule as the classifier checks). `●` the unit is here and the
+classifier labelled it, `○` here but not labelled, `≡`
 bytes equal to the unit that are not the unit (`=s1`), `━` an edge the derivation drew into this cell, `┈` seen earlier but no edge arrived, `·` absent. An edge into a
 `≡` cell is a false positive; a `┈` cell is a miss. The `neighbourhood` row counts, per leg an edge arrives at,
 how many of the units born beside this one recur with it (`k of n`).
@@ -101,7 +104,7 @@ drawn", not red. The judge never infers them: any other extra edge is red.
 
 | file | job |
 |---|---|
-| `cases.py` | load `case.yaml` into a `Case`; `labelled()`, the one label-matching rule |
+| `cases.py` | load `case.yaml` into a `Case` and check its classifier premise; `Case.labelled`, the one label-matching rule |
 | `caseline.py` | parse the line; the naive expected-edge rule |
 | `render.py` | line to sidecar span rows (the `spans`-table row shape `tools/load_trace.py` replays) |
 | `classify.py`, `calibrate.py` | the replay detector and the calibrate command |

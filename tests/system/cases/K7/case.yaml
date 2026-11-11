@@ -47,7 +47,27 @@ expect:
   pending: 'cross-conversation lineage not on this branch: the cross-trace fold (#273) with its seed rule and window, and
     the risk engine forwarding a cross-trace origin (labels.forwarded keeps same-trace origins only)'
 classifier:
-  must_see: {}
+  must_see:
+    '7':
+    - s1
+    - s2
+    - s3
+    '8':
+    - s1
+    - s2
+    - s3
+    '9':
+    - s1
+    - s2
+    - s3
+    '10':
+    - s1
+    - s2
+    - s3
+    '11':
+    - s1
+    - s2
+    - s3
   must_miss:
     '22':
     - s2

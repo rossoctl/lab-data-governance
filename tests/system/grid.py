@@ -1,6 +1,6 @@
 """The unit grid: units as rows, legs as columns, drawn twice: the expected grid
-(the case's edges; ● where the case says the model labels the unit) above the
-observed one (what the run produced, inherited labels on).
+(the case's edges; ● must_see, ○ must_miss) above the observed one (what the run
+produced, inherited labels on; ● where ``Case.labelled`` says the model labelled it).
 
     ●  present and labelled by the classifier here
     ○  present, the classifier did not label it here
@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from .cases import Case, labelled
+from .cases import Case
 from .engine import Observation
 
 def _width(legs) -> int:
@@ -39,7 +39,7 @@ def render_grid(case: Case, on: Observation | None, off: Observation | None) -> 
 
     def observed_found(leg_index: int, unit: str) -> bool:
         c = obs.legs[leg_index].classification if obs and leg_index in obs.legs else None
-        return bool(c) and labelled(case.units[unit], {t for t, _ in c["findings"]})
+        return bool(c) and case.labelled(unit, {t for t, _ in c["findings"]})
 
     lines = ["expected", _grid(case, case.expected_edges, lambda i, u: u in case.must_see.get(i, ())),
              "", "observed", _grid(case, obs.edges, observed_found) if obs else "(not run)"]

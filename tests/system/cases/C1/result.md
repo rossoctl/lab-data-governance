@@ -46,7 +46,7 @@ verdict at 5: expected on=allow / off=allow, observed on=allow / off=allow
 | 15 | L>A | PUBLIC  | — | — |
 | 16 | A>U | PUBLIC  | — | — |
 
-**Timing (on).** total 1.5401 s: reset 0.0968, receiver 0.0642, interactions 0.779, data_lineage 0.2818, classification 0.0234, label_lineage 0.0226, leg_ready+risk 0.2529, read 0.0194
+**Timing (on).** total 1.761 s: reset 0.1189, receiver 0.071, interactions 1.0745, data_lineage 0.2422, classification 0.0206, label_lineage 0.0176, leg_ready+risk 0.1999, read 0.0163
 OPA calls: 16
 
 **Notes.** No route. Nothing sensitive is on the wire; the control for the rule and the harness.
