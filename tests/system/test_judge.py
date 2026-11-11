@@ -340,3 +340,56 @@ def test_the_case_record_carries_no_timing():
     out = judge(_case(), obs, _obs("off", EDGES, "allow"))
     assert "Timing (on)" in case_markdown(out) and "Timing (on)" not in case_markdown(out, timings=False)
     assert "OPA calls: 0" in case_markdown(out, timings=False)
+
+
+# --- every remaining refusal ----------------------------------------------------------------------------------
+
+SEE_ALL = "classifier:\n  must_see: {1: [s1], 2: [s1], 3: [s1]}\n"
+VERDICT = "  verdict: {'on': block, 'off': allow}\n"
+
+
+@pytest.mark.parametrize("expect, error", [
+    ("  edges: []\n  pending: {reason: a}\n  cannot: {reason: b}\n", "pending or cannot, not both"),
+    ("  edges: []\n  pending: {reason: a, verdict: [both]}\n", "verdict lists modes 'on'/'off'"),
+    ("  edges: [s2 1>2]\n", "naming an undeclared unit or a leg the line lacks"),
+    ("  edges: [s1 1>9]\n", "naming an undeclared unit or a leg the line lacks"),
+    ("  edges: [s1 1>2]\n  pending: {reason: a, missing: [s1 2>3]}\n", "excused missing edges that expect.edges does not list"),
+    ("  edges: [s1 1>2]\n  pending: {reason: a, extra: [s1 1>2]}\n", "excused extra edges that expect.edges lists"),
+])
+def test_the_loader_refuses_an_inconsistent_expectation(tmp_path: Path, expect, error):
+    with pytest.raises(ValueError, match=re.escape(error)):
+        load_case(_yaml(tmp_path, "expect:\n" + VERDICT + expect + SEE_ALL))
+
+
+def test_an_expected_edge_joins_legs_that_carry_its_unit(tmp_path: Path):
+    line = "U>A[s1 -], A>T1[-], T1>V1[s1 -]⚑"
+    with pytest.raises(ValueError, match=re.escape("legs that do not both carry the unit: [('s1', 1, 2)]")):
+        load_case(_yaml(tmp_path, "expect:\n" + VERDICT + "  edges: [s1 1>2]\n"
+                                  "classifier:\n  must_see: {1: [s1], 3: [s1]}\n", line=line))
+
+
+@pytest.mark.parametrize("line, error", [
+    ("U>A1[-], U>A2[-], A1>T1[-], T1(A3)>V1[s1 -]", "0 open calls from A3 on T1"),
+    ("U>A[-], A>T1[-], T1(A)>A[s1 -]", "(caller) belongs on a request"),
+    ("U>A[-], A>T1[-], V1>T1[s1 -]", "V1>T1 answers no open request"),
+    ("U>A[-], A>U[-], A>T1[s1 -]", "A sends A>T1 while serving no call"),
+])
+def test_the_renderer_refuses_a_line_it_would_have_to_guess(line, error):
+    with pytest.raises(ValueError, match=re.escape(error)):
+        render("Y", {"s1": "MRN"}, cl.parse(line))
+
+
+def test_a_leg_the_derivation_never_produced_is_a_problem():
+    from .engine import map_legs
+    r = render("Y", {"s1": "MRN"}, cl.parse(LINE))
+    ix_of = {x.request_span_id: f"i{x.leg.index}" for x in r.rendered if x.leg.index != 2}
+    key_of_leg, _, problems = map_legs(r.rendered, ix_of)
+    assert 2 not in key_of_leg and problems == ["leg 2 (A>T1) was not derived"]
+
+
+def test_authored_subtraction_never_touches_a_text_a_must_see_leg_shares():
+    from .classify import authored_map
+    case = _case(line_text="U>A[s1], A>T1[s1]", line=cl.parse("U>A[s1], A>T1[s1]"), verdict={},
+                 edges={("s1", 1, 2)}, must_see={1: ["s1"]}, must_miss={2: ["s1"]}, authored=True)
+    with pytest.raises(ValueError, match="must_see shares its payload text with a must_miss leg"):
+        authored_map(case, render(case.id, case.units, case.line))

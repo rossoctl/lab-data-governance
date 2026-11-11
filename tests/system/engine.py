@@ -115,6 +115,22 @@ def verdict_at(records: list[dict[str, Any]], role: str) -> tuple[dict[str, Any]
     return mine[-1], None
 
 
+def map_legs(rendered: list[Rendered], ix_of: dict[str, str]):
+    """line leg -> (interaction, leg_type) and back. Every leg the line put on the wire must have been derived;
+    one that was not is a problem."""
+    key_of_leg: dict[int, tuple[str, str]] = {}
+    leg_of_key: dict[tuple[str, str], int] = {}
+    problems: list[str] = []
+    for r in rendered:
+        iid = ix_of.get(r.request_span_id)
+        if iid is None:
+            problems.append(f"leg {r.leg.index} ({r.leg.label()}) was not derived")
+            continue
+        key_of_leg[r.leg.index] = (iid, r.role)
+        leg_of_key[(iid, r.role)] = r.leg.index
+    return key_of_leg, leg_of_key, problems
+
+
 def resolve_edges(case: Case, rows, leg_of_key: dict[tuple[str, str], int]):
     """Edges as (unit, from_leg, to_leg). A unit is found by its bytes (``assign_values`` refuses twins); an
     edge whose value is no unit's is kept as ``?value`` (an extra, so red). An edge with an end on no line leg, or
@@ -226,24 +242,14 @@ def _read(case: Case, rendered: list[Rendered], dsn: str, mode: str) -> Observat
                              "rules": list(rules or []), "legs": list(legs_ev or []),
                              "summary": summary if isinstance(summary, dict) else json.loads(summary or "{}")})
 
-    # line leg -> (interaction, leg_type)
-    key_of_leg: dict[int, tuple[str, str]] = {}
-    leg_of_key: dict[tuple[str, str], int] = {}
-    for r in rendered:
-        iid = ix_of.get(r.request_span_id)
-        if iid is None:
-            continue
-        key_of_leg[r.leg.index] = (iid, r.role)
-        leg_of_key[(iid, r.role)] = r.leg.index
-
-    resolved, raw, inherited, problems = resolve_edges(case, edges, leg_of_key)
+    key_of_leg, leg_of_key, problems = map_legs(rendered, ix_of)
+    resolved, raw, inherited, edge_problems = resolve_edges(case, edges, leg_of_key)
+    problems += edge_problems
     sink = case.line.sink
     sink_record, verdict = None, None
     if sink:
         key = key_of_leg.get(sink.index)
-        if key is None:
-            problems.append(f"the flagged leg {sink.index} was not derived")
-        else:
+        if key is not None:
             sink_record, problem = verdict_at(records.get(key[0], []), key[1])
             if problem:
                 problems.append(problem)
@@ -255,9 +261,8 @@ def _read(case: Case, rendered: list[Rendered], dsn: str, mode: str) -> Observat
         h = hash_of.get(key) if key else None
         c = cls.get(h) if h else None
         if c is not None:
-            text = payload_text.get(h, "")
-            c = {**c, "findings": [(f["entity_type"], text[f["start"]:f["end"]] if "start" in f else f.get("text"))
-                                   for f in c["findings"]]}
+            text = payload_text[h]
+            c = {**c, "findings": [(f["entity_type"], text[f["start"]:f["end"]]) for f in c["findings"]]}
         legs[r.leg.index] = LegRows(
             leg_index=r.leg.index, interaction_id=key[0] if key else None, leg_type=r.role, payload_hash=h,
             classification=c, inherited=inherited.get(r.leg.index, []),

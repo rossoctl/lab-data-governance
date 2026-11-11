@@ -8,8 +8,10 @@ filler response. A conversation that does not start with ``U>A`` gets an entry
 
 Nothing is guessed: a request belongs to the one call its sender is serving (or
 the one ``T1(A1)>V1`` names), and the renderer refuses a line where that is not
-exactly one call, a response with no open request, a response with two, two
-units with equal bytes, and two values under one JSON key.
+exactly one call (only the user sends a request serving none), a response with
+no open request (a payload to the user, from an LLM, a partner or a store, or
+from a tool to an agent is always a response), a response with two, two units
+with equal bytes, and two values under one JSON key.
 
 Sidecars: agents and tools have one (both sides of an agent-tool call are
 emitted, caller CLIENT spans and callee SERVER echoes, as live clusters do);
@@ -265,11 +267,14 @@ class Renderer:
                     open_.remove(ex)
                     self.close_exchange(ex, body, at)
                     self.rendered.append(Rendered(leg, trace_id, ex.req_id, "response", body, values))
-                elif cl.kind_of(leg.to) == "agent" and cl.kind_of(leg.frm) in ("tool", "llm", "store"):
+                elif _answer_only(leg):
                     raise ValueError(f"{self.case_id} leg {leg.index}: {leg.label()} answers no open request; "
                                      f"write the request {leg.to}>{leg.frm} before it")
                 else:
                     call = self._serving(leg, open_)
+                    if call is None and cl.kind_of(leg.frm) != "user":
+                        raise ValueError(f"{self.case_id} leg {leg.index}: {leg.frm} sends {leg.label()} while serving "
+                                         f"no call; only the user starts one")
                     ex = self.open_exchange(trace_id=trace_id, leg=leg, frm=leg.frm, to=leg.to, req=body, at=at,
                                             parent=call.echo_id if call else None)
                     open_.append(ex)
@@ -281,6 +286,13 @@ class Renderer:
                 self.close_exchange(ex, {"note": FILLER[(ex.leg.index + 3) % len(FILLER)]}, at)
                 at = at + dt.timedelta(seconds=1)
         return self.rows
+
+
+def _answer_only(leg: cl.Leg) -> bool:
+    """A payload that can only be a response: to the user, from a party that never calls (an LLM, a partner, a
+    store), or from a tool to an agent."""
+    frm, to = cl.kind_of(leg.frm), cl.kind_of(leg.to)
+    return to == "user" or frm in ("llm", "external", "store") or (frm == "tool" and to == "agent")
 
 
 def render(case_id: str, units: dict[str, str], case: cl.CaseLine) -> Renderer:

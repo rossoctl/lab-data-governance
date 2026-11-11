@@ -128,12 +128,14 @@ def load_case(case_dir: Path) -> Case:
     pending, cannot = _excuse(name, "pending", expect.get("pending")), _excuse(name, "cannot", expect.get("cannot"))
     if pending and cannot:
         raise ValueError(f"{name}: a case is pending or cannot, not both")
+    edges = {_edge(e) for e in expect["edges"]}
+    _check_edges(name, line, set(types), edges, pending or cannot)
     case = Case(
         id=d["id"], title=d.get("title", ""), cell=d.get("cell", ""),
         line_text=d["line"], line=line, units={u: t[0] for u, t in types.items()},
         accepts={u: frozenset(t) for u, t in types.items()},
         verdict={k: str(v) for k, v in verdict.items()},
-        edges={_edge(e) for e in expect["edges"]},
+        edges=edges,
         cannot=cannot,
         pending=pending,
         must_see=must_see,
@@ -158,6 +160,24 @@ def _check_premise(name: str, line: cl.CaseLine, must_see: dict[int, list[str]],
         raise ValueError(f"{name}: must_see/must_miss name a unit the leg does not carry: {fmt((see | miss) - present)}")
     if present - see - miss:
         raise ValueError(f"{name}: present but in neither must_see nor must_miss: {fmt(present - see - miss)}")
+
+
+def _check_edges(name: str, line: cl.CaseLine, units: set[str], edges: set[Edge], excuse: Excuse | None) -> None:
+    """Edges name declared units and legs the line has; an expected edge joins two legs that carry its unit;
+    an excuse's missing edges are expected ones and its extra edges are not."""
+    carries = {(leg.index, u) for leg in line.legs for u in leg.units}
+    indices = {leg.index for leg in line.legs if not leg.invisible}
+    stated = edges | (excuse.missing | excuse.extra if excuse else set())
+    bad = sorted(e for e in stated if e[0] not in units or e[1] not in indices or e[2] not in indices)
+    if bad:
+        raise ValueError(f"{name}: edges naming an undeclared unit or a leg the line lacks: {bad}")
+    absent = sorted(e for e in edges if (e[1], e[0]) not in carries or (e[2], e[0]) not in carries)
+    if absent:
+        raise ValueError(f"{name}: expected edges between legs that do not both carry the unit: {absent}")
+    if excuse and not excuse.missing <= edges:
+        raise ValueError(f"{name}: excused missing edges that expect.edges does not list: {sorted(excuse.missing - edges)}")
+    if excuse and excuse.extra & edges:
+        raise ValueError(f"{name}: excused extra edges that expect.edges lists: {sorted(excuse.extra & edges)}")
 
 
 def all_cases(root: Path = CASES_DIR) -> list[Case]:

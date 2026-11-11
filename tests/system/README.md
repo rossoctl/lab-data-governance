@@ -21,10 +21,14 @@ conversation. `T>A[...]` answers the open `A>T[...]`, so nested calls sit betwee
 a request belongs to the one call its sender is serving, or to the call `T1(A1)>V1` names.
 
 **Nothing is guessed.** Everything the judge compares is stated by the case or read from the rows,
-and anything else fails loudly: the renderer refuses a request whose sender serves two calls and names
-neither, a response that could answer two open requests or none, two units with equal bytes, and two
-values under one JSON key; the loader refuses a case without `expect.edges`, an unknown key, and a
-classifier premise that leaves a present unit unstated.
+and anything else fails loudly. The renderer refuses a request whose sender serves two calls and names
+neither, a request from anyone but the user while serving no call, a response that could answer two
+open requests or none (a payload to the user, from an LLM, a partner or a store, or from a tool to an
+agent is always a response), two units with equal bytes, and two values under one JSON key. The loader
+refuses a case without `expect.edges`, an unknown `expect` key, an edge naming an undeclared unit or a
+leg the line lacks, an expected edge between legs that do not both carry its unit, a pending block that
+disagrees with `expect.edges`, and a classifier premise that leaves a present unit unstated. A leg the
+derivation never produced is red.
 
 ## Run
 
