@@ -1406,6 +1406,14 @@ namespace_instrument() {
     if [[ -n "${entity}" && "${write}" == "yes" ]]; then
         die "instrument: ${ns}/${DG_RUNTIME_CONFIGMAP} differs from the canonical lineage pipeline, and writing it reaches every agent/tool in '${ns}'. Run 'dg.sh namespace ${ns} instrument' first. Mutating nothing."
     fi
+    # The API server refuses a ConfigMap past 1 MiB of data. A gate's fail-mode slices carry a row per
+    # source and destination, so a large document can render past it: refused here, before any roll.
+    if [[ "${write}" == "yes" ]]; then
+        local size
+        size="$(configmap_data_bytes "${rendered}")"
+        (( size <= DG_CONFIGMAP_MAX_BYTES )) \
+            || die "instrument: the rendered ${ns}/${DG_RUNTIME_CONFIGMAP} holds ${size} bytes of data, past the ${DG_CONFIGMAP_MAX_BYTES} a ConfigMap takes${DG_GATE_FAIL_MODE:+ (the fail-mode document renders a row per source and destination; fewer rows fit)}. Mutating nothing."
+    fi
     agentruntimes_allow_lineage "${ns}" "${names}" "${write}"
 
     # All checks and shim builds finish before the first workload mutation.
@@ -1492,9 +1500,11 @@ build_gate_spec() {
     DG_GATE_SPEC_FILE="$(mktemp)"
     # The spec holds the secret: removed however the run ends.
     trap 'rm -f "${DG_GATE_SPEC_FILE:-}"' EXIT
+    # The secret goes on stdin, the rendering as a file: a large one is past the argument limit.
     printf '%s' "${secret}" | python3 -c '
 import json, sys
-url, path, wait_ms, fallback, rendered, revision = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], json.loads(sys.argv[5] or "{}"), sys.argv[6]
+url, path, wait_ms, fallback, revision = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[6]
+rendered = json.loads(open(sys.argv[5]).read() or "{}")
 spec = {"verdict_url": url, "verdict_secret": sys.stdin.read(), "pass_hosts": sys.argv[7:]}
 if wait_ms:
     spec["wait_ms"] = int(wait_ms)
@@ -1506,7 +1516,7 @@ for key in ("fail_mode", "sources"):
 if revision:
     spec["fail_mode_revision"] = revision
 open(path, "w").write(json.dumps(spec))
-' "${DG_VERDICT_URL}" "${DG_GATE_SPEC_FILE}" "${DG_GATE_WAIT_MS}" "${DG_GATE_FALLBACK}" "${DG_GATE_FAIL_MODE}" "${DG_GATE_FAIL_MODE_REVISION}" "${DG_GATE_PASS_HOSTS[@]+"${DG_GATE_PASS_HOSTS[@]}"}"
+' "${DG_VERDICT_URL}" "${DG_GATE_SPEC_FILE}" "${DG_GATE_WAIT_MS}" "${DG_GATE_FALLBACK}" <(printf '%s' "${DG_GATE_FAIL_MODE}") "${DG_GATE_FAIL_MODE_REVISION}" "${DG_GATE_PASS_HOSTS[@]+"${DG_GATE_PASS_HOSTS[@]}"}"
     err ">> instrument --${DG_GATE_MODE}: verdict_url ${DG_VERDICT_URL}"
 }
 
@@ -1601,9 +1611,18 @@ load_fail_mode_rows() {
     DG_GATE_FAIL_MODE_REVISION="$(fail_mode_table "${cm}" | python3 "${FAIL_MODE_TOOL}" revision -)" || return 1
 }
 
+# The most data a ConfigMap holds; the API server refuses more.
+DG_CONFIGMAP_MAX_BYTES=1048576
+
+# configmap_data_bytes <configmap-json>: the bytes of its data values, the sum the API server caps.
+configmap_data_bytes() {
+    printf '%s' "$1" | python3 -c 'import json, sys; print(sum(len(v.encode()) for v in (json.load(sys.stdin).get("data") or {}).values()))'
+}
+
 # fail_mode_count <rendered-json> fail_mode|sources: how many fail_mode rows, or sources slices.
+# The rendering goes on stdin: a large one is past the argument limit.
 fail_mode_count() {
-    python3 -c 'import json, sys; print(len(json.loads(sys.argv[1] or "{}").get(sys.argv[2]) or ()))' "$1" "$2"
+    printf '%s' "$1" | python3 -c 'import json, sys; print(len(json.loads(sys.stdin.read() or "{}").get(sys.argv[1]) or ()))' "$2"
 }
 
 # fail_mode_rows_allow <rendered-json>: whether any fallback the document sets is allow: a

@@ -743,6 +743,48 @@ def test_a_pod_on_other_slices_is_rolled_and_status_counts_the_sources(gated) ->
     assert mutations(gated) == []
 
 
+def test_a_document_whose_rendering_is_past_the_argument_limit_is_instrumented(gated, tmp_path) -> None:
+    """60 source rows and 60 destination rows (under 6 KB) render to about 200 KB: each slice carries a row per
+    destination. Linux refuses one argument of 128 KiB or more, and a python3 here refuses it as Linux does, so the
+    rendering travels on stdin or in a file, never as an argument: set, instrument and status all take it."""
+    real = sys.executable
+    shim = gated.bindir / "python3"
+    shim.write_text('#!/bin/bash\nfor a in "$@"; do\n'
+                    '  if (( ${#a} >= 131072 )); then echo "python3: Argument list too long" >&2; exit 126; fi\n'
+                    f'done\nexec "{real}" "$@"\n')
+    shim.chmod(shim.stat().st_mode | stat.S_IEXEC)
+    gated.set_namespace({"travel-advisor": RUNNING})
+    rows = [{"source": f"source-{n}", "wait_ms": 1000} for n in range(60)]
+    rows += [{"destination": f"host-{n}.example", "fallback": "deny"} for n in range(60)]
+    doc = tmp_path / "large.json"
+    doc.write_text(json.dumps({"rows": rows}))
+    assert gated.run("namespace", "travel-advisor", "fail-mode", "set", str(doc)).returncode == 0
+    result = gated.run("namespace", "travel-advisor", "instrument", "--enforce")
+    assert result.returncode == 0, result.stderr[-2000:]
+    assert "Argument list too long" not in result.stderr
+    assert "fail_mode rows from travel-advisor/dg-fail-mode: 60, sources: 60" in result.stderr, result.stderr[-2000:]
+    config = plugin(written(gated), "outbound", "sentry-gate")["config"]
+    assert len(config["fail_mode"]) == 60 and len(config["sources"]) == 60
+    assert all(len(slice_["fail_mode"]) == 60 for slice_ in config["sources"].values())
+    _adopt_written(gated)
+    status = gated.run("namespace", "travel-advisor", "status")
+    assert "fail_mode_rows=60 sources=60" in status.stdout and "live=yes" in status.stdout, status.stdout + status.stderr
+    assert "Argument list too long" not in status.stderr
+
+
+def test_a_document_whose_rendering_is_past_a_configmaps_size_is_refused_before_any_roll(gated, tmp_path) -> None:
+    """150 sources and 150 destinations render a gate entry well over 1 MiB, more than the API server takes in a
+    ConfigMap: instrument refuses before the first roll, naming the size, rather than failing at the write."""
+    gated.set_namespace({"travel-advisor": RUNNING})
+    rows = [{"source": f"source-{n}", "wait_ms": 1000} for n in range(150)]
+    rows += [{"destination": f"host-{n}.example", "fallback": "deny"} for n in range(150)]
+    fail_mode_cm(gated, json.dumps({"rows": rows}))
+    result = gated.run("namespace", "travel-advisor", "instrument", "--enforce")
+    assert result.returncode != 0
+    assert "past the 1048576 a ConfigMap takes" in result.stderr and "Mutating nothing" in result.stderr, result.stderr[-2000:]
+    assert mutations(gated) == []
+
+
 # --- the revision: the document's sha256, in every record of a request with no verdict --------
 
 
