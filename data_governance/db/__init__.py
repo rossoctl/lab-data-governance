@@ -278,6 +278,28 @@ def is_connection_error(exc: BaseException) -> bool:
 _CHANNEL_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
+@contextmanager
+def _listen_session(channel: str | Sequence[str], dsn: str, caller: str) -> Iterator[psycopg.Connection[Any]]:
+    """The session :func:`listen` and :func:`listen_payloads` share: validate the
+    channels, open a dedicated autocommit connection, ``LISTEN`` on each, close it on
+    exit. *caller* names the public helper in the empty-channel error."""
+    channels = [channel] if isinstance(channel, str) else list(channel)
+    if not channels:
+        raise ValueError(f"{caller}() needs at least one channel")
+    for name in channels:
+        if not _CHANNEL_RE.match(name):
+            raise ValueError(
+                f"LISTEN channel must be a bare SQL identifier, got {name!r}"
+            )
+    conn = psycopg.connect(dsn, autocommit=True)
+    try:
+        for name in channels:
+            conn.execute(f"LISTEN {name}")
+        yield conn
+    finally:
+        conn.close()
+
+
 class Listener:
     """Handle yielded by :func:`listen`. Wraps a dedicated autocommit connection
     already registered (``LISTEN``) on a channel.
@@ -326,21 +348,8 @@ def listen(channel: str | Sequence[str], dsn: str) -> Iterator[Listener]:
     connection is opened. An empty sequence is a :class:`ValueError` too — a
     listener on nothing would only ever time out, which is a bug, not a wait.
     """
-    channels = [channel] if isinstance(channel, str) else list(channel)
-    if not channels:
-        raise ValueError("listen() needs at least one channel")
-    for name in channels:
-        if not _CHANNEL_RE.match(name):
-            raise ValueError(
-                f"LISTEN channel must be a bare SQL identifier, got {name!r}"
-            )
-    conn = psycopg.connect(dsn, autocommit=True)
-    try:
-        for name in channels:
-            conn.execute(f"LISTEN {name}")
+    with _listen_session(channel, dsn, "listen") as conn:
         yield Listener(conn)
-    finally:
-        conn.close()
 
 
 class PayloadListener:
@@ -369,21 +378,8 @@ def listen_payloads(channel: str | Sequence[str], dsn: str) -> Iterator[PayloadL
     """:func:`listen`, with each notification's channel and payload surfaced
     (:class:`PayloadListener`). The same dedicated autocommit session and the
     same identifier rule; :func:`listen` itself stays payload-blind (ADR-0015)."""
-    channels = [channel] if isinstance(channel, str) else list(channel)
-    if not channels:
-        raise ValueError("listen_payloads() needs at least one channel")
-    for name in channels:
-        if not _CHANNEL_RE.match(name):
-            raise ValueError(
-                f"LISTEN channel must be a bare SQL identifier, got {name!r}"
-            )
-    conn = psycopg.connect(dsn, autocommit=True)
-    try:
-        for name in channels:
-            conn.execute(f"LISTEN {name}")
+    with _listen_session(channel, dsn, "listen_payloads") as conn:
         yield PayloadListener(conn)
-    finally:
-        conn.close()
 
 
 class LockLost(Exception):
