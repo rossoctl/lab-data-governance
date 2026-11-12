@@ -416,13 +416,46 @@ def test_a_leg_the_derivation_never_produced_is_a_problem():
     assert map_legs(r.rendered, ix_of, hash_of, payloads - {"h2"})[2] == ["leg 2 (A>T1) was not derived: no payload"]
 
 
-def test_authored_subtraction_never_touches_a_text_a_must_see_leg_shares():
+SHARED = "U>A[s1 s2], A>T1[s1 s2], T1>A[-], A>U[-]"   # legs 1 and 2 carry one payload text
+
+
+@pytest.mark.parametrize("see, miss, error", [
+    ({1: ["s1"], 2: ["s1"]}, {1: ["s2"], 2: ["s2"]}, None),            # s2 missed on both legs of the text
+    ({1: ["s1", "s2"], 2: ["s1"]}, {2: ["s2"]}, "leg 1 must see s2"),   # leg 2's subtraction would take leg 1's s2
+    ({1: ["s1"], 2: ["s1", "s2"]}, {1: ["s2"]}, "leg 2 must see s2"),
+    ({1: ["s2"], 2: ["s2"]}, {1: ["s1"], 2: ["s1"]}, None),
+])
+def test_authored_subtraction_never_takes_a_value_a_must_see_leg_of_the_same_text_needs(see, miss, error):
     from .classify import authored_map
-    case = _case(line_text="U>A[s1], A>T1[s1], T1>A[-], A>U[-]", line=cl.parse("U>A[s1], A>T1[s1], T1>A[-], A>U[-]"),
-                 verdict={},
-                 edges={("s1", 1, 2)}, must_see={1: ["s1"]}, must_miss={2: ["s1"]}, authored=True)
-    with pytest.raises(ValueError, match="must_see shares its payload text with a must_miss leg"):
-        authored_map(case, render(case.id, case.units, case.line))
+    case = _case(line_text=SHARED, line=cl.parse(SHARED), units={"s1": "MRN", "s2": "SSN"}, verdict={}, edges=set(),
+                 must_see=see, must_miss=miss, authored=True)
+    renderer = render(case.id, case.units, case.line)
+    if error:
+        with pytest.raises(ValueError, match=error):
+            authored_map(case, renderer)
+    else:
+        (values,) = authored_map(case, renderer).values()
+        assert values == {case.values[u] for u in miss[1]}
+
+
+def test_authored_subtraction_takes_one_unit_and_leaves_the_others_of_its_payload():
+    """One payload, s2 missed, s1 and s3 seen. Only s2's findings go; a finding overlapping
+    s2's bytes without being them is not s2's and stays (it labels no unit either way)."""
+    from .classify import authored_map, subtract
+    line = "U>A[s1 s2 s3], A>U[-]"
+    case = _case(line_text=line, line=cl.parse(line), units={"s1": "SSN", "s2": "MRN", "s3": "DOB"}, verdict={},
+                 edges=set(), must_see={1: ["s1", "s3"]}, must_miss={1: ["s2"]}, authored=True)
+    renderer = render(case.id, case.units, case.line)
+    ((text, values),) = authored_map(case, renderer).items()
+    assert values == {case.values["s2"]}
+    at = {u: text.index(v) for u, v in case.values.items()}
+    own = {u: [at[u], at[u] + len(v), case.units[u]] for u, v in case.values.items()}
+    overlap = [at["s2"] - 2, at["s2"] + 3, "MRN"]
+    by_text = {text: [own["s1"], own["s2"], own["s3"], overlap]}
+    assert subtract(by_text, text, values) == 1
+    assert by_text[text] == [own["s1"], own["s3"], overlap]
+    findings = [(t, text[a:b]) for a, b, t in by_text[text]]
+    assert [case.labelled(u, findings) for u in ("s1", "s2", "s3")] == [True, False, True]
 
 
 def test_a_case_cannot_have_more_units_of_a_type_than_values():

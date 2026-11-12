@@ -57,16 +57,20 @@ def load(case_dir: Path) -> ReplayDetector:
 
 def authored_map(case, renderer) -> dict[str, set[str]]:
     """Payload text -> unit values to subtract, from the case's must_miss legs.
-    A text shared by a must_see leg is refused: subtraction must not touch it."""
+    :func:`subtract` removes a value's findings from the whole text, wherever that text travels, and a unit is
+    labelled only by a finding on its own value (``Case.labelled``); so the one subtraction refused is of a value a
+    must_see leg with the same text needs labelled. The other units of that text keep their findings."""
     from data_governance.processors.classification import projection
 
     text_of = {r.leg.index: projection.project(r.content) for r in renderer.rendered}
     out: dict[str, set[str]] = {}
     for leg, units in case.must_miss.items():
         out.setdefault(text_of[leg], set()).update(renderer.values[u] for u in units)
-    for leg in case.must_see:
-        if text_of.get(leg) in out:
-            raise ValueError(f"{case.id}: leg {leg} must_see shares its payload text with a must_miss leg")
+    for leg, units in sorted(case.must_see.items()):
+        cut = [u for u in units if renderer.values[u] in out.get(text_of.get(leg), ())]
+        if cut:
+            raise ValueError(f"{case.id}: leg {leg} must see {', '.join(cut)}, but a must_miss leg with the same "
+                             f"payload text subtracts it")
     return out
 
 
