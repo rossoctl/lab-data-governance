@@ -118,9 +118,11 @@ model labelled, so the verdict rests on the request alone.
   that passes, or differs in any other way, is RED. K1–K3 and K5–K7 are pending: they need the
   cross-trace fold (#273) and the risk engine forwarding an origin from another trace; the
   conversation-2 edges they state are a proposal that work will settle.
-- **RED**: anything else, and always (pending or not) when the rows cannot be read (a leg not derived, an edge with an
-  end on no line leg, an edge carrying a type its unit does not list or evidence that is not a whole
-  match of its value, no risk record or disagreeing ones at the flagged leg, a labelled response in the
+- **RED**: anything else, and always (pending or not) when the run did not finish (a drain stopped before the
+  end of its stream, as leg-ready does while OPA is down, or left work in its queue:
+  `incomplete run: leg_ready stopped at cursor 8 of 16`), when the rows cannot be read (a leg not derived, an
+  edge with an end on no line leg, an edge carrying a type its unit does not list or evidence that is not a
+  whole match of its value, no risk record or disagreeing ones at the flagged leg, a labelled response in the
   flagged exchange), when the classifier premise is broken in either run, or when the on and off runs
   drew different edges.
 
@@ -132,11 +134,11 @@ model labelled, so the verdict rests on the request alone.
 | `caseline.py` | parse the line |
 | `render.py` | line to sidecar span rows (the `spans`-table row shape `tools/load_trace.py` replays) |
 | `classify.py`, `calibrate.py` | the replay detector, the authored record and its check; the calibrate command |
-| `engine.py` | receiver, the five drains, real OPA; read the rows back |
+| `engine.py` | receiver, the five drains, real OPA; check every drain finished; read the rows back |
 | `grid.py` | the unit grid (units as rows, legs as columns) |
 | `report.py` | judge a case; write `cases/<id>/result.md` |
 | `rules.py` | the suite's one rule, T-SENS |
 | `trunk_cases.py` | writes every `case.yaml` (the files are the record) |
-| `conftest.py`, `test_cases.py` | the containers and OPA per session; one test per case |
+| `conftest.py`, `test_cases.py` | the containers and OPA per session; one test per case; a run leg-ready did not finish is red |
 | `test_judge.py` | the judge, the loader and the renderer, without containers: every refusal and every branch |
 | `cases/<id>/` | `case.yaml`, `findings.json`, `result.md` (generated) |

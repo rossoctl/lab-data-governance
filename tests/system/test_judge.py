@@ -496,6 +496,19 @@ def test_the_flagged_exchange_response_must_carry_no_finding():
         "the flagged exchange's response (leg 4) was labelled [('DATE', '02:00')]; the exchange's verdict would rest on it"]
 
 
+@pytest.mark.parametrize("cursor, queued, problems", [
+    (16, {}, []),
+    (14, {}, ["incomplete run: leg_ready stopped at cursor 14 of 16"]),
+    (16, {"leg_ready": 3}, ["incomplete run: leg_ready left 3 row(s) in risk_recompute_requests"]),
+    (16, {"label_lineage": 1}, ["incomplete run: label_lineage left 1 row(s) in label_lineage_dirty_traces"]),
+])
+def test_a_drain_that_did_not_finish_is_a_problem(cursor, queued, problems):
+    from .engine import QUEUES, STREAMS, unfinished
+    heads = {s: 16 for s in STREAMS}
+    assert unfinished({**heads, "leg_ready": cursor}, heads, {**{q: 0 for q in QUEUES}, **queued}) == problems
+    assert _judge(_case(), problems=problems).status == ("RED" if problems else "GREEN")
+
+
 def test_derived_rows_and_line_legs_map_one_to_one():
     from .engine import map_legs
     r = render("Y", {"s1": "MRN"}, cl.parse(LINE))

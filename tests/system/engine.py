@@ -3,6 +3,10 @@
 receiver (OTLP gRPC) -> interactions drain -> data-lineage drain -> classification
 drain (replayed model output through the production seam) -> label-lineage drain
 -> leg-ready drain with the risk observer against a real OPA -> rows.
+
+A drain may stop early by design (leg-ready holds its cursor while OPA is down) and
+returns where it stopped: a run where a drain stopped short of its stream's end or
+left work in its queue is red (:func:`unfinished`), whatever the rows say.
 """
 
 from __future__ import annotations
@@ -166,6 +170,32 @@ def resolve_edges(case: Case, rows, leg_of_key: dict[tuple[str, str], int]):
     return resolved, raw, inherited, problems
 
 
+# Each drain the run calls and the table whose ``seq`` its cursor walks; the work queues the drains own. With
+# inherited labels off, leg-ready keeps a label-only recompute request for a later `on` run: not work left undone.
+STREAMS = {"interactions": "spans", "data_lineage": "interaction_legs", "classification": "interaction_payloads",
+           "label_lineage": "interaction_legs", "leg_ready": "interaction_legs"}
+QUEUES = {"data_lineage": "data_lineage_dirty_traces", "label_lineage": "label_lineage_dirty_traces",
+          "leg_ready": "risk_recompute_requests"}
+_RECOMPUTE_WORK = {"on": "base_recompute OR labels_pending", "off": "base_recompute"}
+
+
+def unfinished(cursors: dict[str, int], heads: dict[str, int], queued: dict[str, int]) -> list[str]:
+    """What a run left undone: a drain whose returned cursor is not its stream's last seq, a queue with work in it."""
+    return ([f"incomplete run: {s} stopped at cursor {cursors[s]} of {heads[s]}" for s in STREAMS
+             if cursors[s] != heads[s]]
+            + [f"incomplete run: {s} left {queued[s]} row(s) in {QUEUES[s]}" for s in QUEUES if queued[s]])
+
+
+def backlog(dsn: str, mode: str) -> tuple[dict[str, int], dict[str, int]]:
+    """Each stream's last seq and each queue's work, read after the last drain."""
+    where = {"leg_ready": _RECOMPUTE_WORK[mode]}
+    with psycopg.connect(dsn) as conn:
+        heads = {s: conn.execute(f"SELECT coalesce(max(seq), 0) FROM {t}").fetchone()[0] for s, t in STREAMS.items()}
+        queued = {s: conn.execute(f"SELECT count(*) FROM {t} WHERE {where.get(s, 'true')}").fetchone()[0]
+                  for s, t in QUEUES.items()}
+    return heads, queued
+
+
 def run_case(case: Case, *, dsn: str, grpc_endpoint: str, opa_client, mode: str) -> Observation:
     timings: dict[str, float] = {}
     t = time.perf_counter()
@@ -187,15 +217,15 @@ def run_case(case: Case, *, dsn: str, grpc_endpoint: str, opa_client, mode: str)
     _wait_rows(dsn, len(rows))
     lap("receiver")
 
-    interactions.drain(0)
+    cursors = {"interactions": interactions.drain(0)}
     lap("interactions")
-    data_lineage.drain(0)
+    cursors["data_lineage"] = data_lineage.drain(0)
     lap("data_lineage")
     detector = classify.load(case.dir)
     classify.check_authored(case, renderer, detector.authored)
-    classification.drain(0, detector=detector, model_version=detector.model_version)
+    cursors["classification"] = classification.drain(0, detector=detector, model_version=detector.model_version)
     lap("classification")
-    label_lineage.drain(0, label_lineage.Config(find.exact, "exact"))
+    cursors["label_lineage"] = label_lineage.drain(0, label_lineage.Config(find.exact, "exact"))
     lap("label_lineage")
 
     saved = risk_config.inherited_labels_mode
@@ -210,13 +240,14 @@ def run_case(case: Case, *, dsn: str, grpc_endpoint: str, opa_client, mode: str)
         return inner(*a, **k)
 
     try:
-        leg_ready.drain(0, observer=counting)
+        cursors["leg_ready"] = leg_ready.drain(0, observer=counting)
     finally:
         risk_config.inherited_labels_mode = saved
         leg_ready._label_hold[:] = saved_hold
     lap("leg_ready+risk")
 
     obs = _read(case, renderer.rendered, dsn, mode)
+    obs.problems[:0] = unfinished(cursors, *backlog(dsn, mode))
     obs.timings = timings
     obs.observer_calls = calls["n"]
     lap("read")
