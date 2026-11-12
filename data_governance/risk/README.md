@@ -78,7 +78,9 @@ flowchart TB
 
 **Pipeline, in order:**
 
-1. **Leg readiness.** `data_governance/processors/leg_ready/driver.py` drains
+1. **Leg readiness.** (An interaction a Sentry gate waits on is computed ahead of its
+   turn by the same process: `docs/verdict-service.md`.)
+   `data_governance/processors/leg_ready/driver.py` drains
    `interaction_legs` in `seq` order using the contiguous-prefix readiness
    cursor: a leg is ready once it has no payload, or its payload has a
    `payload_classifications` row — and, with `RISK_INHERITED_LABELS=on`, once

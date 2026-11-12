@@ -1,0 +1,1 @@
+{"rows": [{"source": "report-dispense", "fallback": "allow"}, {"source": "report-dispense", "destination": "sms-gateway.example", "fallback": "deny"}, {"source": "chaos-monkey", "fallback": "deny"}]}

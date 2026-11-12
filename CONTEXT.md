@@ -617,7 +617,8 @@ carries no kind.
 The data-governance verdict on the sensitivity of one **Payload** — its
 document-level `sensitivity_level`, the regulatory tags it carries, whether it
 holds an identity bundle, and the set of **Findings** within its body text.
-Produced by **P-classification**, not by `P-interactions`. Keyed to the
+Produced by **P-classification**, not by `P-interactions`; the verdict service
+also writes it for a payload a Sentry gate is waiting on (the same write-once row). Keyed to the
 **Payload** by `content_hash`: one classification per content-addressed
 payload, so a body referenced by many **Interactions** or **Traces** is
 classified exactly once (dedup inherited from the payload's content
@@ -969,7 +970,9 @@ risk record is the governance-facing rollup, one grain up from both.
 _Avoid_: reading `interaction_risk_records` directly with inline SQL — the
 **Risk retrieval** seam exists to keep the latest-version reduction and filter
 ordering (filter *after* picking latest, never before — see AC-DAS-016) in one
-place instead of re-derived per caller.
+place instead of re-derived per caller. The one read that filters first, the
+verdict service's (`get_request_risk`: the latest version that evidences the
+request leg), lives in the seam too.
 
 **Current version** (risk records):
 The single **Interaction risk record** or **Trace risk record** a reader means

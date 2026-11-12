@@ -35,8 +35,8 @@ flowchart LR
 
 Everything runs on the local Kind cluster. The single entry point is
 **`deploy/dg.sh`**, which installs, uninstalls, and reports status for the whole
-DG component (Postgres, receiver, UI, the three processors, the UI HTTPRoute,
-and the collector tee), and instruments a namespace's agents/tools for lineage.
+DG component (Postgres, receiver, UI, the processors, the verdict service, the UI
+HTTPRoute, and the collector tee), and instruments a namespace's agents/tools for lineage.
 
 > This guide covers installing **data-governance** and instrumenting a
 > namespace. It assumes the rossoctl platform (the cluster, Istio Gateway, and
@@ -56,7 +56,9 @@ On a Podman-backed Kind cluster, set `CONTAINER_TOOL=podman` and
 cached on the host, use
 `./deploy/dg.sh component install --reuse-classification` to load it into a
 fresh Kind node while rebuilding only the shared receiver/UI image. The
-command checks that the cached image exists before starting the build.
+command checks that the cached image exists, and holds the verdict service, before
+starting the build. The verdict service runs from that image, so rebuild it after
+changing its code.
 
 `component install` is idempotent; add `--no-build` to skip the image build when
 only manifests changed. It performs a `rollout restart` for you — this is
@@ -76,15 +78,16 @@ To make DG observe a namespace, instrument its agents and tools for lineage:
 ```sh
 ./deploy/dg.sh namespaces list                 # namespaces DG can instrument
 ./deploy/dg.sh namespace <ns> instrument       # instrument trusted agents/tools in <ns>
-./deploy/dg.sh namespace <ns> instrument <e>   # instrument one trusted entity
+./deploy/dg.sh namespace <ns> instrument <e>   # one trusted entity, once <ns> is instrumented
 ./deploy/dg.sh namespace <ns> status           # instrumentation state of <ns>
 ```
 
 Instrumentation is one-way and mode-preserving. Rossoctl-managed agents/tools
 are selected by `rossoctl.io/type`, retain their enforcing sidecars and auth,
-and are converged by rolling the application shim before hot-reloading the
-proxy pipeline. Namespace-wide activation completes all preflight checks, then
-rolls tools before agents, alphabetically within each group. `status` reports
+and are converged by rolling the application shim, then writing the proxy
+pipeline into the namespace `authbridge-runtime-config`. Namespace-wide
+activation completes all preflight checks, then rolls tools before agents,
+alphabetically within each group. `status` reports
 subsequent drift. The reasoning is recorded in
 [ADR-0031](docs/adr/0031-non-reversible-namespace-lineage-activation.md) and
 [ADR-0033](docs/adr/0033-dg-sh-vendors-lineage-attach-proxy-default-one-trace.md), and the

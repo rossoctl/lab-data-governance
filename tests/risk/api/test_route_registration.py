@@ -48,16 +48,16 @@ def test_a_rule_literally_named_categories_is_shadowed_intentionally(
 
 def test_risk_api_does_not_import_the_ui_api_module():
     """D3: import direction is strictly data_governance.api ->
-    data_governance.risk.api, never the reverse. `rules_routes`/`http` must
-    not reference `data_governance.api` anywhere in their source."""
-    import inspect
+    data_governance.risk.api, never the reverse. No module of `risk.api`
+    references `data_governance.api` anywhere in its source."""
+    from pathlib import Path
 
-    from data_governance.risk.api import http as http_mod
-
-    for mod in (rules_routes, http_mod):
-        source = inspect.getsource(mod)
-        assert "data_governance.api" not in source
-        assert "data_governance import api" not in source
+    modules = sorted(Path(rules_routes.__file__).parent.glob("*.py"))
+    assert len(modules) > 2
+    for path in modules:
+        source = path.read_text(encoding="utf-8")
+        assert "data_governance.api" not in source, path.name
+        assert "data_governance import api" not in source, path.name
 
 
 def test_existing_healthz_route_still_resolves(client):

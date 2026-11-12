@@ -44,11 +44,18 @@ derivation stays behind the interface (ADR-0005):
   / ``get_interaction_risk_history`` and their trace-grain counterparts
   ``list_trace_risk`` / ``get_trace_risk`` / ``get_trace_risk_history``, plus the
   trace forest read ``get_trace_risk_detail`` (the trace risk record joined against
-  the :mod:`.interactions` derived forest). Both risk tables are write-once
-  and versioned, so every read reduces to latest-version-per-key, filtered strictly
-  after that reduction (AC-DAS-016). Pagination is DB-level keyset, not the bounded
+  the :mod:`.interactions` derived forest), and the verdict service's batched
+  ``get_request_risk``. Both risk tables are write-once and versioned, so every read
+  reduces to latest-version-per-key, filtered strictly after that reduction
+  (AC-DAS-016) — except ``get_request_risk``, which picks the latest version that
+  evidences the request leg (its docstring says why). Pagination is DB-level keyset, not the bounded
   in-memory ``http.paginate`` — see the module docstring for why an offset cursor is
   wrong here.
+- :mod:`.exchanges` — the verdict service's batched reads of a held exchange's request
+  (``get_exchange_requests``: its request leg's payload state and whether the body was
+  read whole, from the request span's facts; ``get_request_findings``: the request
+  payload's findings, and its content when asked). Sibling to ``get_request_risk``,
+  which picks the record.
 - :mod:`.alerts` — the read path over ``alerts`` (issue #110's read half):
   ``list_alerts`` (filtered, keyset-paged, superseded alerts left out by default) and
   ``get_alert``. Not versioned like the risk tables: a level rise links rows through
@@ -68,6 +75,12 @@ from data_governance.retrieval.alerts import (
     AlertView,
     get_alert,
     list_alerts,
+)
+from data_governance.retrieval.exchanges import (
+    ExchangeRequestView,
+    RequestFindingsView,
+    get_exchange_requests,
+    get_request_findings,
 )
 from data_governance.retrieval.interactions import (
     DestinationView,
@@ -134,6 +147,7 @@ from data_governance.retrieval.risk import (
     TraceRiskView,
     get_interaction_risk,
     get_interaction_risk_history,
+    get_request_risk,
     get_trace_risk,
     get_trace_risk_detail,
     get_trace_risk_history,
@@ -216,11 +230,17 @@ __all__ = [
     "TraceRiskView",
     "get_interaction_risk",
     "get_interaction_risk_history",
+    "get_request_risk",
     "get_trace_risk",
     "get_trace_risk_detail",
     "get_trace_risk_history",
     "list_interaction_risk",
     "list_trace_risk",
+    # the verdict service's exchange reads
+    "ExchangeRequestView",
+    "RequestFindingsView",
+    "get_exchange_requests",
+    "get_request_findings",
     # DAS alert reads (issue #110)
     "SORT_TIMESTAMP_DESC",
     "AlertPage",
