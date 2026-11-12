@@ -1,0 +1,56 @@
+id: C6
+title: returned unseen
+cell: trunk/one/leaf-to-leaf (leaf invisible)
+line: U>A[-], A>L[-], L>A[-], A>T1[-], ..V1.., T1>A[s1 s2 s3 -], A>L[s1@subject s2@account s3@ref -], L>A[s1@subject s2@account
+  s3@ref -], A>T2[s1@subject s2@account s3@ref -], T2>V2[s1@subject s2@account s3@ref -]⚑, V2>T2[-], T2>A[-], A>L[-], L>A[-],
+  A>U[-]
+units:
+  s1: SSN
+  s2: MRN
+  s3: DOB
+  s4: DIS
+expect:
+  verdict:
+    'on': block
+    'off': allow
+  edges:
+  - s1 7>8
+  - s1 8>9
+  - s1 9>10
+  - s1 10>11
+  - s2 7>8
+  - s2 8>9
+  - s2 9>10
+  - s2 10>11
+  - s3 7>8
+  - s3 8>9
+  - s3 9>10
+  - s3 10>11
+  - s1 7>10
+  - s2 7>10
+  - s3 7>10
+classifier:
+  must_see:
+    '7':
+    - s1
+    - s2
+    - s3
+  must_miss:
+    '8':
+    - s1
+    - s2
+    - s3
+    '9':
+    - s1
+    - s2
+    - s3
+    '10':
+    - s1
+    - s2
+    - s3
+    '11':
+    - s1
+    - s2
+    - s3
+  authored: true
+notes: 'C5 with V1 off the wire: T1 is the leaf, the origin is T1''s answer at leg 7; legs 5 and 6 are the unseen hop.'

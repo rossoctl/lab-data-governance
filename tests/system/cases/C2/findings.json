@@ -1,0 +1,104 @@
+{
+ "model_dir": "classification/model/20260304",
+ "model_version": 2,
+ "calibrated_at": "2026-11-11T09:48:39+00:00",
+ "by_text": {
+  "{\"diagnosis\": \"type 2 diabetes\", \"dob\": \"1961-03-14\", \"mrn\": \"4471820\", \"note\": \"please process at the usual priority\", \"ssn\": \"123-45-6789\"}": [
+   [
+    15,
+    30,
+    "DIS"
+   ],
+   [
+    41,
+    51,
+    "DOB"
+   ],
+   [
+    62,
+    69,
+    "MRN"
+   ],
+   [
+    128,
+    139,
+    "SSN"
+   ]
+  ],
+  "{\"dob\": \"1961-03-14\", \"mrn\": \"4471820\", \"note\": \"no further action needed\", \"ssn\": \"123-45-6789\"}": [
+   [
+    9,
+    19,
+    "DOB"
+   ],
+   [
+    30,
+    37,
+    "MRN"
+   ],
+   [
+    84,
+    95,
+    "SSN"
+   ]
+  ],
+  "{\"dob\": \"1961-03-14\", \"mrn\": \"4471820\", \"note\": \"forwarded for fulfilment\", \"ssn\": \"123-45-6789\"}": [
+   [
+    9,
+    19,
+    "DOB"
+   ],
+   [
+    30,
+    37,
+    "MRN"
+   ],
+   [
+    84,
+    95,
+    "SSN"
+   ]
+  ],
+  "{\"dob\": \"1961-03-14\", \"mrn\": \"4471820\", \"note\": \"acknowledged\", \"ssn\": \"123-45-6789\"}": [
+   [
+    9,
+    19,
+    "DOB"
+   ],
+   [
+    30,
+    37,
+    "MRN"
+   ],
+   [
+    72,
+    83,
+    "SSN"
+   ]
+  ],
+  "{\"dob\": \"1961-03-14\", \"mrn\": \"4471820\", \"note\": \"batch job window 02:00\", \"ssn\": \"123-45-6789\"}": [
+   [
+    9,
+    19,
+    "DOB"
+   ],
+   [
+    30,
+    37,
+    "MRN"
+   ],
+   [
+    82,
+    93,
+    "SSN"
+   ]
+  ],
+  "{\"note\": \"routine refill request received\"}": [],
+  "{\"note\": \"please process at the usual priority\"}": [],
+  "{\"note\": \"no further action needed\"}": [],
+  "{\"note\": \"forwarded for fulfilment\"}": [],
+  "{\"note\": \"acknowledged\"}": [],
+  "{\"note\": \"batch job window 02:00\"}": []
+ },
+ "authored": null
+}

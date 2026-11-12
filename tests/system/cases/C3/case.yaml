@@ -1,0 +1,57 @@
+id: C3
+title: lost after the prompt
+cell: trunk/one/root-to-left-leaf
+line: U>A[s1 s2 s3 s4 -], A>L[s1 s2 s3 -], L>A[s1@subject s2@account s3@ref -], A>T1[s1@subject s2@account s3@ref -], T1>V1[s1@subject
+  s2@account s3@ref -]⚑, V1>T1[-], T1>A[-], A>L[-], L>A[-], A>T2[-], T2>V2[-], V2>T2[-], T2>A[-], A>L[-], L>A[-], A>U[-]
+units:
+  s1: SSN
+  s2: MRN
+  s3: DOB
+  s4: DIS
+expect:
+  verdict:
+    'on': block
+    'off': allow
+  edges:
+  - s1 1>2
+  - s1 2>3
+  - s1 3>4
+  - s1 4>5
+  - s2 1>2
+  - s2 2>3
+  - s2 3>4
+  - s2 4>5
+  - s3 1>2
+  - s3 2>3
+  - s3 3>4
+  - s3 4>5
+  - s1 1>4
+  - s2 1>4
+  - s3 1>4
+classifier:
+  must_see:
+    '1':
+    - s1
+    - s2
+    - s3
+    - s4
+    '2':
+    - s1
+    - s2
+    - s3
+  must_miss:
+    '3':
+    - s1
+    - s2
+    - s3
+    '4':
+    - s1
+    - s2
+    - s3
+    '5':
+    - s1
+    - s2
+    - s3
+  authored: true
+notes: Same route as C2. From the LLM's answer on the facts travel under keys the model does not recognise; only lineage carries
+  the label to V1.

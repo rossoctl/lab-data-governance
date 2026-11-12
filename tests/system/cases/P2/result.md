@@ -1,0 +1,48 @@
+# P2 — two callers in flight
+
+cell `trunk/control/two-callers-in-flight`  ·  status **GREEN**  ·  classifier **authored**: the model's findings subtracted at legs [5, 7, 9, 10]
+
+```
+U>A1[s1 -], U>A2[s2 -], A1>T1[s1 -], A2>T1[s2 -], T1(A1)>V1[s1@subject -]⚑, V1>T1[-], T1(A2)>V2[s2@account -], V2>T1[-], T1>A1[s1@subject -], T1>A2[s2@account -], A1>U[-], A2>U[-]
+```
+
+```
+expected
+              1      2      3      4      5      6      7      8      9      10     11     12     
+              U>A1   U>A2   A1>T1  A2>T1  T1>V1⚑ V1>T1  T1>V2  V2>T1  T1>A1  T1>A2  A1>U   A2>U   
+SSN     s1    ●      ·      ━━━━━━●·      ━━━━━━○·      ·      ·      ━━━━━━○·      ·      ·      
+MRN     s2    ·      ●      ·      ━━━━━━●·      ·      ━━━━━━○·      ·      ━━━━━━○·      ·      
+DOB     s3    ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      
+DIS     s4    ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      
+
+observed
+              1      2      3      4      5      6      7      8      9      10     11     12     
+              U>A1   U>A2   A1>T1  A2>T1  T1>V1⚑ V1>T1  T1>V2  V2>T1  T1>A1  T1>A2  A1>U   A2>U   
+SSN     s1    ●      ·      ━━━━━━●·      ━━━━━━○·      ·      ·      ━━━━━━○·      ·      ·      
+MRN     s2    ·      ●      ·      ━━━━━━●·      ·      ━━━━━━○·      ·      ━━━━━━○·      ·      
+DOB     s3    ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      
+DIS     s4    ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      
+verdict at 5: expected on=block / off=allow, observed on=block / off=allow
+```
+
+**Rows (inherited labels on).**
+
+| leg | who | classification | inherited labels (from leg) | risk |
+|---|---|---|---|---|
+| 1 | U>A1 | RESTRICTED SSN=123-45-6789 | — | — |
+| 2 | U>A2 | RESTRICTED MRN=4471820 | — | — |
+| 3 | A1>T1 | RESTRICTED SSN=123-45-6789 | s1=123-45-6789 (SSN, from 1) | — |
+| 4 | A2>T1 | RESTRICTED MRN=4471820 | s2=4471820 (MRN, from 2) | — |
+| 5 | T1>V1⚑ | PUBLIC  | s1=123-45-6789 (SSN, from 3) | critical block ['T-SENS'] v1 |
+| 6 | V1>T1 | PUBLIC  | — | — |
+| 7 | T1>V2 | PUBLIC  | s2=4471820 (MRN, from 4) | — |
+| 8 | V2>T1 | PUBLIC  | — | — |
+| 9 | T1>A1 | PUBLIC  | s1=123-45-6789 (SSN, from 3) | — |
+| 10 | T1>A2 | PUBLIC  | s2=4471820 (MRN, from 4) | — |
+| 11 | A1>U | PUBLIC  | — | — |
+| 12 | A2>U | PUBLIC  | — | — |
+
+Risk observer calls: 16
+
+**Notes.** Picture 2 of #348. A1 and A2 call T1; A2's request arrives before T1 serves A1. T1(A1)>V1 belongs to A1's call, so it carries s1 (3>5) and nothing of A2's; before #348 the fold routed it from the latest inbound (A2's) and V1 saw no label: verdict allow.
+

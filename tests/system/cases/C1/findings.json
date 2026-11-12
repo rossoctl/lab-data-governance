@@ -1,0 +1,14 @@
+{
+ "model_dir": "classification/model/20260304",
+ "model_version": 2,
+ "calibrated_at": "2026-11-11T09:48:39+00:00",
+ "by_text": {
+  "{\"note\": \"please process at the usual priority\"}": [],
+  "{\"note\": \"no further action needed\"}": [],
+  "{\"note\": \"forwarded for fulfilment\"}": [],
+  "{\"note\": \"acknowledged\"}": [],
+  "{\"note\": \"batch job window 02:00\"}": [],
+  "{\"note\": \"routine refill request received\"}": []
+ },
+ "authored": null
+}
