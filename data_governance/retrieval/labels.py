@@ -20,7 +20,8 @@ the leg was rewritten away from is not shown.
 ``chains``, routes back along ``from_*`` from this leg to the origin, one hop
 per payload the value sat on, in ``seq`` order from the origin (``role``
 ``origin``) through the carriers (``hop``) to this leg (``here``), and
-``route_count``, how many such routes exist. A value reaches a leg along many
+``route_count``, how many such routes exist (saturating at
+:data:`MAX_ROUTE_COUNT`). A value reaches a leg along many
 routes: the edges form a DAG with fan-in (an agent keeps every earlier holding
 of a value, every LLM round trip echoes it back), and the number of routes is a
 product over that fan-in while the number of edges is not. So this read never
@@ -79,12 +80,20 @@ __all__ = [
     "LabelView",
     "LegLabelsView",
     "LineageHop",
+    "MAX_ROUTE_COUNT",
     "get_leg_labels",
     "merge",
 ]
 
 #: Characters of the origin's projected text kept on each side of the unit.
 EXCERPT_MARGIN = 80
+
+#: The largest ``route_count`` served, 2**53 - 1: JavaScript's largest safe
+#: integer (``Number.MAX_SAFE_INTEGER``), past which a JSON reader there no longer
+#: tells neighbouring integers apart. Counts saturate here, so a count at the cap
+#: means at least that many routes; uncapped, the count doubles with every LLM
+#: round trip and soon has more digits than ``json.dumps`` converts (4,300).
+MAX_ROUTE_COUNT = 2**53 - 1
 
 
 # ---------------------------------------------------------------------------
@@ -143,11 +152,11 @@ class LabelOriginView:
     ``origin_trace_id`` is ``None`` for an origin in this trace. ``chains`` is
     one shortest route from this origin per edge into the leg (see the module
     docstring), shortest first, and ``route_count`` the number of routes there
-    are in all. ``carriers`` is every leg on any of those routes, the origin and
-    the leg read included: the chains are previews, the carriers are what a
-    tracked value lights. ``chains`` and ``carriers`` are empty and
-    ``route_count`` ``None`` only when the read was made without the walk
-    (:func:`merge` called bare)."""
+    are in all, at most :data:`MAX_ROUTE_COUNT`. ``carriers`` is every leg on any
+    of those routes, the origin and the leg read included: the chains are
+    previews, the carriers are what a tracked value lights. ``chains`` and
+    ``carriers`` are empty and ``route_count`` ``None`` only when the read was
+    made without the walk (:func:`merge` called bare)."""
 
     origin_interaction_id: str
     origin_leg_type: str
@@ -311,7 +320,8 @@ def _origins(edges: Sequence[LabelEdge],
             unit_text=e.unit_text, unit_value=e.unit_value, match_kind=e.match_kind,
             origin_trace_id=e.origin_trace_id,
             chains=[seen[k] for k in sorted(seen)],
-            route_count=None if lineage is None else sum(w.route_count for w in walked),
+            route_count=None if lineage is None else min(
+                MAX_ROUTE_COUNT, sum(w.route_count for w in walked)),
             carriers=sorted(set().union(*(w.carriers for w in walked))),
         ))
     return views
@@ -630,8 +640,9 @@ def _route_counts(anchors: Sequence[str], sub: _SubGraph) -> dict[str, int]:
     parent (a dead end), ends one; any other edge ends as many as the edges into
     the holding it was derived from, summed. The sum is taken once per holding,
     not once per edge out of it, so the count reads each edge of the sub-graph
-    once. Inside a cycle, an edge from a holding still on the walk counts one, as
-    a dead end does."""
+    once, and saturates at :data:`MAX_ROUTE_COUNT`, so each sum costs the same
+    however long the conversation. Inside a cycle, an edge from a holding still
+    on the walk counts one, as a dead end does."""
     routes: dict[_Holding, int] = {}
 
     def count(eid: str) -> int:
@@ -639,7 +650,7 @@ def _route_counts(anchors: Sequence[str], sub: _SubGraph) -> dict[str, int]:
         return 1 if e.at_origin else max(1, routes.get(e.frm, 0))
 
     for h in _post_order(anchors, sub):
-        routes[h] = sum(count(p) for p in sub.into.get(h, ()))
+        routes[h] = min(MAX_ROUTE_COUNT, sum(count(p) for p in sub.into.get(h, ())))
     return {a: count(a) for a in anchors}
 
 

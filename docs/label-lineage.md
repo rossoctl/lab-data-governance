@@ -101,8 +101,9 @@ payload. A value reaches a leg along many routes (the edges form a DAG with fan-
 every earlier holding, every LLM round trip echoes the value back), and their number multiplies along
 the fan-in while the number of edges does not; so the read never lists them. It reads the sub-graph of
 edges behind the leg once (a set union, linear in edges) and derives one shortest route per edge into
-the leg, shortest first, `route_count`, how many routes there are in all, and `carriers`, every leg
-on any of them (the origin and this leg included). The walk crosses into
+the leg, shortest first, `route_count`, how many routes there are in all (saturating at 2^53 − 1,
+JavaScript's largest safe integer: a count at the cap means at least that many), and `carriers`, every
+leg on any of them (the origin and this leg included). The walk crosses into
 other traces through `from_trace_id` / `origin_trace_id` (no finder writes them yet; the read already
 follows them). A route that cannot reach the origin ends at the nearest edge with no edge of its own
 (where the walk meets itself only when every route circles; on such data, a fault, the count and the

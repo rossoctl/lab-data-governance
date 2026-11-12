@@ -499,7 +499,7 @@ async def _interaction_labels_handler(request: Request) -> Response:
     carried into it, with each carried label's origin and, on the origin, the
     ``chains`` the value travelled from there to this leg (one shortest route per
     edge into the leg, hops in seq order, each hop with its trace id) and the
-    ``route_count`` of all routes (see the retrieval module). Same
+    ``route_count`` of all routes, at most 2**53 - 1 (see the retrieval module). Same
     empty-on-unknown convention as :func:`_interaction_spans_handler`;
     ``lineage_status`` is ``null`` when the trace's label lineage is not derived
     (never defaulted).

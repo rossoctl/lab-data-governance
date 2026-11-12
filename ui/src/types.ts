@@ -141,7 +141,10 @@ export interface LabelOrigin {
    * from a server that predates the walk; the UI then shows the origin alone.
    */
   chains?: LineageHop[][];
-  /** How many routes there are in all; `chains` lists the shortest of them. Absent from an older server. */
+  /**
+   * How many routes there are in all; `chains` lists the shortest of them. Saturates at
+   * `Number.MAX_SAFE_INTEGER` (2^53 − 1): a count at the cap means at least that many. Absent from an older server.
+   */
   route_count?: number | null;
   /**
    * Every leg on any route from this origin to the leg read, both ends included:

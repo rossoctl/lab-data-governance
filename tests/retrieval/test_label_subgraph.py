@@ -1,6 +1,7 @@
 """The derivations over the label-lineage sub-graph (``retrieval.labels``), pure:
-how much of the sub-graph each one reads and holds. The routes, counts and
-carriers themselves are pinned against a DB in ``test_get_leg_labels.py``.
+how much of the sub-graph each one reads and holds, and how large the route count
+may grow. The routes, counts and carriers themselves are pinned against a DB in
+``test_get_leg_labels.py``.
 
 A holding (a payload holding one origin unit) with N edges in and N edges out
 must cost about N, not N x N: every edge out of it has the same parents, so the
@@ -71,6 +72,20 @@ def test_a_holding_with_n_edges_in_and_n_out_costs_n_not_n_squared() -> None:
     # A few reads per edge (15 here), never one per pair: reading x's n edges
     # once per edge out of x is n * n = 250,000.
     assert reads[0] <= 30 * len(rows), reads[0]
+
+
+def test_the_route_count_saturates_at_the_cap() -> None:
+    # 100 diamonds in series: 2**100 routes reach the last holding; the count
+    # stops at the cap.
+    k = 100
+    rows = []
+    for i in range(k):
+        frm = "o" if i == 0 else f"p{i}"
+        rows += [_row(f"d{i}", f"p{i + 1}", frm, i == 0), _row(f"a{i}", f"m{i}", frm, i == 0),
+                 _row(f"b{i}", f"p{i + 1}", f"m{i}", False)]
+    sub = labels._sub_graph(rows)
+    counts = labels._route_counts([f"d{k - 1}", f"b{k - 1}"], sub)
+    assert counts == {f"d{k - 1}": labels.MAX_ROUTE_COUNT, f"b{k - 1}": labels.MAX_ROUTE_COUNT}
 
 
 def test_the_carriers_of_a_long_chain_hold_a_few_bit_sets_at_a_time() -> None:
