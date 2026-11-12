@@ -47,7 +47,7 @@ describe('labelTrack', () => {
       .toEqual(['x/request/PID/16-25/BK-1', 'x/response/OPID/16-25/BK-1']);
   });
 
-  it('lights the union of every chain of every tracked value, counts hops in other traces, and names the nodes at the ends', () => {
+  it('lights the union of every chain of every tracked value from a server without carriers, counts legs in other traces once, and names the nodes at the ends', () => {
     const a = trackedValueOf('x', leg([]), label())!;
     const b = trackedValueOf('x', leg([]), label({
       entity_type: 'DATE',
@@ -58,9 +58,22 @@ describe('labelTrack', () => {
     expect(h.edgeIds).toEqual(['o:response', 'p:request', 'r:response', 'x:request']);
     expect(h.interactionIds).toEqual(['o', 'p', 'r', 'x']);
     expect(h.nodeIds).toEqual(['e1', 'e2', 'e3', 'e4', 'e5', 'e6']);
-    expect(h.foreignHops).toBe(2);
+    expect(h.foreignHops).toBe(1);
     const g = toGraphHighlight(h);
     expect(g).toEqual({ selectedNodeId: null, nodeIds: h.nodeIds, edgeIds: h.edgeIds, isQuestion: true });
+  });
+
+  it('lights the carriers, not only the shortest chain: the LLM round trip the chain skips stays lit', () => {
+    const carrier = (iid: string, leg: 'request' | 'response', trace = T) => ({ trace_id: trace, interaction_id: iid, leg_type: leg });
+    const v = trackedValueOf('x', leg([]), label({
+      carried_in: [{
+        ...origin([[hop(1, 'origin', 'o', 'response'), hop(5, 'hop', 'p'), hop(9, 'here', 'x')]]),
+        carriers: [carrier('o', 'response'), carrier('llm', 'request'), carrier('llm', 'response'), carrier('p', 'request'), carrier('x', 'request')],
+      }],
+    }))!;
+    const h = deriveLabelTrackHighlight([v], [ix('o', 'e1', 'e2'), ix('llm', 'e2', 'e9'), ix('p', 'e2', 'e3'), ix('x', 'e3', 'e6')], T);
+    expect(h.edgeIds).toEqual(['llm:request', 'llm:response', 'o:response', 'p:request', 'x:request']);
+    expect(h.nodeIds).toEqual(['e1', 'e2', 'e3', 'e6', 'e9']);
   });
 
   it('names a value by a rule\'s tag or level criteria, and by nothing when a rule has no data-item criteria', () => {

@@ -136,11 +136,29 @@ export interface LabelOrigin {
   /** The origin's trace when it is another one; `null` for this trace. */
   origin_trace_id: string | null;
   /**
-   * Every route the value took from this origin to the leg read, shortest
+   * One shortest route from this origin per edge into the leg read, shortest
    * first, each a list of hops in seq order (origin → carriers → here). Absent
    * from a server that predates the walk; the UI then shows the origin alone.
    */
   chains?: LineageHop[][];
+  /**
+   * How many routes there are in all; `chains` lists the shortest of them. Saturates at
+   * `Number.MAX_SAFE_INTEGER` (2^53 − 1): a count at the cap means at least that many. Absent from an older server.
+   */
+  route_count?: number | null;
+  /**
+   * Every leg on any route from this origin to the leg read, both ends included:
+   * what tracking lights (the chains are only the shortest routes). Absent from
+   * an older server; tracking then lights the chains' hops.
+   */
+  carriers?: CarrierLeg[];
+}
+
+/** One leg a carried-in value sat on, on some route from its origin to the leg read. */
+export interface CarrierLeg {
+  trace_id: string;
+  interaction_id: string;
+  leg_type: 'request' | 'response';
 }
 
 /**
