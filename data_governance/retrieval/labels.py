@@ -69,6 +69,7 @@ from data_governance.processors.classification.projection import project
 __all__ = [
     "CarriedLabelsView",
     "CarrierLeg",
+    "EdgeLineage",
     "FoundLabelsView",
     "GetLegLabelsResult",
     "HopExcerpt",
@@ -252,14 +253,16 @@ class LabelEdge:
     edge_id: str | None = None
 
 
-Chains = dict[str, list[list[LineageHop]]]
-"""The chains that end at each edge into the leg, keyed by ``edge_id``."""
+@dataclass(frozen=True)
+class EdgeLineage:
+    """What the walk derived for one edge into the leg — :func:`merge`'s other
+    input, keyed by ``edge_id``: one shortest route to the origin as hops
+    (``None`` when an edge on it was deleted between the reads), how many routes
+    end at the edge, and every leg on any of them."""
 
-RouteCounts = dict[str, int]
-"""How many routes end at each edge into the leg, keyed by ``edge_id``."""
-
-Carriers = dict[str, frozenset[CarrierLeg]]
-"""Every leg on any route that ends at each edge into the leg, keyed by ``edge_id``."""
+    chain: list[LineageHop] | None
+    route_count: int
+    carriers: frozenset[CarrierLeg]
 
 
 def _rank(level: str | None) -> int:
@@ -281,9 +284,8 @@ def _chain_key(chain: Sequence[LineageHop]) -> tuple:
     return (len(chain), tuple((h.seq is None, h.seq or 0, h.interaction_id, h.leg_type) for h in chain))
 
 
-def _origins(edges: Sequence[LabelEdge], chains: Chains | None = None,
-             route_counts: RouteCounts | None = None,
-             carriers: Carriers | None = None) -> list[LabelOriginView]:
+def _origins(edges: Sequence[LabelEdge],
+             lineage: dict[str, EdgeLineage] | None = None) -> list[LabelOriginView]:
     """One origin per (origin leg, unit) — two carriers of one origin are two
     edges but one origin — in origin ``seq`` order. The origin's chains are the
     chains of every edge in its group, shortest first, each once; its route
@@ -297,30 +299,29 @@ def _origins(edges: Sequence[LabelEdge], chains: Chains | None = None,
     views = []
     for group in ordered:
         e = group[0]
+        walked = [lineage[edge.edge_id] for edge in group if lineage and edge.edge_id in lineage]
         seen: dict[tuple, list[LineageHop]] = {}
-        for edge in group:
-            for chain in (chains or {}).get(edge.edge_id or "", []):
-                seen.setdefault(_chain_key(chain), chain)
+        for w in walked:
+            if w.chain is not None:
+                seen.setdefault(_chain_key(w.chain), w.chain)
         views.append(LabelOriginView(
             origin_interaction_id=e.origin_interaction_id, origin_leg_type=e.origin_leg_type,
             origin_seq=e.origin_seq, caller=e.caller, callee=e.callee,
             unit_text=e.unit_text, unit_value=e.unit_value, match_kind=e.match_kind,
             origin_trace_id=e.origin_trace_id,
             chains=[seen[k] for k in sorted(seen)],
-            route_count=None if route_counts is None else sum(
-                route_counts.get(edge.edge_id or "", 0) for edge in group),
-            carriers=sorted(set().union(*((carriers or {}).get(edge.edge_id or "", ()) for edge in group))),
+            route_count=None if lineage is None else sum(w.route_count for w in walked),
+            carriers=sorted(set().union(*(w.carriers for w in walked))),
         ))
     return views
 
 
 def merge(findings: Sequence[dict[str, Any]], edges: Sequence[LabelEdge],
-          chains: Chains | None = None, route_counts: RouteCounts | None = None,
-          carriers: Carriers | None = None) -> list[LabelView]:
+          lineage: dict[str, EdgeLineage] | None = None) -> list[LabelView]:
     """Pair the classifier's *findings* with the carried-in *edges* per
-    ``(span, entity_type)``. *chains*, *route_counts* and *carriers* (by
-    ``edge_id``) ride onto each origin; without them every origin's ``chains``
-    and ``carriers`` are empty and its ``route_count`` ``None``.
+    ``(span, entity_type)``. Each edge's *lineage* (by ``edge_id``) rides onto
+    its origin; without it every origin's ``chains`` and ``carriers`` are empty
+    and its ``route_count`` ``None``.
 
     Edges are grouped by ``(entity_type, matched span)``. A finding claims each
     same-type group whose span overlaps its own — overlap, not equality, because
@@ -373,7 +374,7 @@ def merge(findings: Sequence[dict[str, Any]], edges: Sequence[LabelEdge],
             entity_type=str(f.get("entity_type", "")),
             sensitivity_level=highest(levels),
             regulatory_tags=sorted({*own_tags, *(t for e in carried for t in e.regulatory_tags)}),
-            found_here=True, carried_in=_origins(carried, chains, route_counts, carriers),
+            found_here=True, carried_in=_origins(carried, lineage),
         ))
     for group in unclaimed:
         head = group[0]
@@ -382,7 +383,7 @@ def merge(findings: Sequence[dict[str, Any]], edges: Sequence[LabelEdge],
             start=head.matched_start, end=head.matched_end, entity_type=head.entity_type,
             sensitivity_level=highest([e.sensitivity_level for e in group]),
             regulatory_tags=sorted({t for e in group for t in e.regulatory_tags}),
-            found_here=False, carried_in=_origins(group, chains, route_counts, carriers),
+            found_here=False, carried_in=_origins(group, lineage),
         ))
     rows.sort(key=lambda r: (r.start is None, r.start or 0, -_rank(r.sensitivity_level), r.entity_type))
     return rows
@@ -557,12 +558,12 @@ def _hop(side: _Side, role: str, text: str | None, start: int | None, end: int |
                       text=text, start=start, end=end, role=role, excerpt=excerpt)
 
 
-def _route_counts(anchors: Sequence[str], parents: dict[str, Sequence[str]]) -> RouteCounts:
+def _route_counts(anchors: Sequence[str], parents: dict[str, Sequence[str]]) -> dict[str, int]:
     """Routes ending at each anchor edge: the sum over its parents, an edge with
     no parent (the origin, or a dead end) counting one. Memoised over the
     sub-graph, iterative, so a route of any length costs its edges once; an
     edge met again while its own count is pending (a cycle) counts nothing."""
-    memo: RouteCounts = {}
+    memo: dict[str, int] = {}
     pending: set[str] = set()
     for start in anchors:
         stack = [(start, False)]
@@ -627,12 +628,12 @@ def _carriers(start: str, parents: dict[str, Sequence[str]], legs: dict[str, tup
     return frozenset(leg for eid in seen for leg in legs[eid])
 
 
-def _read_chains(tx: db.Transaction, edge_ids: list[str]) -> tuple[Chains, RouteCounts, Carriers]:
+def _read_lineage(tx: db.Transaction, edge_ids: list[str]) -> dict[str, EdgeLineage]:
     """Read the sub-graph behind *edge_ids* once and derive, per edge, one
     shortest route to its origin, the number of routes and the legs on any of
     them (see the module docstring); build the hops of each route."""
     if not edge_ids:
-        return {}, {}, {}
+        return {}
     # The sub-graph: each reachable edge once. An edge's parents are the edges of
     # the same origin unit into the payload it was derived from.
     into: dict[tuple, list[str]] = {}
@@ -667,10 +668,12 @@ def _read_chains(tx: db.Transaction, edge_ids: list[str]) -> tuple[Chains, Route
         for h, content in tx.fetch_all(_PAYLOADS_SQL, (origin_hashes,)):
             texts[h] = project(content)
 
-    chains: Chains = {}
+    lineage: dict[str, EdgeLineage] = {}
     for start, (path, complete) in routes.items():
         if any(eid not in ends for eid in path):
-            continue  # an edge deleted between the two reads: a re-derivation in flight
+            # An edge deleted between the two reads: a re-derivation in flight.
+            lineage[start] = EdgeLineage(None, counts[start], carriers[start])
+            continue
         last = ends[path[-1]]
         if complete:
             text = texts.get(last.from_payload_hash)
@@ -682,8 +685,8 @@ def _read_chains(tx: db.Transaction, edge_ids: list[str]) -> tuple[Chains, Route
             e = ends[eid]
             hops.append(_hop(e.to, "here" if eid == start else "hop",
                              e.matched_text, e.matched_start, e.matched_end))
-        chains.setdefault(start, []).append(hops)
-    return chains, counts, carriers
+        lineage[start] = EdgeLineage(hops, counts[start], carriers[start])
+    return lineage
 
 
 def get_leg_labels(trace_id: str, interaction_id: str) -> GetLegLabelsResult:
@@ -699,9 +702,7 @@ def get_leg_labels(trace_id: str, interaction_id: str) -> GetLegLabelsResult:
             return GetLegLabelsResult()
 
         edges: dict[str, list[LabelEdge]] = {}
-        chains: Chains = {}
-        counts: RouteCounts = {}
-        carriers: Carriers = {}
+        lineage: dict[str, EdgeLineage] = {}
         status: str | None = None
         if _tables_exist(tx, ("payload_label_edges", "label_lineage_trace_status")):
             for r in tx.fetch_all(_EDGES_SQL, ([r[0] for r in legs], [r[1] for r in legs],
@@ -715,8 +716,8 @@ def get_leg_labels(trace_id: str, interaction_id: str) -> GetLegLabelsResult:
                     origin_seq=None if r[16] is None else int(r[16]),
                     caller=r[17], callee=r[18], edge_id=r[19],
                 ))
-            chains, counts, carriers = _read_chains(tx, [e.edge_id for into in edges.values() for e in into
-                                                         if e.edge_id is not None])
+            lineage = _read_lineage(tx, [e.edge_id for into in edges.values() for e in into
+                                         if e.edge_id is not None])
             row = tx.fetch_one(
                 "SELECT status FROM label_lineage_trace_status WHERE trace_id = %s",
                 (trace_id,),
@@ -733,6 +734,6 @@ def get_leg_labels(trace_id: str, interaction_id: str) -> GetLegLabelsResult:
                 found=None if level is None else FoundLabelsView(
                     sensitivity_level=level, regulatory_tags=list(tags or [])),
                 carried=_carried_summary(into),
-                labels=merge(findings or [], into, chains, counts, carriers),
+                labels=merge(findings or [], into, lineage),
             ))
         return GetLegLabelsResult(legs=views, lineage_status=status)
