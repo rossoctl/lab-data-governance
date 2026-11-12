@@ -100,7 +100,9 @@ edges' `from_*` back from the leg, each next hop read at the payload the edge wa
 payload. A value reaches a leg along many routes (the edges form a DAG with fan-in: an agent keeps
 every earlier holding, every LLM round trip echoes the value back), and their number multiplies along
 the fan-in while the number of edges does not; so the read never lists them. It reads the sub-graph of
-edges behind the leg once (a set union, linear in edges) and derives one shortest route per edge into
+edges behind the leg once (a set union, linear in edges: the edges into each payload are found through
+the index on (to leg, payload), migration 0030; through the index on the origin unit, which the planner
+would otherwise prefer, every hop reads every edge of the value) and derives one shortest route per edge into
 the leg, shortest first, `route_count`, how many routes there are in all (saturating at 2^53 − 1,
 JavaScript's largest safe integer: a count at the cap means at least that many), and `carriers`, every
 leg on any of them (the origin and this leg included). The walk crosses into

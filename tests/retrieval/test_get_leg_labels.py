@@ -572,3 +572,46 @@ def test_the_sub_graph_read_joins_each_holding_once_not_each_pair_of_edges(confi
         (plan,) = tx.fetch_one("EXPLAIN (ANALYZE, FORMAT JSON) " + labels._SUBGRAPH_SQL, (anchors, anchors))
     work = _plan_rows(plan[0]["Plan"])
     assert work < 10 * 2 * n, work  # a walk edge by edge: about n * n (94,800 here)
+
+
+def _plan_values(node: dict, key: str) -> list:
+    """Every value of *key* in an EXPLAIN (FORMAT JSON) plan, depth first."""
+    return [*([node[key]] if key in node else []), *(v for c in node.get("Plans", []) for v in _plan_values(c, key))]
+
+
+def test_a_long_chain_among_other_traces_is_read_by_holding_through_the_to_index(configured_db: str) -> None:
+    # One value carried through 2,000 hops in a table that also holds 60,000 edges
+    # of other traces and units, analysed: the planner faces the real choice. The
+    # origin-unit index looks like 1 row per lookup but returns all 2,000 edges of
+    # the value at every hop (a product); the to-index on (leg, payload) returns
+    # the one edge into each holding. Migration 0030 adds the payload to it.
+    n, noise = 2_000, 60_000
+    cols = ("edge_id, trace_id, to_interaction_id, to_leg_type, to_payload_hash, from_interaction_id, "
+            "from_leg_type, from_payload_hash, origin_interaction_id, origin_leg_type, origin_payload_hash, "
+            "unit_start, unit_end, unit_text, unit_value, entity_type, regulatory_tags, sensitivity_level, "
+            "matcher, match_kind, score, held_from, held_to, seq")
+
+    def edge(eid, trace, to, frm, origin, start):
+        return [eid, trace, to, "request", to, frm, "request", frm, origin, "request", origin,
+                start, start + 9, "v", "v", "PID", "{PII}", "RESTRICTED", "exact", "whole", 1, 0, 9, 1]
+
+    with psycopg.connect(configured_db) as conn:
+        with conn.cursor() as cur, cur.copy(f"COPY payload_label_edges ({cols}) FROM STDIN") as copy:
+            for i in range(noise):  # 30 traces, 600 values of 100 edges, 20 edges into each leg
+                copy.write_row(edge(f"nz{i}", f"t-nz{i // 2000}", f"nz{i // 20}", f"nz{i // 20 - 1}",
+                                    f"nzo{i // 100}", i % 20))
+            for i in range(1, n + 1):
+                copy.write_row(edge(f"c{i}", "t-chain", f"c{i}", f"c{i - 1}", "c0", 0))
+        conn.commit()
+        conn.execute("ANALYZE payload_label_edges")
+    anchors = [f"c{n}"]
+    with db.transaction() as tx:
+        assert len(tx.fetch_all(labels._SUBGRAPH_SQL, (anchors, anchors))) == n
+        (plan,) = tx.fetch_one("EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + labels._SUBGRAPH_SQL, (anchors, anchors))
+    root = plan[0]["Plan"]
+    indexes = set(_plan_values(root, "Index Name"))
+    blocks = root["Shared Hit Blocks"] + root["Shared Read Blocks"]
+    # A few buffer blocks per hop (6 here); through the origin-unit index, a block
+    # count that grows with the chain at every hop.
+    assert blocks < 30 * n, (blocks, indexes)
+    assert "payload_label_edges_to_idx" in indexes and "payload_label_edges_origin_idx" not in indexes, indexes
