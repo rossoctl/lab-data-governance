@@ -17,7 +17,8 @@ import json
 import psycopg
 import pytest
 
-from data_governance import retrieval
+from data_governance import db, retrieval
+from data_governance.retrieval import labels
 
 _TID = "e06cd67dedd004056a388a8ac48842a0"
 _IX = "f48567d1-a81a-5b37-a96e-022d4729b829"
@@ -356,6 +357,9 @@ def test_the_partner_request_opid_born_at_the_llm_has_one_chain(booking_trace: s
     assert origin.origin_seq == 82082
     assert [_route(c) for c in origin.chains] == [[(82082, "origin"), (82049, "hop"), (83053, "here")]]
     assert origin.route_count == 1
+    # Not every leg of the trace: only those on the OPID's one route.
+    assert [(c.interaction_id, c.leg_type) for c in origin.carriers] == [
+        (_P, "request"), (_NP, "request"), (_LLM2, "response")]
     # The LLM response has no stored payload here: the hop stands, the excerpt does not.
     assert origin.chains[0][0].excerpt is None
 
@@ -542,3 +546,29 @@ def test_routes_are_counted_not_listed_when_fan_in_multiplies_them(configured_db
     assert len(origin.chains) == 2
     assert [h.role for h in origin.chains[0]] == ["origin", *["hop"] * 14, "here"]
     assert origin.chains[0][0].interaction_id == "ix-0"
+
+
+def _plan_rows(node: dict) -> int:
+    """Rows every node of an EXPLAIN ANALYZE plan produced, over all its loops
+    (``Actual Rows`` is the per-loop mean, rounded, so this is approximate)."""
+    return int(node["Actual Rows"] * node["Actual Loops"]) + sum(_plan_rows(c) for c in node.get("Plans", []))
+
+
+def test_the_sub_graph_read_joins_each_holding_once_not_each_pair_of_edges(configured_db: str) -> None:
+    # The value reaches x n times and leaves it n times. A walk edge by edge joins
+    # every edge out of x to every edge into it, n x n rows; the walk by holding
+    # reads x's edges once.
+    n = 300
+    with psycopg.connect(configured_db) as conn:
+        o, x, y = (("ix-o", "response", "o"), ("ix-x", "request", "x"), ("ix-y", "request", "y"))
+        k = dict(trace="t-fan", origin=o, unit=(0, 9), entity_type="PID", tags=["PII"], level="RESTRICTED")
+        for i in range(n):
+            _edge2(conn, eid=f"in-{i}", to=x, frm=o, span=(10 * i, 10 * i + 9), **k)
+            _edge2(conn, eid=f"out-{i}", to=y, frm=x, span=(10 * i, 10 * i + 9), **k)
+        conn.commit()
+    anchors = [f"out-{i}" for i in range(n)]
+    with db.transaction() as tx:
+        assert len(tx.fetch_all(labels._SUBGRAPH_SQL, (anchors, anchors))) == 2 * n
+        (plan,) = tx.fetch_one("EXPLAIN (ANALYZE, FORMAT JSON) " + labels._SUBGRAPH_SQL, (anchors, anchors))
+    work = _plan_rows(plan[0]["Plan"])
+    assert work < 10 * 2 * n, work  # a walk edge by edge: about n * n (94,800 here)

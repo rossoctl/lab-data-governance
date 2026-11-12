@@ -105,7 +105,8 @@ the leg, shortest first, `route_count`, how many routes there are in all, and `c
 on any of them (the origin and this leg included). The walk crosses into
 other traces through `from_trace_id` / `origin_trace_id` (no finder writes them yet; the read already
 follows them). A route that cannot reach the origin ends at the nearest edge with no edge of its own
-(where the walk meets itself only when every route circles) and is kept as a chain whose first hop is
+(where the walk meets itself only when every route circles; on such data, a fault, the count and the
+carriers are not exact) and is kept as a chain whose first hop is
 a `hop`, never shown as the origin. The origin hop carries an
 `excerpt` of its payload's projected text around the unit.
 

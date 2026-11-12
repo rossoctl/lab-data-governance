@@ -35,7 +35,8 @@ is a chain of payloads, not of legs as they stand now; only the *to* leg is
 pinned to its current payload. The walk follows ``from_trace_id`` /
 ``origin_trace_id`` into other traces, so this read is no longer scoped to one
 trace; every hop names its ``trace_id``. A cycle (the edges run from earlier to
-later ``seq``, so none should exist) ends where the walk meets itself; a route
+later ``seq``, so none should exist) ends where the walk meets itself, and on
+such data the route count and the carriers are not exact; a route
 that ends before the origin (an edge whose source has no edge of its own) is
 kept as a chain whose first hop is a ``hop``, never dressed up as an origin. The
 origin hop carries an ``excerpt`` of the origin payload's projected text around
@@ -57,7 +58,7 @@ before migration 0024 the legs carry found-here rows only with
 
 from __future__ import annotations
 
-from collections import deque
+from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -448,48 +449,49 @@ _EDGES_SQL = (
     "ORDER BY e.to_leg_type, e.matched_start NULLS LAST, e.entity_type, e.edge_id"
 )
 
-# The sub-graph: from the edges into the leg (the anchors), each step reads the
-# edges into the current edge's FROM side at the payload the edge was derived
-# from, for the same origin unit and type. UNION (set semantics) returns each
-# reachable edge once, however many routes lead to it, so the read is linear in
-# edges and a cycle ends by itself. The routes and their count are derived in
-# Python from the sub-graph; nothing here enumerates them.
-_ORIGIN_MATCH = (
-    "n.origin_interaction_id = w.origin_interaction_id "
-    "AND n.origin_leg_type::text = w.origin_leg_type "
-    "AND n.origin_payload_hash = w.origin_payload_hash "
-    "AND n.unit_start = w.unit_start AND n.unit_end = w.unit_end "
-    "AND n.entity_type = w.entity_type"
+# The sub-graph, walked by holding. A holding is a payload holding one origin
+# unit, and every edge runs from one holding to another of the same unit. From
+# the holdings the edges into the leg were derived from, each step reads the
+# edges into the current holding (at its payload, in its trace, for its unit)
+# and moves on to the holdings those were derived from, never past an edge from
+# the origin. UNION (set semantics) keeps each holding once, so the edges into
+# a holding are joined once however many edges leave it: the read is linear in
+# edges and a cycle ends by itself. (A walk edge by edge joins every edge out of
+# a holding to every edge into it, a product.) The sub-graph is the edges into
+# the leg and the edges into every holding walked, each once; the routes, their
+# count and the carriers are derived from it in Python.
+_HOLDING = ("COALESCE({0}.from_trace_id, {0}.trace_id), {0}.from_interaction_id, {0}.from_leg_type, "
+            "{0}.from_payload_hash, {0}.origin_interaction_id, {0}.origin_leg_type, "
+            "{0}.origin_payload_hash, {0}.unit_start, {0}.unit_end, {0}.entity_type")
+_AT_ORIGIN = ("{0}.from_interaction_id = {0}.origin_interaction_id "
+              "AND {0}.from_leg_type = {0}.origin_leg_type")
+_INTO_HOLDING = (
+    "n.to_interaction_id = h.interaction_id AND n.to_leg_type = h.leg_type "
+    "AND n.to_payload_hash = h.payload_hash AND n.trace_id = h.trace_id "
+    "AND n.origin_interaction_id = h.origin_interaction_id "
+    "AND n.origin_leg_type = h.origin_leg_type "
+    "AND n.origin_payload_hash = h.origin_payload_hash "
+    "AND n.unit_start = h.unit_start AND n.unit_end = h.unit_end "
+    "AND n.entity_type = h.entity_type"
 )
-_AT_ORIGIN = ("w.from_interaction_id = w.origin_interaction_id "
-              "AND w.from_leg_type = w.origin_leg_type")
+# One edge: its id, the to holding's leg and payload (its trace is the edge's),
+# the from holding with the unit, and whether it starts at the origin.
+_EDGE = ("{0}.edge_id, {0}.trace_id, {0}.to_interaction_id, {0}.to_leg_type::text, {0}.to_payload_hash, "
+         "COALESCE({0}.from_trace_id, {0}.trace_id), {0}.from_interaction_id, {0}.from_leg_type::text, "
+         "{0}.from_payload_hash, {0}.origin_interaction_id, {0}.origin_leg_type::text, "
+         "{0}.origin_payload_hash, {0}.unit_start, {0}.unit_end, {0}.entity_type, (" + _AT_ORIGIN + ")")
 _SUBGRAPH_SQL = (
-    "WITH RECURSIVE walk(edge_id, from_interaction_id, from_leg_type, from_payload_hash, "
-    "                    from_trace_id, origin_interaction_id, origin_leg_type, origin_payload_hash, "
-    "                    unit_start, unit_end, entity_type) AS ("
-    "  SELECT e.edge_id, e.from_interaction_id, e.from_leg_type::text, e.from_payload_hash, "
-    "         COALESCE(e.from_trace_id, e.trace_id), e.origin_interaction_id, "
-    "         e.origin_leg_type::text, e.origin_payload_hash, e.unit_start, e.unit_end, "
-    "         e.entity_type "
-    "  FROM payload_label_edges e WHERE e.edge_id = ANY(%s) "
+    "WITH RECURSIVE held(trace_id, interaction_id, leg_type, payload_hash, origin_interaction_id, "
+    "                    origin_leg_type, origin_payload_hash, unit_start, unit_end, entity_type) AS ("
+    f"  SELECT {_HOLDING.format('e')} FROM payload_label_edges e "
+    f"  WHERE e.edge_id = ANY(%s) AND NOT ({_AT_ORIGIN.format('e')}) "
     "  UNION "
-    "  SELECT n.edge_id, n.from_interaction_id, n.from_leg_type::text, n.from_payload_hash, "
-    "         COALESCE(n.from_trace_id, n.trace_id), w.origin_interaction_id, w.origin_leg_type, "
-    "         w.origin_payload_hash, w.unit_start, w.unit_end, w.entity_type "
-    "  FROM walk w JOIN payload_label_edges n "
-    "    ON n.to_interaction_id = w.from_interaction_id "
-    "   AND n.to_leg_type::text = w.from_leg_type "
-    "   AND n.to_payload_hash = w.from_payload_hash "
-    "   AND n.trace_id = w.from_trace_id "
-    f"   AND {_ORIGIN_MATCH} "
-    f"  WHERE NOT ({_AT_ORIGIN})"
+    f"  SELECT {_HOLDING.format('n')} FROM held h JOIN payload_label_edges n ON {_INTO_HOLDING} "
+    f"  WHERE NOT ({_AT_ORIGIN.format('n')})"
     ") "
-    "SELECT w.edge_id, e.trace_id, e.to_interaction_id, e.to_leg_type::text, e.to_payload_hash, "
-    "       w.from_trace_id, w.from_interaction_id, w.from_leg_type, w.from_payload_hash, "
-    "       w.origin_interaction_id, w.origin_leg_type, w.origin_payload_hash, "
-    "       w.unit_start, w.unit_end, w.entity_type, "
-    f"      ({_AT_ORIGIN.replace('w.', 'e.')}) AS at_origin "
-    "FROM walk w JOIN payload_label_edges e ON e.edge_id = w.edge_id"
+    f"SELECT {_EDGE.format('e')} FROM payload_label_edges e WHERE e.edge_id = ANY(%s) "
+    "UNION "
+    f"SELECT {_EDGE.format('n')} FROM held h JOIN payload_label_edges n ON {_INTO_HOLDING}"
 )
 
 # Both ends of every edge a chain walked: the to side (its trace is the edge's)
@@ -558,74 +560,166 @@ def _hop(side: _Side, role: str, text: str | None, start: int | None, end: int |
                       text=text, start=start, end=end, role=role, excerpt=excerpt)
 
 
-def _route_counts(anchors: Sequence[str], parents: dict[str, Sequence[str]]) -> dict[str, int]:
-    """Routes ending at each anchor edge: the sum over its parents, an edge with
-    no parent (the origin, or a dead end) counting one. Memoised over the
-    sub-graph, iterative, so a route of any length costs its edges once; an
-    edge met again while its own count is pending (a cycle) counts nothing."""
-    memo: dict[str, int] = {}
-    pending: set[str] = set()
-    for start in anchors:
-        stack = [(start, False)]
+@dataclass(frozen=True)
+class _Holding:
+    """A payload holding one origin unit: a node of the sub-graph. ``unit`` is
+    the origin unit's identity (origin leg and payload, unit span, entity type),
+    decoded once per row and shared by both ends of the edge."""
+
+    leg: CarrierLeg
+    payload_hash: str
+    unit: tuple
+
+
+@dataclass(frozen=True)
+class _SubEdge:
+    to: _Holding
+    frm: _Holding
+    at_origin: bool
+
+
+@dataclass(frozen=True)
+class _SubGraph:
+    """The edges behind the leg read, each once, and the ids of the edges into
+    each holding, sorted. An edge's parents are the edges into the holding it was
+    derived from (none for an edge from the origin): one list per holding, shared
+    by every edge out of it, never a copy per edge."""
+
+    edges: dict[str, _SubEdge]
+    into: dict[_Holding, list[str]]
+
+
+def _sub_graph(rows: Sequence[Sequence[Any]]) -> _SubGraph:
+    """Decode :data:`_SUBGRAPH_SQL`'s rows: each end of an edge from its own
+    columns, the unit once for both."""
+    edges: dict[str, _SubEdge] = {}
+    into: dict[_Holding, list[str]] = {}
+    for r in rows:
+        unit = tuple(r[9:15])
+        to = _Holding(CarrierLeg(r[1], r[2], r[3]), r[4], unit)
+        edges[r[0]] = _SubEdge(to=to, frm=_Holding(CarrierLeg(r[5], r[6], r[7]), r[8], unit),
+                               at_origin=bool(r[15]))
+        into.setdefault(to, []).append(r[0])
+    for ids in into.values():
+        ids.sort()
+    return _SubGraph(edges, into)
+
+
+def _post_order(anchors: Sequence[str], sub: _SubGraph) -> list[_Holding]:
+    """Every holding behind the anchors, each once, each after the holdings its
+    edges come from (in a cycle, a data fault, after those not already on the
+    walk). Iterative, so a route of any length costs its holdings once."""
+    order: list[_Holding] = []
+    seen: set[_Holding] = set()
+    for anchor in anchors:
+        stack = [(sub.edges[anchor].frm, False)]
         while stack:
-            eid, ready = stack.pop()
-            if ready:
-                memo[eid] = max(1, sum(memo.get(p, 0) for p in parents[eid]))
-                pending.discard(eid)
-            elif eid not in memo and eid not in pending:
-                pending.add(eid)
-                stack.append((eid, True))
-                stack.extend((p, False) for p in parents[eid] if p not in memo and p not in pending)
-    return {a: memo[a] for a in anchors}
+            h, done = stack.pop()
+            if done:
+                order.append(h)
+            elif h not in seen:
+                seen.add(h)
+                stack.append((h, True))
+                stack.extend((sub.edges[p].frm, False) for p in sub.into.get(h, ())
+                             if not sub.edges[p].at_origin)
+    return order
 
 
-def _shortest_route(start: str, parents: dict[str, Sequence[str]], at_origin: dict[str, bool]
-                    ) -> tuple[list[str], bool]:
-    """The edge ids of one shortest route from *start* back to an origin edge
-    (BFS over the sub-graph), and whether it reached one. When no origin is
-    reachable, the route ends at the nearest dead end — an edge with no parent
-    at all; only when there is none (every route runs in a circle) does it end
-    at the first edge whose every parent was already walked, which is how a
-    cycle ends. Branches that converge also meet already-walked parents, so
-    that test alone would end a route early."""
-    prev: dict[str, str | None] = {start: None}
-    queue = deque([start])
-    end = dead_end = closes_cycle = None
-    while queue:
-        eid = queue.popleft()
-        if at_origin[eid]:
-            end = eid
-            break
-        if not parents[eid]:
-            dead_end = dead_end or eid
-            continue
-        fresh = [p for p in parents[eid] if p not in prev]
-        if not fresh:
-            closes_cycle = closes_cycle or eid
-        for p in fresh:
-            prev[p] = eid
-            queue.append(p)
-    end = end or dead_end or closes_cycle or start
-    route = []
-    cur: str | None = end
-    while cur is not None:
-        route.append(cur)
-        cur = prev[cur]
-    route.reverse()  # start first, the origin (or dead end) last
-    return route, at_origin[end]
+def _route_counts(anchors: Sequence[str], sub: _SubGraph) -> dict[str, int]:
+    """Routes ending at each anchor edge. An edge from the origin, or with no
+    parent (a dead end), ends one; any other edge ends as many as the edges into
+    the holding it was derived from, summed. The sum is taken once per holding,
+    not once per edge out of it, so the count reads each edge of the sub-graph
+    once. Inside a cycle, an edge from a holding still on the walk counts one, as
+    a dead end does."""
+    routes: dict[_Holding, int] = {}
+
+    def count(eid: str) -> int:
+        e = sub.edges[eid]
+        return 1 if e.at_origin else max(1, routes.get(e.frm, 0))
+
+    for h in _post_order(anchors, sub):
+        routes[h] = sum(count(p) for p in sub.into.get(h, ()))
+    return {a: count(a) for a in anchors}
 
 
-def _carriers(start: str, parents: dict[str, Sequence[str]], legs: dict[str, tuple[CarrierLeg, CarrierLeg]]
-              ) -> frozenset[CarrierLeg]:
-    """Both ends of every edge on any route from *start*: the edges reachable
-    from it in the sub-graph, each once."""
-    seen, stack = {start}, [start]
-    while stack:
-        for p in parents[stack.pop()]:
-            if p not in seen:
-                seen.add(p)
-                stack.append(p)
-    return frozenset(leg for eid in seen for leg in legs[eid])
+def _shortest_routes(anchors: Sequence[str], sub: _SubGraph) -> dict[str, tuple[list[str], bool]]:
+    """One shortest route per anchor: its edge ids from the anchor back to an
+    edge from the origin, and whether it reached one. A breadth-first walk
+    forward from the edges from the origin gives each holding, once, the edge
+    into it on a shortest route back. A holding that cannot reach the origin is
+    given, by a second such walk from the dead ends (edges with no parent), the
+    edge toward the nearest one. Each walk reads the sub-graph once, and a route
+    then costs its own length. A holding reached by neither (every route behind
+    it circles) takes its first edge until the route meets itself."""
+    ids = sorted(sub.edges)
+    out: dict[_Holding, list[str]] = {}
+    for eid in ids:
+        if not sub.edges[eid].at_origin:
+            out.setdefault(sub.edges[eid].frm, []).append(eid)
+    origins = [eid for eid in ids if sub.edges[eid].at_origin]
+    dead_ends = [eid for eid in ids if not sub.edges[eid].at_origin and not sub.into.get(sub.edges[eid].frm)]
+    toward: dict[_Holding, str] = {}
+    for level in (origins, dead_ends):
+        while level:
+            level_next = []
+            for eid in level:
+                h = sub.edges[eid].to
+                if h not in toward:
+                    toward[h] = eid
+                    level_next.extend(out.get(h, ()))
+            level = level_next
+    routes = {}
+    for anchor in anchors:
+        route, seen = [anchor], {sub.edges[anchor].to}
+        while not sub.edges[route[-1]].at_origin:
+            h = sub.edges[route[-1]].frm
+            parents = sub.into.get(h)
+            if not parents or h in seen:
+                break  # a dead end, or the route meets itself
+            seen.add(h)
+            route.append(toward.get(h, parents[0]))
+        routes[anchor] = (route, sub.edges[route[-1]].at_origin)
+    return routes
+
+
+def _carriers(anchors: Sequence[str], sub: _SubGraph) -> dict[str, frozenset[CarrierLeg]]:
+    """Both ends of every edge on any route from each anchor. What lies behind a
+    holding is the union, over the edges into it, of their two ends and what
+    lies behind the holding each comes from, held as one bit per leg: each edge
+    costs one OR, however many anchors share it, instead of a walk per anchor.
+    A holding's bits are dropped once their last reader has read them, so a long
+    chain holds a few masks at a time, not one per holding. Inside a cycle, a
+    holding misses what lies behind a holding still on the walk."""
+    legs = sorted({leg for e in sub.edges.values() for leg in (e.to.leg, e.frm.leg)})
+    index = {leg: i for i, leg in enumerate(legs)}
+    order = _post_order(anchors, sub)
+    readers = Counter(sub.edges[p].frm for h in order for p in sub.into.get(h, ()))
+    readers.update(sub.edges[a].frm for a in anchors)
+    behind: dict[_Holding, int] = {}
+
+    def ends_and_behind(e: _SubEdge) -> int:
+        mask = 1 << index[e.to.leg] | 1 << index[e.frm.leg]
+        if not e.at_origin:
+            mask |= behind.get(e.frm, 0)
+        readers[e.frm] -= 1
+        if not readers[e.frm]:
+            behind.pop(e.frm, None)
+        return mask
+
+    for h in order:
+        mask = 0
+        for p in sub.into.get(h, ()):
+            mask |= ends_and_behind(sub.edges[p])
+        behind[h] = mask
+    carriers: dict[str, frozenset[CarrierLeg]] = {}
+    decoded: dict[int, frozenset[CarrierLeg]] = {}
+    for anchor in anchors:
+        mask = ends_and_behind(sub.edges[anchor])
+        if mask not in decoded:
+            decoded[mask] = frozenset(leg for leg, b in zip(legs, reversed(f"{mask:b}")) if b == "1")
+        carriers[anchor] = decoded[mask]
+    return carriers
 
 
 def _read_lineage(tx: db.Transaction, edge_ids: list[str]) -> dict[str, EdgeLineage]:
@@ -634,23 +728,11 @@ def _read_lineage(tx: db.Transaction, edge_ids: list[str]) -> dict[str, EdgeLine
     them (see the module docstring); build the hops of each route."""
     if not edge_ids:
         return {}
-    # The sub-graph: each reachable edge once. An edge's parents are the edges of
-    # the same origin unit into the payload it was derived from.
-    into: dict[tuple, list[str]] = {}
-    frm: dict[str, tuple] = {}
-    at_origin: dict[str, bool] = {}
-    legs: dict[str, tuple[CarrierLeg, CarrierLeg]] = {}
-    for r in tx.fetch_all(_SUBGRAPH_SQL, (edge_ids,)):
-        unit = tuple(r[9:15])
-        into.setdefault((r[1], r[2], r[3], r[4], unit), []).append(r[0])
-        frm[r[0]] = (r[5], r[6], r[7], r[8], unit)
-        at_origin[r[0]] = bool(r[15])
-        legs[r[0]] = (CarrierLeg(r[1], r[2], r[3]), CarrierLeg(r[5], r[6], r[7]))
-    parents = {eid: () if at_origin[eid] else tuple(sorted(into.get(frm[eid], ()))) for eid in frm}
-    anchors = [eid for eid in edge_ids if eid in frm]  # an anchor deleted since the edge read is skipped
-    counts = _route_counts(anchors, parents)
-    routes = {a: _shortest_route(a, parents, at_origin) for a in anchors}
-    carriers = {a: _carriers(a, parents, legs) for a in anchors}
+    sub = _sub_graph(tx.fetch_all(_SUBGRAPH_SQL, (edge_ids, edge_ids)))
+    anchors = [eid for eid in edge_ids if eid in sub.edges]  # an anchor deleted since the edge read is skipped
+    counts = _route_counts(anchors, sub)
+    routes = _shortest_routes(anchors, sub)
+    carriers = _carriers(anchors, sub)
 
     walked = sorted({eid for path, _ in routes.values() for eid in path})
     ends: dict[str, _EdgeEnds] = {}
