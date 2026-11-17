@@ -46,7 +46,7 @@ def main() -> int:
              json.dumps(dict(config.scopes), sort_keys=True))
     c = config.crossing
     log.info("across conversations: %s", "off" if c is None else
-             f"on, M={c.common_limit}, retention {int(c.retention.total_seconds())} s, anchors {','.join(sorted(c.anchors))}, "
+             f"on, at most {c.edges_per_value} edges per value, retention {int(c.retention.total_seconds())} s, anchors {','.join(sorted(c.anchors))}, "
              f"limits: holdings per entity {c.holdings_limit or 'none'}, payload bytes {c.payload_bytes or 'none'}, "
              f"candidates per payload {c.candidates_limit or 'none'}")
 

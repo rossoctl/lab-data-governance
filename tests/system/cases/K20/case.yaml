@@ -1,6 +1,6 @@
 id: K20
-title: M+1 earlier conversations
-cell: across/common/beyond-M
+title: four earlier conversations, one of them three times
+cell: across/many/four
 line: U>A[s1 -], A>T2[s1 -], T2>V2[s1 -], V2>T2[-], T2>V2[s1 -], V2>T2[-], T2>V2[s1 -], V2>T2[-], T2>A[-], A>U[-] ~2min> U>A[s1
   -], A>T2[s1 -], T2>V2[s1 -], V2>T2[-], T2>A[-], A>U[-] ~2min> U>A[s1 -], A>T2[s1 -], T2>V2[s1 -], V2>T2[-], T2>A[-], A>U[-]
   ~2min> U>A[s1 -], A>T2[s1 -], T2>V2[s1 -], V2>T2[-], T2>A[-], A>U[-] ~2min> U>A[-], A>T2[-], T2>V2[-], V2>T2[s1@subject
@@ -11,7 +11,7 @@ expect:
   verdict:
     'off': allow
     conv: allow
-    cross: allow
+    cross: block
   edges:
   - s1 1>2
   - s1 2>3
@@ -23,12 +23,29 @@ expect:
   - s1 18>19
   - s1 23>24
   - s1 24>25
+  cross:
+  - s1 3>32 vo
+  - s1 5>32 vo
+  - s1 7>32 vo
+  - s1 13>32 vo
+  - s1 19>32 vo
+  - s1 25>32 vo
+  - s1 32>33
+  - s1 33>34
+  - s1 34>35
   evidence:
     '32':
-      s1: []
-  marks:
-    '32':
-    - common 4
+      s1:
+      - crossed vo ambiguous
+    '33':
+      s1:
+      - crossed vo ambiguous
+    '34':
+      s1:
+      - crossed vo ambiguous
+    '35':
+      s1:
+      - crossed vo ambiguous
 classifier:
   must_see:
     '1':
@@ -70,5 +87,5 @@ classifier:
     - s1
   authored: true
 notes: 'Four earlier conversations send V2 the SSN, the first of them three times (three calls in one call of T2); the fifth
-  gets it back. Counted by distinct conversation the value is held from 4 > M = 3 conversations (R2): a common value, no edge,
-  the count on the leg. Counted by leg it would be 6: the stated count tells the two apart.'
+  gets it back. No value is dropped for being held from many conversations (R2): six edges, one per time V2 received it, value-only,
+  ambiguous (four origins); it blocks. Under the cap of 30 edges per value, so nothing is cut and no mark is drawn.'

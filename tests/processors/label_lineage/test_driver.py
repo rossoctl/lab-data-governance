@@ -456,9 +456,9 @@ def test_an_invalid_cross_configuration_stops_the_processor_at_startup(monkeypat
     monkeypatch.setenv("LABEL_CROSS_CONVERSATION", "yes")
     assert entry.main() == 2
     monkeypatch.setenv("LABEL_CROSS_CONVERSATION", "on")
-    monkeypatch.setenv("LABEL_CROSS_COMMON_LIMIT", "-1")
+    monkeypatch.setenv("LABEL_CROSS_EDGES_PER_VALUE", "-1")
     assert entry.main() == 2
-    monkeypatch.setenv("LABEL_CROSS_COMMON_LIMIT", "3")
+    monkeypatch.setenv("LABEL_CROSS_EDGES_PER_VALUE", "30")
     monkeypatch.setenv("LABEL_CROSS_HOLDINGS_PER_ENTITY", "none")
     assert entry.main() == 2
 
@@ -578,20 +578,21 @@ def test_a_record_member_removed_lowers_the_crossing_to_value_only(configured_db
     assert _crossings(configured_db) == [("SSN", "T1", "value_only")]
 
 
-def test_a_common_value_held_once_less_crosses_again(configured_db: str) -> None:
-    """Four earlier conversations make the SSN common (M = 3); one of them loses its label: three edges."""
+def test_a_value_held_from_four_conversations_crosses_from_each_and_follows_a_correction(configured_db: str) -> None:
+    """Four earlier conversations hold the SSN: four edges, nothing dropped; one of them loses its label: three."""
     from tests.label_lineage.test_cross import SSN, _second, _trace
     earlier = [_trace(f"P{i}", [(f"p{i}", "request", "a", "v", {"ssn": SSN}, [("SSN", SSN)])],
                       _second().legs[0].occurred_at - dt.timedelta(minutes=4 - i)) for i in range(4)]
     for t in [*earlier, _second()]:
         _seed_input(configured_db, t)
     cursor = driver.drain(0, _crossed())
-    assert _crossings(configured_db) == []
-    assert _q(configured_db, "SELECT conversations FROM label_crossings WHERE edge_id IS NULL") == [(4,)]
+    assert sorted(_crossings(configured_db)) == [("SSN", f"P{i}", "value_only") for i in range(4)]
+    assert _q(configured_db, "SELECT DISTINCT conversations FROM label_crossings") == [(4,)]
+    assert _q(configured_db, "SELECT count(*) FROM label_crossings WHERE edge_id IS NULL") == [(0,)]
     _reclassify(configured_db, earlier[0], 0)
     driver.drain(cursor, _crossed())
-    assert _crossings(configured_db) == [("SSN", "P1", "value_only"), ("SSN", "P2", "value_only"),
-                                         ("SSN", "P3", "value_only")]
+    assert sorted(_crossings(configured_db)) == [("SSN", "P1", "value_only"), ("SSN", "P2", "value_only"),
+                                                 ("SSN", "P3", "value_only")]
 
 
 def test_a_conversation_that_loses_every_leg_queues_what_rested_on_it(configured_db: str) -> None:

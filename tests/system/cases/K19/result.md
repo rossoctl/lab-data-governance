@@ -1,6 +1,6 @@
-# K19 — exactly M earlier conversations
+# K19 — three earlier conversations
 
-cell `across/common/at-M`  ·  status **GREEN**  ·  classifier **authored**: the model's findings subtracted at legs [22, 23, 24, 25]
+cell `across/many/three`  ·  status **GREEN**  ·  classifier **authored**: the model's findings subtracted at legs [22, 23, 24, 25]
 
 ```
 U>A[s1 -], A>T2[s1 -], T2>V2[s1 -], V2>T2[-], T2>A[-], A>U[-] ~2min> U>A[s1 -], A>T2[s1 -], T2>V2[s1 -], V2>T2[-], T2>A[-], A>U[-] ~2min> U>A[s1 -], A>T2[s1 -], T2>V2[s1 -], V2>T2[-], T2>A[-], A>U[-] ~2min> U>A[-], A>T2[-], T2>V2[-], V2>T2[s1@subject -], T2>A[s1@subject -], A>T3[s1@subject -], T3>V3[s1@subject -]⚑, V3>T3[-], T3>A[-], A>U[-]
@@ -86,5 +86,5 @@ verdict at 25: expected off=allow / conv=allow / cross=block, observed off=allow
 
 Risk observer calls: 38
 
-**Notes.** Three earlier conversations (M = 3, R9) each send V2 the user's SSN; the fourth gets it back. Held from exactly M conversations it is not a common value: three edges, value-only, ambiguous; it blocks.
+**Notes.** Three earlier conversations each send V2 the user's SSN; the fourth gets it back: three edges, one per conversation it is held from, value-only, ambiguous (three origins, R3); it blocks.
 

@@ -164,7 +164,7 @@ spec:
             # entities receive and draws crossings when they send it again. Off
             # by default; it must equal LABEL_CROSS_CONVERSATION on
             # 85-leg-ready.yaml, which hands crossed labels to the policy only
-            # while its RISK_INHERITED_LABELS is on. LABEL_CROSS_COMMON_LIMIT (M, default 3),
+            # while its RISK_INHERITED_LABELS is on. LABEL_CROSS_EDGES_PER_VALUE (default 30),
             # LABEL_CROSS_RETENTION_SECONDS (default 900) and LABEL_CROSS_ANCHORS
             # (a comma list of the classifier's label types, the TAG column of
             # its tag table; default the person identifiers) tune it. Anything

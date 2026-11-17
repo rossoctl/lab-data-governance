@@ -207,9 +207,9 @@ def test_a_crossed_label_at_a_cell_the_case_does_not_state_is_red_and_named():
 
 
 def test_a_stated_mark_and_an_unstated_one_are_both_compared():
-    case = _case(marks={3: frozenset({"common 4"})})
-    assert _judge(case, marks={3: frozenset({"common 4"})}).status == "GREEN"
-    assert _judge(case, marks={3: frozenset({"common 6"})}).reasons == ["marks at 3: want [common 4], got [common 6]"]
+    case = _case(marks={3: frozenset({"capped 4"})})
+    assert _judge(case, marks={3: frozenset({"capped 4"})}).status == "GREEN"
+    assert _judge(case, marks={3: frozenset({"capped 6"})}).reasons == ["marks at 3: want [capped 4], got [capped 6]"]
     out = _judge(_case(), marks={2: frozenset({"incomplete payload_bytes"})})
     assert out.status == "RED" and out.reasons == ["marks at 2: want [], got [incomplete payload_bytes]"]
 
@@ -235,10 +235,10 @@ def test_a_pending_case_that_passes_is_red():
 
 
 def test_pending_evidence_and_marks_are_exact_too():
-    case = _case(evidence={3: {"s1": frozenset({"crossed vo"})}}, marks={3: frozenset({"common 4"})},
+    case = _case(evidence={3: {"s1": frozenset({"crossed vo"})}}, marks={3: frozenset({"capped 4"})},
                  pending=Pending("waits", evidence=frozenset({3}), marks=frozenset({3})))
     assert _judge(case).status == "PENDING"
-    assert _judge(case, marks={3: frozenset({"common 4"})}).status == "RED"    # the marks are right after all
+    assert _judge(case, marks={3: frozenset({"capped 4"})}).status == "RED"    # the marks are right after all
 
 
 def test_a_problem_reading_the_rows_is_red_even_for_a_pending_case():
@@ -589,8 +589,8 @@ def test_the_case_record_carries_no_timing():
 def test_the_case_record_shows_the_observed_marks():
     from .report import case_markdown
     runs = _runs(EDGES)
-    runs["cross"].marks = {3: frozenset({"common 4"})}
-    assert "Marks (cross run): leg 3 [common 4]" in case_markdown(judge(_case(), runs))
+    runs["cross"].marks = {3: frozenset({"capped 4"})}
+    assert "Marks (cross run): leg 3 [capped 4]" in case_markdown(judge(_case(), runs))
 
 
 # --- every remaining refusal ----------------------------------------------------------------------------------
@@ -832,11 +832,11 @@ def test_the_line_refuses_a_record_it_cannot_read(line, error):
     ("  edges: []\n  evidence: {3: {s1: [inherited]}}\n", "classified there exactly when classifier.must_see says so"),
     ("  edges: []\n  evidence: {4: {s1: []}}\n", "expect.evidence at leg 4: s1 is not on that leg"),
     ("  edges: []\n  evidence: {9: {s1: []}}\n", "names leg 9, which the line lacks"),
-    ("  edges: []\n  marks: {3: [common 0]}\n", "expect.marks at leg 3"),
+    ("  edges: []\n  marks: {3: [capped none]}\n", "expect.marks at leg 3"),
     ("  edges: []\n  marks: {3: [incomplete time]}\n", "expect.marks at leg 3"),
-    ("  edges: []\n  marks: {9: [common 4]}\n", "expect.marks at leg 9"),
-    ("  edges: []\n  marks: {3: [common 4], '3': [common 4]}\n", "expect.marks names leg 3 twice"),
-    ("  edges: []\n  marks: {3: [common 4, common 4]}\n", "expect.marks lists a mark twice at leg 3"),
+    ("  edges: []\n  marks: {9: [capped 4]}\n", "expect.marks at leg 9"),
+    ("  edges: []\n  marks: {3: [capped 4], '3': [capped 4]}\n", "expect.marks names leg 3 twice"),
+    ("  edges: []\n  marks: {3: [capped 4, capped 4]}\n", "expect.marks lists a mark twice at leg 3"),
 ])
 def test_the_loader_refuses_a_level_evidence_or_mark_it_cannot_read(tmp_path: Path, expect, error):
     with pytest.raises(ValueError, match=re.escape(error)):
@@ -870,10 +870,10 @@ def test_the_loader_reads_a_level_evidence_marks_and_a_history(tmp_path: Path):
     case = load_case(_yaml(tmp_path, "expect:\n  verdict: {'off': [allow tier 0], conv: allow, cross: "
                                      "[allow tier 1, block tier 2]}\n  edges: [s1 1>2]\n  cross: [s1 1>3 co]\n"
                                      "  evidence: {3: {s1: [classified MRN, crossed co ambiguous]}}\n"
-                                     "  marks: {3: [common 4, incomplete payload_bytes]}\n" + SEE_ALL))
+                                     "  marks: {3: [capped 4, incomplete payload_bytes]}\n" + SEE_ALL))
     assert case.cross == {("s1", 1, 3, "co")} and case.edges == {("s1", 1, 2, None)}
     assert case.evidence == {3: {"s1": frozenset({"classified MRN", "crossed co ambiguous"})}}
-    assert case.marks == {3: frozenset({"common 4", "incomplete payload_bytes"})}
+    assert case.marks == {3: frozenset({"capped 4", "incomplete payload_bytes"})}
     assert case.verdict["cross"] == ("allow tier 1", "block tier 2") and case.uses == {"tiers"}
 
 

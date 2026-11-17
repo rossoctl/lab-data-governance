@@ -180,16 +180,16 @@ def load_trace(tx: db.Transaction, trace_id: str, config: Config | None = None) 
 # long value that expired, or one held only in this conversation, does not raise the cost of every later send.
 _LONGEST_SQL = """
 SELECT max(word_count) FROM label_occurrences
- WHERE entity_id = %s AND trace_id <> %s AND valid_from < %s AND valid_to > %s
+ WHERE holder_entity_id = %s AND trace_id <> %s AND valid_from < %s AND valid_to > %s
 """
 
 _PRIORS_SQL = """
-SELECT entity_id, trace_id, interaction_id, leg_type::text, payload_hash, value_text, span_start, span_end,
+SELECT holder_entity_id, trace_id, interaction_id, leg_type::text, payload_hash, value_text, span_start, span_end,
        record_start, record_end, origin_trace_id, origin_interaction_id, origin_leg_type::text,
        origin_payload_hash, unit_start, unit_end, unit_text, unit_value, entity_type, regulatory_tags,
-       sensitivity_level, category, held_from, held_to, evidence, level, valid_from, valid_to
+       sensitivity_level, category, held_from, held_to, label_basis, level, valid_from, valid_to
   FROM label_occurrences
- WHERE entity_id = %s AND core_hash = ANY(%s) AND trace_id <> %s
+ WHERE holder_entity_id = %s AND core_hash = ANY(%s) AND trace_id <> %s
    AND valid_from < %s AND valid_to > %s
 """
 
@@ -223,7 +223,7 @@ def load_priors(tx: db.Transaction, trace_id: str, legs: list[fold.WireLeg], ent
 _HELD_SQL = """
 SELECT count(*) FROM (
     SELECT 1 FROM label_occurrences
-     WHERE entity_id = %s AND trace_id <> %s AND valid_to > %s AND valid_from < %s
+     WHERE holder_entity_id = %s AND trace_id <> %s AND valid_to > %s AND valid_from < %s
      LIMIT %s) held
 """
 
@@ -245,16 +245,16 @@ def held_elsewhere(tx: db.Transaction, trace_id: str, legs: list[fold.WireLeg], 
 
 
 def _holding(r: tuple) -> cross.Holding:
-    (entity_id, trace_id, ix, leg_type, payload_hash, value_text, span_start, span_end, record_start, record_end,
+    (holder_entity_id, trace_id, ix, leg_type, payload_hash, value_text, span_start, span_end, record_start, record_end,
      o_trace, o_ix, o_leg, o_hash, unit_start, unit_end, unit_text, unit_value, entity_type, tags, level_s,
-     category, held_from, held_to, evidence, level, valid_from, valid_to) = r
+     category, held_from, held_to, label_basis, level, valid_from, valid_to) = r
     unit = Unit(entity_type=entity_type, regulatory_tags=tuple(tags or ()), sensitivity_level=level_s,
                 category=category, text=unit_text, value=Value(unit_value, unit_start, unit_end),
                 origin=Site(o_trace, o_ix, o_leg, o_hash))
     occ = Occurrence(unit=unit, at=Site(trace_id, ix, leg_type, payload_hash), span=(span_start, span_end),
                      held_from=held_from, held_to=held_to, matched_text=value_text)
     record = None if record_start is None else (record_start, record_end)
-    return cross.Holding(entity_id, occ, record, valid_from, valid_to, evidence, level)
+    return cross.Holding(holder_entity_id, occ, record, valid_from, valid_to, label_basis, level)
 
 
 def derive_and_persist(tx: db.Transaction, trace_id: str, config: Config,

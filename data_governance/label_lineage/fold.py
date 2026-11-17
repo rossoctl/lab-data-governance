@@ -110,7 +110,7 @@ def derive(trace_input: TraceInput, finder: Finder,
     level_of: dict[tuple, str] = {}
     crossed_at: dict[tuple, dt.datetime] = {}     # occurrence key -> the latest crossing it rests on, in event time
     carried: dict[tuple, cross.Carried] = {}
-    commons: list[cross.Common] = []
+    capped: list[cross.Capped] = []
     cuts: list[tuple[LegKey, str]] = []
     sends: list[tuple[str, LegKey, dt.datetime]] = []
     holdings: list[cross.Holding] = []
@@ -133,10 +133,10 @@ def derive(trace_input: TraceInput, finder: Finder,
             log.debug("leg %s %s has no event time: not matched, not registered", *key)
         elif known is not None and persistent(sender):
             held_now = trace_input.held_elsewhere.get(key, 0) + sum(
-                h.entity_id == sender and h.valid_at(leg.occurred_at) for h in holdings)
-            found, common, cut = cross.leaving(known, crossing, sender, output, leg.occurred_at,
+                h.holder_entity_id == sender and h.valid_at(leg.occurred_at) for h in holdings)
+            found, cap, cut = cross.leaving(known, crossing, sender, output, leg.occurred_at,
                                                inbound.get(key, ()), held_now)
-            commons += common
+            capped += cap
             cuts += [(key, limit) for limit in cut]
             sends.append((sender, key, leg.occurred_at))
         crossed = {Edge(to=dataclasses.replace(o, source=None), came_from=o.source).key: c for o, c in found}
@@ -163,7 +163,7 @@ def derive(trace_input: TraceInput, finder: Finder,
                                    edges=leg_edges, unanchored=sum(not u.anchored for u in own))
     return Derivation(trace_id=trace_input.trace_id, edges=tuple(edges), legs=summaries,
                       occurrences=held, status=status_of(summaries, len(edges)),
-                      levels=levels, carried=carried, commons=tuple(commons), holdings=tuple(holdings),
+                      levels=levels, carried=carried, capped=tuple(capped), holdings=tuple(holdings),
                       cuts=tuple(cuts), sends=tuple(sends))
 
 
@@ -205,7 +205,7 @@ def carry(edges: Sequence[Edge], crossed: Mapping[tuple, cross.Crossed],
     for e in edges:
         if e.key in crossed:
             c = crossed[e.key]
-            step = cross.weakest(c.level, c.holding.level if c.holding.evidence == "crossed" else cross.CERTAIN)
+            step = cross.weakest(c.level, c.holding.level if c.holding.label_basis == "crossed" else cross.CERTAIN)
         else:
             step = level_of.get(e.came_from.key, cross.CERTAIN)
         level_of[e.to.key] = cross.strongest((level_of.get(e.to.key, step), step))
@@ -236,16 +236,16 @@ def _received(entity_id: str, occurrences: Sequence[Occurrence], own: Sequence[U
             continue
         level: str | None = level_of.get(occ.key, cross.CERTAIN)
         if level != cross.CERTAIN:
-            evidence = "crossed"
+            label_basis = "crossed"
         elif any(u.anchored and _inside(u, occ) for u in own):
-            evidence, level = "classified", None
+            label_basis, level = "classified", None
         else:
-            evidence, level = "inherited", None
-        start = max(t, crossed_at.get(occ.key, t)) if evidence == "crossed" else t
+            label_basis, level = "inherited", None
+        start = max(t, crossed_at.get(occ.key, t)) if label_basis == "crossed" else t
         if start >= t + crossing.retention:
             continue
         out.append(cross.Holding(entity_id, dataclasses.replace(occ, source=None), records.get(occ.span),
-                                 start, t + crossing.retention, evidence, level))
+                                 start, t + crossing.retention, label_basis, level))
     return out
 
 

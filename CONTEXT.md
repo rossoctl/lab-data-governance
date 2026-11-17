@@ -921,8 +921,11 @@ that holding's origin unit, at a level (`value_only` for an anchoring
 identifier alone, `corroborated` for an identifier with another value of the same
 record). A `payload_label_edges` row; its level is a `label_crossings` row.
 Behind `LABEL_CROSS_CONVERSATION` alone in label lineage; the risk engine hands a
-crossed label to the policy only while `RISK_INHERITED_LABELS` is on too. A value held from more than M other conversations is a *common value*:
-no crossing, only its count.
+crossed label to the policy only while `RISK_INHERITED_LABELS` is on too. No value is
+dropped for being held from many conversations; one value draws at most a fixed
+number of crossings at one payload (`LABEL_CROSS_EDGES_PER_VALUE`, default 30), those
+of the surest and then the newest holdings, and a value cut this way has a `label_crossings` row that
+says so.
 
 **Crossed label**:
 A label that reached a leg resting on a **Crossing**, there or on its way: the
@@ -938,9 +941,9 @@ _Avoid_: reading the level of a crossing edge (`label_crossings`, the rule
 table's word at that crossing) as the label's level at the leg.
 
 **Holding** (label lineage):
-One labelled value a **persistent** entity received at one leg: the record that
-held it, its label and how the leg knew it (classified, inherited, crossed), and
-the interval in event time it is valid for. A `label_occurrences` row
+One labelled value a **persistent** entity (`holder_entity_id`) received at one leg:
+the record that held it, its label and how the leg knew it (`label_basis`:
+classified, inherited, crossed), and the interval in event time it is valid for. A `label_occurrences` row
 (`label_lineage.cross.Holding`), written with the derivation of its conversation
 and replaced, or deleted, only when that is derived again (no expiry job).
 _Avoid_: reading it as a node of the lineage — it is an index of what an entity

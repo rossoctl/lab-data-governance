@@ -438,11 +438,11 @@ def across_cases() -> None:
                "On every later leg both reach it: inherited (the label classified at 22) and crossed. The "
                "conversation's own edges from 22 are drawn in every mode, so conv already blocks.")
 
-    # --- the common value -------------------------------------------------------------------------------------
+    # --- a value held from many conversations -------------------------------------------------------------------------------------
     k19 = " ~2min> ".join([to_partner()] * 3 + [back_from_partner()])
     k19_cross = (crossing(3, 22, ["s1"], "vo") + crossing(9, 22, ["s1"], "vo") + crossing(15, 22, ["s1"], "vo")
                  + chain([22, 23, 24, 25], ["s1"]))
-    case("K19", "exactly M earlier conversations", k19, cell="across/common/at-M", units={"s1": "SSN"},
+    case("K19", "three earlier conversations", k19, cell="across/many/three", units={"s1": "SSN"},
          verdict=crossed_block, edges=[e for b in (0, 6, 12) for e in chain([b + 1, b + 2, b + 3], ["s1"])],
          cross=k19_cross,
          evidence={3: {"s1": ["classified SSN", "inherited"]}, 9: {"s1": ["classified SSN", "inherited"]},
@@ -450,20 +450,32 @@ def across_cases() -> None:
                    **every(range(22, 26), ["s1"], "crossed vo ambiguous")},
          must_see={b + i: ["s1"] for b in (0, 6, 12) for i in (1, 2, 3)}, must_miss={i: ["s1"] for i in range(22, 26)},
          authored=True,
-         notes="Three earlier conversations (M = 3, R9) each send V2 the user's SSN; the fourth gets it back. Held "
-               "from exactly M conversations it is not a common value: three edges, value-only, ambiguous; it blocks.")
+         notes="Three earlier conversations each send V2 the user's SSN; the fourth gets it back: three edges, one "
+               "per conversation it is held from, value-only, ambiguous (three origins, R3); it blocks.")
 
     k20 = " ~2min> ".join([to_partner(3)] + [to_partner()] * 3 + [back_from_partner()])
     k20_edges = (chain([1, 2, 3], ["s1"]) + ["s1 2>5", "s1 2>7"]
                  + [e for b in (10, 16, 22) for e in chain([b + 1, b + 2, b + 3], ["s1"])])
-    case("K20", "M+1 earlier conversations", k20, cell="across/common/beyond-M", units={"s1": "SSN"},
-         verdict=aa, edges=k20_edges, evidence={32: {"s1": []}}, marks={32: ["common 4"]},
-         must_see={**{i: ["s1"] for i in (1, 2, 3, 5, 7)}, **{b + i: ["s1"] for b in (10, 16, 22) for i in (1, 2, 3)}},
-         must_miss={i: ["s1"] for i in range(32, 36)}, authored=True,
+    k20_premise = dict(
+        must_see={**{i: ["s1"] for i in (1, 2, 3, 5, 7)}, **{b + i: ["s1"] for b in (10, 16, 22) for i in (1, 2, 3)}},
+        must_miss={i: ["s1"] for i in range(32, 36)}, authored=True)
+    k20_on = chain([32, 33, 34, 35], ["s1"])
+    case("K20", "four earlier conversations, one of them three times", k20, cell="across/many/four",
+         units={"s1": "SSN"}, verdict=crossed_block, edges=k20_edges,
+         cross=[e for frm in (3, 5, 7, 13, 19, 25) for e in crossing(frm, 32, ["s1"], "vo")] + k20_on,
+         evidence=every(range(32, 36), ["s1"], "crossed vo ambiguous"), **k20_premise,
          notes="Four earlier conversations send V2 the SSN, the first of them three times (three calls in one call of "
-               "T2); the fifth gets it back. Counted by distinct conversation the value is held from 4 > M = 3 "
-               "conversations (R2): a common value, no edge, the count on the leg. Counted by leg it would be 6: the "
-               "stated count tells the two apart.")
+               "T2); the fifth gets it back. No value is dropped for being held from many conversations (R2): six "
+               "edges, one per time V2 received it, value-only, ambiguous (four origins); it blocks. Under the cap "
+               "of 30 edges per value, so nothing is cut and no mark is drawn.")
+    case("K20b", "the same, with at most two edges per value", k20, cell="across/many/capped",
+         units={"s1": "SSN"}, config={"edges_per_value": 2}, verdict=crossed_block, edges=k20_edges,
+         cross=crossing(19, 32, ["s1"], "vo") + crossing(25, 32, ["s1"], "vo") + k20_on,
+         evidence=every(range(32, 36), ["s1"], "crossed vo ambiguous"), marks={32: ["capped 4"]}, **k20_premise,
+         notes="K20 with the cap set to two. Predicted from the rule before the run: of the six times V2 received "
+               "the SSN the two newest are legs 25 and 19, so two edges are drawn, from two origins: still "
+               "ambiguous, still a block. The mark says the value was cut and counts the conversations it is held "
+               "from, 4; counted by leg it would be 6.")
 
     # --- scope ------------------------------------------------------------------------------------------------
     k21 = ("U>A[-], A>T2[-], T2>V1[-], V1>T2[s1 -], T2>V2[s1 -], V2>T2[s1@subject -], T2>A[-], A>T3[-], T3>V2[-], "

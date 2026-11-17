@@ -6,11 +6,12 @@ Postgres (testcontainers, the migrated schema) and the production derivation
 
 1. ``constant``: a persistent partner receives one identifier in each of 200
    conversations and returns it there; each return is matched against what it received
-   in the conversations before. By the rules (M = 3, retention 15 min, R1,
-   R2): conversations 2-4 draw 1, 2, 3 crossing edges; from conversation 5 on, none and
-   a common-value count. What is loaded per derivation is what is valid at the send:
-   at one conversation a minute, the 14 conversations of the last 15 minutes; at one
-   every 2 s nothing expires inside 200 conversations, so it grows to 199.
+   in the conversations before. By the rules (at most 30 edges per value, retention
+   15 min, R1, R2): conversation i draws one crossing edge per earlier conversation
+   still valid, up to 30, and from the 32nd valid one on the leg is marked capped. What
+   is loaded per derivation is what is valid at the send: at one conversation a minute,
+   the 14 conversations of the last 15 minutes (14 edges, never capped); at one every
+   2 s nothing expires inside 200 conversations, so it grows to 199 (30 edges, capped).
 2. ``many``: a partner holds 100,000 values (or 100) and sends a 10 kB payload with
    five of them. The load reads by the hash of every run of 1..K payload words (K the
    most words among the values the partner holds valid at the send), so exactly the held values present, whatever their
@@ -111,8 +112,8 @@ def rows(dsn: str, sql: str) -> list[tuple]:
 
 
 def constant(dsn: str, gap_s: int, n: int = 200) -> None:
-    print(f"\n## one constant in {n} conversations, one every {gap_s} s (retention 900 s, M 3)")
-    print("| conv | derive ms | median ms (last 10) | loaded | crossing edges | common count |")
+    print(f"\n## one constant in {n} conversations, one every {gap_s} s (retention 900 s, at most 30 edges per value)")
+    print("| conv | derive ms | median ms (last 10) | loaded | crossing edges | capped, held from |")
     print("|---:|---:|---:|---:|---:|---:|")
     cursor, times = 0, []
     with measured() as seen, psycopg.connect(dsn) as conn:
@@ -126,10 +127,10 @@ def constant(dsn: str, gap_s: int, n: int = 200) -> None:
             if i in (2, 3, 4, 5, 10, 15, 16, 50, 100, 150, 200):
                 (edges,), = rows(dsn, f"SELECT count(*) FROM label_crossings c JOIN payload_label_edges e "
                                       f"USING (edge_id) WHERE c.trace_id = '{trace}'")
-                common = rows(dsn, f"SELECT conversations FROM label_crossings WHERE trace_id = '{trace}' "
+                capped = rows(dsn, f"SELECT conversations FROM label_crossings WHERE trace_id = '{trace}' "
                                    f"AND edge_id IS NULL")
                 print(f"| {i} | {times[-1] * 1e3:.1f} | {statistics.median(times[-10:]) * 1e3:.1f} | "
-                      f"{seen['loaded'][trace]} | {edges} | {common[0][0] if common else '-'} |")
+                      f"{seen['loaded'][trace]} | {edges} | {capped[0][0] if capped else '-'} |")
     (occ,), = rows(dsn, "SELECT count(*) FROM label_occurrences")
     print(f"derivations: {len(seen['derive_s'])} traces derived for {n} conversations; occurrence rows: {occ}")
 
@@ -170,7 +171,7 @@ def many(dsn: str) -> None:
                 t = time.perf_counter()
                 d = fold.derive(trace, CONFIG.finder, CONFIG.scopes, CONFIG.crossing)
                 folds.append(time.perf_counter() - t)
-        (k,), = rows(dsn, f"SELECT max(word_count) FROM label_occurrences WHERE entity_id = '{p}'")
+        (k,), = rows(dsn, f"SELECT max(word_count) FROM label_occurrences WHERE holder_entity_id = '{p}'")
         print(f"| {p} | {size:,} | {len(texts[p].encode()):,} | {k} | {len(cross.window_hashes(texts[p], k)):,} | "
               f"{len(trace.priors):,} | {statistics.median(loads) * 1e3:.1f} | "
               f"{statistics.median(folds) * 1e3:.1f} | {seen['derive_s'][f'S-{p}'] * 1e3:.1f} | {len(d.levels)} |")

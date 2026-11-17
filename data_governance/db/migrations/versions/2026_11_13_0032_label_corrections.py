@@ -12,7 +12,7 @@ occurrence's interval is queued to be derived again (index entity, time).
 
 ``label_crossings.cut`` — a row may now be a cut: ``cut`` names the limit that cut
 the leg's result and nothing else is set, so ``value_hash`` and ``conversations``
-are required only on a row that is not a cut (an asserted crossing or a common
+are required only on a row that is not a cut (an asserted crossing or a capped
 value, as in 0031).
 
 The count of what an entity holds at a payload's time, which the holdings limit
@@ -21,6 +21,13 @@ including valid_from and trace_id), so it needs no index of its own.
 
 The downgrade deletes the cut rows (derived, re-derivable) before it restores the
 NOT NULLs, so it leaves exactly the schema of 0031.
+
+``label_occurrences`` — two columns get the names the code uses: ``evidence`` becomes
+``label_basis`` (how the leg knew the label: classified, inherited, crossed) and
+``entity_id`` becomes ``holder_entity_id`` (the persistent entity that holds the value).
+A rename only: the CHECKs and the indexes of 0031 follow their columns. Since 0032 a
+``label_crossings`` row without an edge and without a cut is a *capped* value (one whose
+edges were cut to the surest and then the newest), no longer a common value: the row's shape is unchanged.
 
 Revision ID: 0032_label_corrections
 Revises: 0031_label_crossings
@@ -40,6 +47,8 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    op.execute("ALTER TABLE label_occurrences RENAME COLUMN evidence TO label_basis")
+    op.execute("ALTER TABLE label_occurrences RENAME COLUMN entity_id TO holder_entity_id")
     op.execute(
         """
         ALTER TABLE label_crossings
@@ -78,3 +87,5 @@ def downgrade() -> None:
             ALTER COLUMN conversations SET NOT NULL
         """
     )
+    op.execute("ALTER TABLE label_occurrences RENAME COLUMN holder_entity_id TO entity_id")
+    op.execute("ALTER TABLE label_occurrences RENAME COLUMN label_basis TO evidence")

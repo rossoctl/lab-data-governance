@@ -122,7 +122,7 @@ def test_a_crossing_is_an_edge_row_with_its_level_beside_it(configured_db: str) 
         store.write(tx, second, "exact")
     rows = _rows(configured_db,
                  "SELECT e.entity_type, e.from_trace_id, e.origin_trace_id, c.level, c.conversations, "
-                 "o.trace_id, o.evidence FROM payload_label_edges e JOIN label_crossings c ON c.edge_id = e.edge_id "
+                 "o.trace_id, o.label_basis FROM payload_label_edges e JOIN label_crossings c ON c.edge_id = e.edge_id "
                  "JOIN label_occurrences o ON o.occurrence_id = c.occurrence_id ORDER BY 1")
     assert rows == [("DOB", "T1", "T1", "corroborated", 1, "T1", "classified"),
                     ("SSN", "T1", "T1", "corroborated", 1, "T1", "classified")]
@@ -158,14 +158,16 @@ def test_deriving_again_replaces_the_rows_and_without_the_switch_stores_nothing(
                                 "(SELECT count(*) FROM label_occurrences)") == [(0, 0)]
 
 
-def test_a_common_value_is_a_crossing_row_without_an_edge(configured_db: str) -> None:
+def test_a_capped_value_is_a_crossing_row_without_an_edge_beside_the_edges_drawn(configured_db: str) -> None:
     held = [h for i in range(4) for h in _holdings(f"P{i}", {"ssn": SSN}, ("SSN", SSN),
                                                     at=T0 + dt.timedelta(seconds=i))]
-    d = fold.derive(_second(held), find.exact, crossing=cross.Crossing())
+    d = fold.derive(_second(held), find.exact, crossing=cross.Crossing(edges_per_value=2))
     with db.transaction() as tx:
         store.write(tx, d, "exact")
-    assert _rows(configured_db, "SELECT leg_type::text, conversations, edge_id, level FROM label_crossings") == [
-        ("response", 4, None, None)]
+    assert _rows(configured_db, "SELECT leg_type::text, conversations, level FROM label_crossings "
+                                "WHERE edge_id IS NULL") == [("response", 4, None)]
+    assert _rows(configured_db, "SELECT e.from_trace_id, c.conversations FROM label_crossings c "
+                                "JOIN payload_label_edges e USING (edge_id) ORDER BY 1") == [("P2", 4), ("P3", 4)]
 
 
 def test_every_edge_that_rests_on_a_crossing_has_its_carried_row(configured_db: str) -> None:
@@ -190,7 +192,7 @@ def test_a_changed_level_alone_is_a_change(configured_db: str) -> None:
     """The same edges and summaries, the level they were carried with changed: the decisions on those legs read
     the level, so their interactions are recomputed."""
     first, second = _crossing()
-    weaker = [dataclasses.replace(h, evidence="crossed", level=cross.VALUE_ONLY) for h in first.holdings]
+    weaker = [dataclasses.replace(h, label_basis="crossed", level=cross.VALUE_ONLY) for h in first.holdings]
     again = fold.derive(_second(weaker), find.exact, crossing=cross.Crossing())
     assert {store.edge_id(e) for e in again.edges} == {store.edge_id(e) for e in second.edges}
     assert again.legs == second.legs
@@ -262,7 +264,7 @@ def test_an_unchanged_derivation_queues_nothing_and_a_removed_or_changed_occurre
         conn.execute("DELETE FROM label_lineage_dirty_traces")
     assert _write_and_correct(first) == []
     weaker = dataclasses.replace(first, holdings=tuple(
-        dataclasses.replace(h, evidence="crossed", level=cross.VALUE_ONLY) for h in first.holdings))
+        dataclasses.replace(h, label_basis="crossed", level=cross.VALUE_ONLY) for h in first.holdings))
     assert _write_and_correct(weaker) == ["T2"]
     assert _write_and_correct(fold.derive(_first(), find.exact)) == ["T2"]      # without the switch: removed
     assert _write_and_correct(fold.derive(_first(), find.exact)) == []

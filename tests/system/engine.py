@@ -54,7 +54,8 @@ NOT_ON_BRANCH: dict[str, str] = {}
 
 # A case's ``config:`` key -> the environment variable the label-lineage processor reads it from.
 LIMIT_ENV = {cross.HOLDINGS_PER_ENTITY: cross.HOLDINGS_LIMIT_ENV_VAR, cross.PAYLOAD_BYTES: cross.PAYLOAD_BYTES_ENV_VAR,
-             cross.CANDIDATES_PER_PAYLOAD: cross.CANDIDATES_LIMIT_ENV_VAR}
+             cross.CANDIDATES_PER_PAYLOAD: cross.CANDIDATES_LIMIT_ENV_VAR,
+             "edges_per_value": cross.EDGES_PER_VALUE_ENV_VAR}
 
 _KEEP = {"alembic_version"}
 
@@ -432,13 +433,13 @@ def _read(case: Case, rendered: list[Rendered], dsn: str, mode: str) -> Observat
             "ORDER BY e.matched_start, e.entity_type, e.from_interaction_id, e.from_leg_type, e.edge_id").fetchall()
         edges = [(*r[:8], _LEVELS[r[8]] if r[8] else None, r[9],
                   f"crossed {_LEVELS[r[10]]}{' ambiguous' if r[11] else ''}" if r[10] else None) for r in edges]
-        commons = conn.execute("SELECT interaction_id, leg_type::text, conversations FROM label_crossings "
+        capped = conn.execute("SELECT interaction_id, leg_type::text, conversations FROM label_crossings "
                                "WHERE edge_id IS NULL AND cut IS NULL").fetchall()
         cuts = conn.execute("SELECT interaction_id, leg_type::text, cut FROM label_crossings "
                             "WHERE cut IS NOT NULL").fetchall()
         doubled = conn.execute(
-            "SELECT entity_id, interaction_id, leg_type::text, entity_type, value_text, count(*) "
-            "FROM label_occurrences GROUP BY entity_id, interaction_id, leg_type, origin_trace_id, "
+            "SELECT holder_entity_id, interaction_id, leg_type::text, entity_type, value_text, count(*) "
+            "FROM label_occurrences GROUP BY holder_entity_id, interaction_id, leg_type, origin_trace_id, "
             "origin_interaction_id, origin_leg_type, unit_start, unit_end, entity_type, value_text, "
             "span_start, span_end, held_from, held_to HAVING count(*) > 1").fetchall()
         risk_rows = conn.execute(
@@ -487,9 +488,9 @@ def _read(case: Case, rendered: list[Rendered], dsn: str, mode: str) -> Observat
 
     if sink:
         problems += flagged_response_problems(rendered, legs, sink.index)
-    # marks: the common-value count and the limit that cut a leg, read from their crossing rows
+    # marks: a capped value's count of conversations and the limit that cut a leg, read from their crossing rows
     marks: dict[int, set[str]] = defaultdict(set)
-    for iid, lt, mark in [(i, lt, f"common {n}") for i, lt, n in commons] + [
+    for iid, lt, mark in [(i, lt, f"capped {n}") for i, lt, n in capped] + [
             (i, lt, f"incomplete {c}") for i, lt, c in cuts]:
         if (iid, lt) in leg_of_key:
             marks[leg_of_key[(iid, lt)]].add(mark)

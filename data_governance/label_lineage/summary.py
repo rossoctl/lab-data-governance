@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING
 from .units import LegKey, Occurrence, Unit
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from .cross import Carried, Common, Crossed, Holding
+    from .cross import Capped, Carried, Crossed, Holding
 
 #: Sensitivity levels, lowest first (the classifier's ladder).
 LEVELS: tuple[str, ...] = ("PUBLIC", "INTERNAL", "CONFIDENTIAL", "RESTRICTED")
@@ -99,8 +99,8 @@ class TraceStatus:
 class Derivation:
     """One trace derived. With the cross-conversation switch on, also: the level of
     each crossing edge (by :attr:`Edge.key`), how the value is known at the to leg of
-    every edge that rests on a crossing (``carried``), the common values at its leaving
-    legs, what its persistent entities received, the leaving legs a limit cut (leg,
+    every edge that rests on a crossing (``carried``), the values whose edges were
+    capped at its leaving legs, what its persistent entities received, the leaving legs a limit cut (leg,
     limit) and every leg a persistent entity sent (entity, leg, time) (empty
     otherwise)."""
 
@@ -111,7 +111,7 @@ class Derivation:
     status: TraceStatus
     levels: Mapping[tuple, Crossed] = dataclasses.field(default_factory=dict)
     carried: Mapping[tuple, Carried] = dataclasses.field(default_factory=dict)
-    commons: tuple[Common, ...] = ()
+    capped: tuple[Capped, ...] = ()
     holdings: tuple[Holding, ...] = ()
     cuts: tuple[tuple[LegKey, str], ...] = ()
     sends: tuple[tuple[str, LegKey, dt.datetime], ...] = ()

@@ -8,8 +8,8 @@ flattened, a leg row is a :class:`LegSummary`, the status row is the trace's
 natural key, the leg row is keyed by its leg — so writing one derivation twice is
 the same rows, and the trace-scoped delete is by set membership, never by seq.
 
-A crossing edge is an edge row like any other; its level, the common values of a
-leaving leg and the limits that cut it are ``label_crossings`` rows, what the trace's
+A crossing edge is an edge row like any other; its level, the values whose edges were
+capped at a leaving leg and the limits that cut it are ``label_crossings`` rows, what the trace's
 persistent entities received ``label_occurrences`` rows, the legs they sent
 ``label_sends`` rows, and every edge whose value rests on a crossing has a
 ``label_crossed_edges`` row with how surely it is the label's there. A derivation
@@ -139,24 +139,24 @@ def occurrence_id(h: Holding) -> str:
     """The occurrence's id: entity / leg / origin unit / span / held run."""
     o = h.occurrence
     return str(uuid.uuid5(NS_CROSSINGS, "/".join([
-        "occurrence", h.entity_id, ":".join(o.at.leg), ":".join(map(str, o.unit.key)),
+        "occurrence", h.holder_entity_id, ":".join(o.at.leg), ":".join(map(str, o.unit.key)),
         f"{o.span[0]}:{o.span[1]}", str(o.held_from), str(o.held_to)])))
 
 
 _OCCURRENCE_SQL = """
 INSERT INTO label_occurrences (
-    occurrence_id, entity_id, trace_id, interaction_id, leg_type, payload_hash,
+    occurrence_id, holder_entity_id, trace_id, interaction_id, leg_type, payload_hash,
     value_text, value_hash, core_hash, word_count, span_start, span_end, record_start, record_end,
     origin_trace_id, origin_interaction_id, origin_leg_type, origin_payload_hash,
     unit_start, unit_end, unit_text, unit_value, entity_type, regulatory_tags, sensitivity_level, category,
-    held_from, held_to, evidence, level, valid_from, valid_to
+    held_from, held_to, label_basis, level, valid_from, valid_to
 ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
           %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
 ON CONFLICT (occurrence_id) DO UPDATE SET
     payload_hash = EXCLUDED.payload_hash, record_start = EXCLUDED.record_start, record_end = EXCLUDED.record_end,
     unit_text = EXCLUDED.unit_text, regulatory_tags = EXCLUDED.regulatory_tags,
     sensitivity_level = EXCLUDED.sensitivity_level, category = EXCLUDED.category,
-    evidence = EXCLUDED.evidence, level = EXCLUDED.level,
+    label_basis = EXCLUDED.label_basis, level = EXCLUDED.level,
     valid_from = EXCLUDED.valid_from, valid_to = EXCLUDED.valid_to
 """
 
@@ -174,11 +174,11 @@ def _occurrence_row(h: Holding) -> tuple:
     record = h.record or (None, None)
     held_core, words = core(h.value)       # never None: the fold holds no value without a word
     return (
-        occurrence_id(h), h.entity_id, o.at.trace_id, *o.at.leg, o.at.payload_hash,
+        occurrence_id(h), h.holder_entity_id, o.at.trace_id, *o.at.leg, o.at.payload_hash,
         h.value, value_hash(h.value), core_hash(held_core), words, *o.span, *record,
         u.origin.trace_id, u.origin.interaction_id, u.origin.leg_type, u.origin.payload_hash,
         u.value.start, u.value.end, u.text, u.value.canonical, u.entity_type, list(u.regulatory_tags),
-        u.sensitivity_level, u.category, o.held_from, o.held_to, h.evidence, h.level, h.valid_from, h.valid_to,
+        u.sensitivity_level, u.category, o.held_from, o.held_to, h.label_basis, h.level, h.valid_from, h.valid_to,
     )
 
 
@@ -191,9 +191,9 @@ def _crossing_rows(derivation: Derivation) -> list[tuple]:
             eid = edge_id(e)
             rows.append((str(uuid.uuid5(NS_CROSSINGS, f"crossing/{eid}")), t, *e.to_key,
                          value_hash(c.holding.value), c.conversations, eid, occurrence_id(c.holding), c.level, None))
-    for m in derivation.commons:
+    for m in derivation.capped:
         vh = value_hash(m.value)
-        rows.append((str(uuid.uuid5(NS_CROSSINGS, f"common/{t}/{':'.join(m.leg)}/{vh}")), t, *m.leg,
+        rows.append((str(uuid.uuid5(NS_CROSSINGS, f"capped/{t}/{':'.join(m.leg)}/{vh}")), t, *m.leg,
                      vh, m.conversations, None, None, None, None))
     for leg, limit in derivation.cuts:
         rows.append((str(uuid.uuid5(NS_CROSSINGS, f"cut/{t}/{':'.join(leg)}/{limit}")), t, *leg,
@@ -222,7 +222,7 @@ def _write_sends(tx: db.Transaction, derivation: Derivation) -> None:
 def occurrences(tx: db.Transaction, trace_id: str) -> set[tuple]:
     """The trace's ``label_occurrences`` rows as (entity, valid from, valid to, the whole
     row): what :func:`correct` compares before and after a derivation."""
-    return set(tx.fetch_all("SELECT entity_id, valid_from, valid_to, to_jsonb(o)::text FROM label_occurrences o "
+    return set(tx.fetch_all("SELECT holder_entity_id, valid_from, valid_to, to_jsonb(o)::text FROM label_occurrences o "
                             "WHERE trace_id = %s", (trace_id,)))
 
 

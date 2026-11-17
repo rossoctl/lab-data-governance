@@ -63,7 +63,7 @@ The keys of a case across conversations (`cases.py` shows each; R1–R10 are the
   no origin, but an extra crossed origin turns the cell ambiguous, so it is red where the case states one
   origin; a fabricated extra origin from the same carrier leg at a cell already stated ambiguous is not seen
   (a known limit).
-- **`expect.marks`**: at a leg, `common 4` (a common value and its count) or `incomplete payload_bytes`
+- **`expect.marks`**: at a leg, `capped 4` (a value whose edges were capped, and how many other conversations hold it) or `incomplete payload_bytes`
   (a limit that cut the result), read from `label_crossings` (its count, or its `cut`). Every mark drawn
   must be stated.
 - **`steps`**: `send: 17-32` (legs, a range in its own direction: `32-1` is reversed), `drain` (every
@@ -156,7 +156,7 @@ partner of conversation 2 returns nothing (K0) or some of conversation 1's value
 controls on the memoryless rule of #348, P1–P3: a tool that calls two partners inside one call, two
 callers of one tool in flight, and the same with one value in both calls (`T1(A1)>V1` names the call a
 request belongs to). K8–K30 are the cases across conversations, most of them K0's
-conversations or more of them: the rule, the level on its way, the common value, scope, limits, order and
+conversations or more of them: the rule, the level on its way, a value held from many conversations, scope, limits, order and
 correction, switches and tiers. Each case's `notes` says what it proves and, for a case that draws no
 crossing, which deliberate break turns it red; the `cell` groups them.
 
