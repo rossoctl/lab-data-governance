@@ -1,8 +1,7 @@
 """P-label-lineage entry point — ``python -m data_governance.processors.label_lineage``.
 
 Reads ``DATABASE_URL``, validates ``LABEL_MATCHER``, ``LABEL_MEMORY_SCOPES`` and the
-cross-conversation configuration (``LABEL_CROSS_*``, and ``RISK_INHERITED_LABELS`` when
-the switch is on) before any DB work (an invalid one exits 2 rather than deriving
+cross-conversation configuration (``LABEL_CROSS_*``) before any DB work (an invalid one exits 2 rather than deriving
 under a configuration the operator did not mean), runs the schema-version check
 (ADR-0002: exit 3 on a mismatch, 4 if it cannot compare), then drives the
 readiness-gated drain (:func:`driver.run`) until SIGINT/SIGTERM. Shaped like the
@@ -40,7 +39,7 @@ def main() -> int:
 
     try:
         config = driver.configured()
-    except ValueError as exc:   # an unknown finder, invalid scopes, crossing or RISK_INHERITED_LABELS
+    except ValueError as exc:   # an unknown finder, invalid scopes or an invalid crossing
         sys.stderr.write(f"{exc}\n")
         return 2
     log.info("label lineage with LABEL_MATCHER=%s, LABEL_MEMORY_SCOPES=%s", config.matcher,

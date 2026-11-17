@@ -394,7 +394,7 @@ def test_the_cross_switch_reaches_the_running_derivation(configured_db: str, mon
     from data_governance.label_lineage import cross
     from tests.label_lineage.test_cross import _first, _second
     monkeypatch.setenv(cross.SWITCH_ENV_VAR, "on")
-    monkeypatch.setenv("RISK_INHERITED_LABELS", "on")
+    monkeypatch.delenv("RISK_INHERITED_LABELS", raising=False)
     _seed_input(configured_db, _first())
     cursor = driver.drain(0, driver.configured())
     _seed_input(configured_db, _second())
@@ -423,39 +423,36 @@ def test_the_load_reads_only_the_holdings_whose_value_is_in_a_payload_the_sender
         assert priors({"subject": "123-45-6789", "since": "1961-04-14"}) == ["123-45-6789"]
 
 
-@pytest.mark.parametrize("env, on", [
-    ({}, False),
-    ({"LABEL_CROSS_CONVERSATION": "on"}, False),                                  # inherited labels off
-    ({"LABEL_CROSS_CONVERSATION": "on", "RISK_INHERITED_LABELS": "off"}, False),
-    ({"LABEL_CROSS_CONVERSATION": "on", "RISK_INHERITED_LABELS": "on"}, True),
-    ({"LABEL_CROSS_CONVERSATION": "off", "RISK_INHERITED_LABELS": "on"}, False),
-])
-def test_the_cross_switch_has_effect_only_while_inherited_labels_are_on(monkeypatch, env, on) -> None:
-    for k in ("LABEL_CROSS_CONVERSATION", "RISK_INHERITED_LABELS"):
-        monkeypatch.delenv(k, raising=False)
-    for k, v in env.items():
-        monkeypatch.setenv(k, v)
+@pytest.mark.parametrize("risk", [None, "off", "on", "all", "a typo"])
+@pytest.mark.parametrize("switch, on", [(None, False), ("off", False), ("on", True)])
+def test_the_cross_switch_alone_governs_label_lineage(monkeypatch, switch, on, risk) -> None:
+    """Label lineage reads no risk configuration: the risk flag, whatever it says (even a value leg-ready refuses),
+    changes nothing here."""
+    for k, v in (("LABEL_CROSS_CONVERSATION", switch), ("RISK_INHERITED_LABELS", risk)):
+        if v is None:
+            monkeypatch.delenv(k, raising=False)
+        else:
+            monkeypatch.setenv(k, v)
     assert (driver.configured().crossing is not None) is on
 
 
-def test_with_inherited_labels_off_the_cross_switch_draws_and_stores_nothing(configured_db: str, monkeypatch) -> None:
+def test_with_inherited_labels_off_the_cross_switch_still_registers_and_draws(configured_db: str, monkeypatch) -> None:
     from tests.label_lineage.test_cross import _first, _second
     monkeypatch.setenv("LABEL_CROSS_CONVERSATION", "on")
     monkeypatch.setenv("RISK_INHERITED_LABELS", "off")
     _seed_input(configured_db, _first())
+    cursor = driver.drain(0, driver.configured())
     _seed_input(configured_db, _second())
-    driver.drain(0, driver.configured())
-    assert _q(configured_db, "SELECT (SELECT count(*) FROM label_occurrences), (SELECT count(*) FROM label_crossings)"
-              ) == [(0, 0)]
+    driver.drain(cursor, driver.configured())
+    assert _crossings(configured_db) == [("DOB", "T1", "corroborated"), ("SSN", "T1", "corroborated")]
 
 
 def test_an_invalid_cross_configuration_stops_the_processor_at_startup(monkeypatch) -> None:
     from data_governance.processors.label_lineage import __main__ as entry
     monkeypatch.setenv("DATABASE_URL", "postgres://unused")
-    monkeypatch.setenv("LABEL_CROSS_CONVERSATION", "on")
-    monkeypatch.setenv("RISK_INHERITED_LABELS", "all")
+    monkeypatch.setenv("LABEL_CROSS_CONVERSATION", "yes")
     assert entry.main() == 2
-    monkeypatch.setenv("RISK_INHERITED_LABELS", "on")
+    monkeypatch.setenv("LABEL_CROSS_CONVERSATION", "on")
     monkeypatch.setenv("LABEL_CROSS_COMMON_LIMIT", "-1")
     assert entry.main() == 2
 
@@ -473,7 +470,7 @@ def test_one_run_derives_its_conversations_in_event_order(configured_db: str) ->
     assert _crossings(configured_db) == [("DOB", "Z1", "corroborated"), ("SSN", "Z1", "corroborated")]
 
 
-CROSS_TABLES = ("label_occurrences", "label_crossings")
+CROSS_TABLES = ("label_occurrences", "label_crossings", "label_crossed_edges")
 
 
 def test_a_trace_that_loses_every_leg_loses_its_cross_conversation_rows(configured_db: str) -> None:

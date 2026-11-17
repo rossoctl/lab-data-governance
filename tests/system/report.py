@@ -47,8 +47,9 @@ def _kinds(kinds) -> str:
 
 
 def judge(case: Case, runs: dict[str, Observation]) -> Outcome:
-    """Exact: GREEN when every run is what the case states. The off and conv runs (the cross switch off) draw
-    exactly ``expect.edges``; the cross run draws those and ``expect.cross``, with the stated evidence and marks.
+    """Exact: GREEN when every run is what the case states. The conv run (the cross switch off) draws exactly
+    ``expect.edges``; the cross run draws those and ``expect.cross``, with the stated evidence and marks; the off run
+    (the cross switch on, inherited labels off) draws exactly what the cross run draws, and only its verdict differs.
     Problems reading the rows, a broken classifier premise, an edge drawn twice and an off or conv run with other
     edges are RED whatever the case says; a pending case is PENDING only when it differs in exactly what it states,
     and RED when it differs otherwise or passes."""
@@ -87,11 +88,13 @@ def judge(case: Case, runs: dict[str, Observation]) -> Outcome:
                 for leg in sorted(wrong_marks)]
 
     hard = [f"{mode}: {p}" for mode in MODES for p in runs[mode].problems]
-    for mode in ("off", "conv"):
-        if runs[mode].edges != case.edges:
-            hard.append(f"the {mode} run drew other edges than expect.edges (with the cross switch off only the "
-                        f"conversation's own): missing {fmt_edges(case.edges - runs[mode].edges) or '-'}, "
-                        f"extra {fmt_edges(runs[mode].edges - case.edges) or '-'}")
+    for mode, want, what in (("conv", case.edges, "expect.edges (with the cross switch off only the "
+                                                  "conversation's own)"),
+                             ("off", cross.edges, "the cross run (inherited labels off changes the verdict only)")):
+        if runs[mode].edges != want:
+            hard.append(f"the {mode} run drew other edges than {what}: "
+                        f"missing {fmt_edges(want - runs[mode].edges) or '-'}, "
+                        f"extra {fmt_edges(runs[mode].edges - want) or '-'}")
     notes = [f"{mode}: {n}" for mode in MODES for n in premise(case, runs[mode])]
     hard += [f"classifier premise, {n}" for n in notes]
 
@@ -160,7 +163,9 @@ def case_markdown(o: Outcome) -> str:
             cls = "—" if r.classification is None else (
                 f"{r.classification['sensitivity']} " + " ".join(f"{t}={v}" for t, v in r.classification["findings"]))
             inh = ", ".join(f"{e['unit']}={e['value']} ({e['label']}, from {e['from']}"
-                            + (f", {e['level']})" if e.get("level") else ")") for e in r.inherited) or "—"
+                            + (f", {e['level']}" if e.get("level") else "")
+                            + (f"; {e['known']})" if e.get("known", "inherited") != "inherited" else ")")
+                            for e in r.inherited) or "—"
             risk = "—"
             if leg.sink and r.risk:
                 risk = f"{r.risk['risk_level']} {r.risk['enforcement_type']} {r.risk['rules']} v{r.risk['version']}"

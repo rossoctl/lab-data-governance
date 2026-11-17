@@ -37,6 +37,25 @@
                     "items": { "$ref": "policy.schema.json#/$defs/dataDestination" }
                 },
                 "data_lineage": { "$ref": "policy.schema.json#/$defs/dataLineage" },
+                "crossed": {
+                    "description": "Present only when labels from a crossing (label lineage across conversations, LABEL_CROSS_CONVERSATION=on) reached this flow's payload; they are the last data item. How surely they are the payload's values: the distinct levels (value_only: one identifier alone; corroborated: with another value of its record), whether any value has several origins, how many edges, their tags and highest classification level. An input-only field: no rule of policy.schema.json states it.",
+                    "type": "object",
+                    "required": ["levels", "ambiguous", "count", "regulatory_tags", "max_level"],
+                    "additionalProperties": false,
+                    "properties": {
+                        "levels": {
+                            "type": "array", "minItems": 1, "uniqueItems": true,
+                            "items": { "enum": ["value_only", "corroborated"] }
+                        },
+                        "ambiguous": { "type": "boolean" },
+                        "count": { "type": "integer", "minimum": 1 },
+                        "regulatory_tags": {
+                            "type": "array",
+                            "items": { "$ref": "policy.schema.json#/$defs/regulatoryTagsValues" }
+                        },
+                        "max_level": { "$ref": "policy.schema.json#/$defs/classificationLevelValues" }
+                    }
+                },
                 "requested_actions": {
                     "type": "array",
                     "items": { "$ref": "policy.schema.json#/$defs/actionTypeValues" }

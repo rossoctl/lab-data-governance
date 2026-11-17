@@ -1,5 +1,5 @@
 """Writing a :class:`~data_governance.label_lineage.summary.Derivation` to the four
-tables of migration 0024 and the two of 0031, and reading back what risk needs to
+tables of migration 0024 and the three of 0031, and reading back what risk needs to
 know changed.
 
 The rows mirror the dataclasses: an edge row is the edge's two occurrences
@@ -10,8 +10,10 @@ the same rows, and the trace-scoped delete is by set membership, never by seq.
 
 A crossing edge is an edge row like any other; its level and the common values of
 a leaving leg are ``label_crossings`` rows, what the trace's persistent entities
-received ``label_occurrences`` rows. A derivation without the cross-conversation
-switch produces none, so writing it deletes the trace's rows there and writes none.
+received ``label_occurrences`` rows, and every edge whose value rests on a crossing
+has a ``label_crossed_edges`` row with how surely it is the label's there. A
+derivation without the cross-conversation switch produces none, so writing it deletes
+the trace's rows there and writes none.
 """
 
 from __future__ import annotations
@@ -195,6 +197,25 @@ def _crossing_rows(derivation: Derivation) -> list[tuple]:
     return rows
 
 
+_CARRIED_SQL = """
+INSERT INTO label_crossed_edges (edge_id, trace_id, level, ambiguous) VALUES (%s, %s, %s, %s)
+ON CONFLICT (edge_id) DO UPDATE SET trace_id = EXCLUDED.trace_id, level = EXCLUDED.level,
+    ambiguous = EXCLUDED.ambiguous
+"""
+
+
+def _carried_rows(derivation: Derivation) -> list[tuple]:
+    return [(edge_id(e), derivation.trace_id, c.level, c.ambiguous)
+            for e in derivation.edges if (c := derivation.carried.get(e.key)) is not None]
+
+
+def _carried_by_interaction(rows) -> dict[str, set[tuple]]:
+    out: dict[str, set[tuple]] = {}
+    for interaction_id, *row in rows:
+        out.setdefault(interaction_id, set()).add(tuple(row))
+    return out
+
+
 def _replace(tx: db.Transaction, table: str, key: str, trace_id: str, rows: list[tuple], sql: str) -> None:
     tx.execute_many(sql, rows)
     tx.execute(f"DELETE FROM {table} WHERE trace_id = %s AND NOT ({key} = ANY(%s::text[]))",
@@ -205,10 +226,13 @@ def write(tx: db.Transaction, derivation: Derivation, matcher: str) -> set[str]:
     """Persist *derivation* within *tx* and return the interactions whose inherited
     summary differs from the one stored before: a leg that had a row and now reads
     differently, a leg with no row before that now has edges (a decision may
-    already have been made without them), or a leg that lost its row while
-    something had reached it."""
+    already have been made without them), a leg that lost its row while
+    something had reached it, or one whose carried crossed labels changed."""
     trace_id = derivation.trace_id
     before = read_summaries(tx, trace_id)
+    carried_before = _carried_by_interaction(tx.fetch_all(
+        "SELECT e.to_interaction_id, c.edge_id, c.level, c.ambiguous FROM label_crossed_edges c "
+        "JOIN payload_label_edges e ON e.edge_id = c.edge_id WHERE c.trace_id = %s", (trace_id,)))
     seq_of = {key: leg.seq for key, leg in derivation.legs.items()}
     edges = {edge_id(e): e for e in derivation.edges}
     tx.execute_many(_EDGE_SQL, [_edge_row(e, matcher, seq_of[e.to_key]) for e in edges.values()])
@@ -231,10 +255,17 @@ def write(tx: db.Transaction, derivation: Derivation, matcher: str) -> set[str]:
     _replace(tx, "label_occurrences", "occurrence_id", trace_id,
              [_occurrence_row(h) for h in derivation.holdings], _OCCURRENCE_SQL)
     _replace(tx, "label_crossings", "crossing_id", trace_id, _crossing_rows(derivation), _CROSSING_SQL)
+    carried = _carried_rows(derivation)
+    _replace(tx, "label_crossed_edges", "edge_id", trace_id, carried, _CARRIED_SQL)
     s = derivation.status
     tx.execute(_STATUS_SQL, (trace_id, s.status, s.unclassified_legs, s.unanchored_findings,
                              s.derived_legs, s.edge_count, matcher))
     changed = {key[0] for key, leg in derivation.legs.items()
                if (before[key] != _summary(leg) if key in before else leg.edge_count > 0)}
     changed |= {key[0] for key, row in before.items() if key not in derivation.legs and row[-1]}
+    # how surely a carried label is the value's is what a decision reads too (it moves without the summary)
+    to_of = {edge_id(e): e.to_key[0] for e in derivation.edges}
+    carried_after = _carried_by_interaction((to_of[r[0]], r[0], r[2], r[3]) for r in carried)
+    changed |= {i for i in carried_before.keys() | carried_after.keys()
+                if carried_before.get(i) != carried_after.get(i)}
     return changed

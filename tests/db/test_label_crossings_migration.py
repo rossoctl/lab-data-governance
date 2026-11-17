@@ -1,6 +1,6 @@
 """Tests for migration 0031 — what persistent entities received, and the crossings.
 
-The real chain against a real Postgres: the two tables, their CHECKs, the indexes the
+The real chain against a real Postgres: the three tables, their CHECKs, the indexes the
 derivation loads and replaces through, no change to the 0024 tables, and a downgrade
 that removes them and an upgrade that brings them back.
 """
@@ -10,7 +10,7 @@ from __future__ import annotations
 import psycopg
 import pytest
 
-TABLES = ("label_occurrences", "label_crossings")
+TABLES = ("label_occurrences", "label_crossings", "label_crossed_edges")
 
 _OCCURRENCE = {
     "occurrence_id": "o1", "entity_id": "v", "trace_id": "T1", "interaction_id": "ix", "leg_type": "request",
@@ -22,6 +22,7 @@ _OCCURRENCE = {
     "evidence": "classified", "level": None,
     "valid_from": "2026-11-13T09:00:00Z", "valid_to": "2026-11-13T09:15:00Z",
 }
+_CARRIED = {"edge_id": "e1", "trace_id": "T2", "level": "corroborated", "ambiguous": True}
 _CROSSING = {"crossing_id": "c1", "trace_id": "T2", "interaction_id": "ix2", "leg_type": "response",
              "value_hash": "vh", "conversations": 1, "edge_id": "e1", "occurrence_id": "o1", "level": "value_only"}
 
@@ -38,7 +39,7 @@ def _tables(dsn: str) -> set[str]:
             "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'").fetchall()}
 
 
-def test_the_two_tables_take_an_occurrence_a_crossing_and_a_common_value(migrated_dsn: str) -> None:
+def test_the_tables_take_an_occurrence_a_crossing_a_common_value_and_a_carried_level(migrated_dsn: str) -> None:
     with psycopg.connect(migrated_dsn) as conn:
         _insert(conn, "label_occurrences", _OCCURRENCE)
         _insert(conn, "label_occurrences", _OCCURRENCE, occurrence_id="o2", evidence="crossed", level="corroborated",
@@ -46,6 +47,7 @@ def test_the_two_tables_take_an_occurrence_a_crossing_and_a_common_value(migrate
         _insert(conn, "label_crossings", _CROSSING)
         _insert(conn, "label_crossings", _CROSSING, crossing_id="c2", edge_id=None, occurrence_id=None, level=None,
                 conversations=4)
+        _insert(conn, "label_crossed_edges", _CARRIED)
 
 
 @pytest.mark.parametrize("table, overrides", [
@@ -58,9 +60,10 @@ def test_the_two_tables_take_an_occurrence_a_crossing_and_a_common_value(migrate
     ("label_crossings", {"occurrence_id": None}),
     ("label_crossings", {"level": "strong"}),
     ("label_crossings", {"conversations": -1}),
+    ("label_crossed_edges", {"level": "certain"}),                      # certain is never stored: no row
 ])
 def test_the_checks_refuse_a_malformed_row(migrated_dsn: str, table: str, overrides: dict) -> None:
-    row = _OCCURRENCE if table == "label_occurrences" else _CROSSING
+    row = {"label_occurrences": _OCCURRENCE, "label_crossings": _CROSSING, "label_crossed_edges": _CARRIED}[table]
     with psycopg.connect(migrated_dsn) as conn:
         with pytest.raises(psycopg.errors.CheckViolation):
             _insert(conn, table, row, **overrides)

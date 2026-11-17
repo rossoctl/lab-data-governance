@@ -81,5 +81,5 @@ verdict at 27: expected off=allow / conv=allow / cross=allow, observed off=allow
 
 Risk observer calls: 33
 
-**Notes.** K2 with conversation 2 starting 896 s after conversation 1: V2 answers at 09:15:18.1, 2.1 s after the occurrence of leg 11 expired (09:15:16, R1, R9): no crossing, allow. Its deliberate break (the valid interval ignored) turns it red.
+**Notes.** K2 with conversation 2 starting 896 s after conversation 1: V2 answers at 09:15:34.1, 18.1 s after the occurrence of leg 11 expired (09:15:16, R1, R9): no crossing, allow. Its deliberate break (the valid interval ignored) turns it red.
 

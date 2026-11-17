@@ -64,18 +64,6 @@ expect:
     '31':
       s1:
       - crossed vo
-  pending:
-    reason: the crossing and the edges that rest on it are drawn; the level on its way carries crossed and its level to every
-      later leg and into the policy input, which passes on no label from another conversation before it, so the cross run
-      blocks at the flagged leg. The off and conv runs already match
-    verdict:
-    - cross
-    evidence:
-    - 27
-    - 28
-    - 29
-    - 30
-    - 31
 classifier:
   must_see:
     '7':

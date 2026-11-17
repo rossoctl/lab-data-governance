@@ -162,9 +162,9 @@ spec:
             # Label lineage across conversations (data_governance/label_lineage/
             # cross.py): LABEL_CROSS_CONVERSATION=on registers what persistent
             # entities receive and draws crossings when they send it again. Off
-            # by default; on has effect only while RISK_INHERITED_LABELS is on,
-            # so set it here to leg-ready's value (85-leg-ready.yaml) when the
-            # switch is on. LABEL_CROSS_COMMON_LIMIT (M, default 3),
+            # by default; it must equal LABEL_CROSS_CONVERSATION on
+            # 85-leg-ready.yaml, which hands crossed labels to the policy only
+            # while its RISK_INHERITED_LABELS is on. LABEL_CROSS_COMMON_LIMIT (M, default 3),
             # LABEL_CROSS_RETENTION_SECONDS (default 900) and LABEL_CROSS_ANCHORS
             # (a comma list of the classifier's label types, the TAG column of
             # its tag table; default the person identifiers) tune it. Anything

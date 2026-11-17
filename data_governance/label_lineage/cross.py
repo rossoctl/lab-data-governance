@@ -36,6 +36,11 @@ from .value import is_whole_value
 
 VALUE_ONLY = "value_only"
 CORROBORATED = "corroborated"
+#: How surely a label at a leg is the value's: by a value-only crossing, by a corroborated
+#: one, or for certain (found by the classifier, or carried inside the conversation). Along
+#: one path the weakest step holds; of several paths or origins the strongest (R3).
+CERTAIN = "certain"
+_RANK = {VALUE_ONLY: 0, CORROBORATED: 1, CERTAIN: 2}
 
 # The anchoring identifiers: the classifier's person identifiers (its ``personID``
 # data type), less those that do not name one person by a number issued to them: a
@@ -74,6 +79,23 @@ class Crossing:
     retention: dt.timedelta = DEFAULT_RETENTION
 
 
+def weakest(*levels: str) -> str:
+    return min(levels, key=_RANK.__getitem__)
+
+
+def strongest(levels: Iterable[str]) -> str:
+    return max(levels, key=_RANK.__getitem__)
+
+
+def switch_on(env: Mapping[str, str] = os.environ) -> bool:
+    """Whether ``LABEL_CROSS_CONVERSATION`` says on (unset: off); anything but on/off
+    raises. Label lineage and the risk engine read the switch through this one parser."""
+    switch = (env.get(SWITCH_ENV_VAR) or "off").strip().lower()
+    if switch not in ("on", "off"):
+        raise InvalidCrossing(f"{SWITCH_ENV_VAR} must be on or off; got {env.get(SWITCH_ENV_VAR)!r}")
+    return switch == "on"
+
+
 def configured(env: Mapping[str, str] = os.environ) -> Crossing | None:
     """The crossing configuration from the environment, ``None`` while the switch is
     off (unset: off). Every setting is parsed whether the switch is on or off, so an
@@ -81,12 +103,10 @@ def configured(env: Mapping[str, str] = os.environ) -> Crossing | None:
     limit that is not a positive integer, a retention the calendar cannot hold, an
     empty anchor list or an anchor that is no label type of the classifier raises;
     nothing falls back."""
-    switch = (env.get(SWITCH_ENV_VAR) or "off").strip().lower()
-    if switch not in ("on", "off"):
-        raise InvalidCrossing(f"{SWITCH_ENV_VAR} must be on or off; got {env.get(SWITCH_ENV_VAR)!r}")
+    on = switch_on(env)
     crossing = Crossing(anchors=_anchors(env), common_limit=_positive(env, COMMON_LIMIT_ENV_VAR, DEFAULT_COMMON_LIMIT),
                         retention=_retention(env))
-    return crossing if switch == "on" else None
+    return crossing if on else None
 
 
 def _anchors(env: Mapping[str, str]) -> frozenset[str]:
@@ -168,6 +188,16 @@ class Crossed:
     level: str
     holding: Holding
     conversations: int
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class Carried:
+    """How a value is known at a leg it reached by a crossing, here or on its way: the
+    strongest level of its crossed origins on that span, and whether there are several
+    (``ambiguous``, R3)."""
+
+    level: str
+    ambiguous: bool
 
 
 @dataclasses.dataclass(frozen=True, slots=True)

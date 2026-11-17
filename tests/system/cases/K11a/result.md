@@ -1,6 +1,6 @@
 # K11a — back one step inside the retention
 
-cell `across/rule/interval`  ·  status **PENDING**  ·  classifier **authored**: the model's findings subtracted at legs [22, 23, 24, 25, 26, 27]
+cell `across/rule/interval`  ·  status **GREEN**  ·  classifier **authored**: the model's findings subtracted at legs [22, 23, 24, 25, 26, 27]
 
 ```
 U>A[-], A>L[-], L>A[-], A>T1[-], ..V1.., T1>A[s1 s2 s3 -], A>L[s1 s2 s3 -], L>A[s1 s2 s3 -], A>T2[s1 s2 s3 -], T2>V2[s1 s2 s3 -], V2>T2[-], T2>A[-], A>L[-], L>A[-], A>U[-] ~876s> U>A[-], A>L[-], L>A[-], A>T2[-], T2>V2[-], V2>T2[s1@subject -], T2>A[s1@subject -], A>L[s1@subject -], L>A[s1@subject -], A>T3[s1@subject -], T3>V3[s1@subject -]⚑, V3>T3[-], T3>A[-], A>L[-], L>A[-], A>U[-]
@@ -40,10 +40,8 @@ SSN     s1    ·      ·      ·      ·      ·      ━━━━━━○━�
 MRN     s2    ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      
 DOB     s3    ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      
 DIS     s4    ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      
-verdict at 27: expected off=allow / conv=allow / cross=block, observed off=allow / conv=allow / cross=allow
+verdict at 27: expected off=allow / conv=allow / cross=block, observed off=allow / conv=allow / cross=block
 ```
-
-**Reasons.** pending: the crossing and the edges that rest on it are drawn; the level on its way carries crossed and its level to every later leg and into the policy input, which passes on no label from another conversation before it, so the cross run blocks at the flagged leg. The off and conv runs already match · verdict cross: want block, got allow · evidence at 23 s1: want [crossed vo], got [inherited] · evidence at 24 s1: want [crossed vo], got [inherited] · evidence at 25 s1: want [crossed vo], got [inherited] · evidence at 26 s1: want [crossed vo], got [inherited] · evidence at 27 s1: want [crossed vo], got [inherited]
 
 **Rows (cross run).**
 
@@ -69,12 +67,12 @@ verdict at 27: expected off=allow / conv=allow / cross=block, observed off=allow
 | 19 | L>A | PUBLIC  | — | — |
 | 20 | A>T2 | PUBLIC  | — | — |
 | 21 | T2>V2 | PUBLIC  | — | — |
-| 22 | V2>T2 | PUBLIC  | s1=123-45-6789 (SSN, from 11, vo) | — |
-| 23 | T2>A | PUBLIC  | s1=123-45-6789 (SSN, from 22) | — |
-| 24 | A>L | PUBLIC  | s1=123-45-6789 (SSN, from 23) | — |
-| 25 | L>A | PUBLIC  | s1=123-45-6789 (SSN, from 24) | — |
-| 26 | A>T3 | PUBLIC  | s1=123-45-6789 (SSN, from 25), s1=123-45-6789 (SSN, from 23) | — |
-| 27 | T3>V3⚑ | PUBLIC  | s1=123-45-6789 (SSN, from 26) | none allow [] v1 |
+| 22 | V2>T2 | PUBLIC  | s1=123-45-6789 (SSN, from 11, vo; crossed vo) | — |
+| 23 | T2>A | PUBLIC  | s1=123-45-6789 (SSN, from 22; crossed vo) | — |
+| 24 | A>L | PUBLIC  | s1=123-45-6789 (SSN, from 23; crossed vo) | — |
+| 25 | L>A | PUBLIC  | s1=123-45-6789 (SSN, from 24; crossed vo) | — |
+| 26 | A>T3 | PUBLIC  | s1=123-45-6789 (SSN, from 25; crossed vo), s1=123-45-6789 (SSN, from 23; crossed vo) | — |
+| 27 | T3>V3⚑ | PUBLIC  | s1=123-45-6789 (SSN, from 26; crossed vo) | critical block ['T-SENS'] v1 |
 | 28 | V3>T3 | PUBLIC  | — | — |
 | 29 | T3>A | PUBLIC  | — | — |
 | 30 | A>L | PUBLIC  | — | — |
@@ -83,5 +81,5 @@ verdict at 27: expected off=allow / conv=allow / cross=block, observed off=allow
 
 Risk observer calls: 38
 
-**Notes.** K2 with conversation 2 starting 876 s after conversation 1: V2 answers at 09:14:58.1, 17.9 s before the occurrence of leg 11 expires (09:15:16, R1, R9). The crossing stands, value-only, and blocks.
+**Notes.** K2 with conversation 2 starting 876 s after conversation 1: V2 answers at 09:15:14.1, 1.9 s before the occurrence of leg 11 expires (09:15:16, R1, R9). The crossing stands, value-only, and blocks.
 

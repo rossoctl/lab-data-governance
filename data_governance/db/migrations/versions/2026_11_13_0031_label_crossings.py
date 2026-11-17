@@ -1,7 +1,7 @@
 """Label lineage across conversations: what persistent entities received, and the
 crossings drawn from it.
 
-Two tables beside the label-lineage tables of 0024, which are not altered. A
+Three tables beside the label-lineage tables of 0024, which are not altered. A
 crossing edge is an ordinary ``payload_label_edges`` row: its carrier is the leg of
 an earlier conversation where the entity received the value (``from_trace_id``) and
 its origin is that occurrence's origin unit (``origin_trace_id``), so every reader
@@ -32,6 +32,14 @@ depends on one.
 edge: the value was held from more than M other conversations). ``conversations``
 is the count taken at match time over the occurrences valid at the payload's time,
 by distinct other conversation; stored as the evidence, never read as the rule.
+
+``label_crossed_edges`` — one row per edge whose value rests on a crossing at its
+to leg: the crossing edge itself and every edge that carries the crossed label on,
+in this conversation and after a further crossing. ``level`` is how surely the value
+is the label's there (the weakest step along its path, the strongest of its crossed
+origins on that span) and ``ambiguous`` whether those origins are more than one. It
+is what the policy reads; a crossing's own rule level stays in ``label_crossings``.
+An edge with no row here is known inside its conversation.
 
 Revision ID: 0031_label_crossings
 Revises: 0029_hash_evidence_fingerprints (0030 is held by an open pull request;
@@ -115,8 +123,20 @@ def upgrade() -> None:
         """
     )
     op.execute("CREATE INDEX label_crossings_trace_idx ON label_crossings (trace_id)")
+    op.execute(
+        """
+        CREATE TABLE label_crossed_edges (
+            edge_id   TEXT PRIMARY KEY,
+            trace_id  TEXT NOT NULL,
+            level     TEXT NOT NULL CHECK (level IN ('value_only', 'corroborated')),
+            ambiguous BOOLEAN NOT NULL
+        )
+        """
+    )
+    op.execute("CREATE INDEX label_crossed_edges_trace_idx ON label_crossed_edges (trace_id)")
 
 
 def downgrade() -> None:
+    op.execute("DROP TABLE IF EXISTS label_crossed_edges")
     op.execute("DROP TABLE IF EXISTS label_crossings")
     op.execute("DROP TABLE IF EXISTS label_occurrences")

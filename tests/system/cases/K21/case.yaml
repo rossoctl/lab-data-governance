@@ -38,13 +38,6 @@ expect:
     '13':
       s1:
       - crossed vo
-  pending:
-    reason: the crossing and the edges that rest on it are drawn; the level on its way carries crossed and its level to every
-      later leg. Its origin is in this conversation, so the policy already reads the label and the verdicts match
-    evidence:
-    - 11
-    - 12
-    - 13
 classifier:
   must_see:
     '4':

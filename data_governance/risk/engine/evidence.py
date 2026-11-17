@@ -146,8 +146,10 @@ def _fetch_anchor(tx: db.Transaction, interaction_id: str) -> utils.AnchorFacts 
 # not send old-trace or old-payload edges to OPA while label cleanup is pending.
 _INHERITED_SQL = (
     "SELECT e.to_leg_type::text, e.trace_id, e.entity_type, e.regulatory_tags, e.sensitivity_level, "
-    "e.match_kind, e.matched_text, e.matched_start, e.matched_end, e.recombined, e.origin_trace_id "
+    "e.match_kind, e.matched_text, e.matched_start, e.matched_end, e.recombined, e.origin_trace_id, "
+    "x.level, x.ambiguous "
     "FROM payload_label_edges e "
+    "LEFT JOIN label_crossed_edges x ON x.edge_id = e.edge_id "
     "JOIN interactions current_i "
     "  ON current_i.id = e.to_interaction_id AND current_i.trace_id = e.trace_id "
     "JOIN unnest(%s::text[], %s::text[]) AS cur(leg_type, payload_hash) "
@@ -158,10 +160,11 @@ _INHERITED_SQL = (
 
 
 def _fetch_inherited(
-    tx: db.Transaction, interaction_id: str, legs: list[utils.LegEvidence], mode: str
+    tx: db.Transaction, interaction_id: str, legs: list[utils.LegEvidence], mode: str, cross: bool = False
 ) -> labels.Inherited:
     """The label-lineage edges into the interaction's legs at their current
-    payloads — one indexed read, made only with the flag on."""
+    payloads, each with how surely it was carried when it rests on a crossing — one
+    indexed read, made only with the flag on."""
     current = [leg for leg in legs if leg.payload_hash is not None]
     by_leg: dict[str, list[labels.InheritedEdge]] = {}
     rows = tx.fetch_all(_INHERITED_SQL, ([leg.leg_type for leg in current],
@@ -170,9 +173,9 @@ def _fetch_inherited(
         by_leg.setdefault(r[0], []).append(labels.InheritedEdge(
             trace_id=r[1], entity_type=r[2], regulatory_tags=tuple(r[3] or ()), sensitivity_level=r[4],
             match_kind=r[5], matched_text=r[6], matched_start=r[7], matched_end=r[8],
-            recombined=bool(r[9]), origin_trace_id=r[10],
+            recombined=bool(r[9]), origin_trace_id=r[10], crossed_level=r[11], ambiguous=bool(r[12]),
         ))
-    return labels.Inherited(mode=mode, by_leg=by_leg)
+    return labels.Inherited(mode=mode, by_leg=by_leg, cross=cross)
 
 
 def _gather_classifications(
@@ -216,6 +219,7 @@ def gather_evidence(interaction_id: str) -> Evidence:
             classifications=_gather_classifications(tx, legs),
             anchor=_fetch_anchor(tx, interaction_id),
             inherited=(
-                _fetch_inherited(tx, interaction_id, legs, mode) if mode != "off" else None
+                _fetch_inherited(tx, interaction_id, legs, mode, config.cross_conversation())
+                if mode != "off" else None
             ),
         )

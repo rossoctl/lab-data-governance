@@ -1,6 +1,6 @@
 # K17 — a relay through two crossings
 
-cell `across/level/relay`  ·  status **PENDING**  ·  classifier **authored**: the model's findings subtracted at legs [22, 23, 24, 25, 26, 27, 38, 39, 40, 41, 42, 43]
+cell `across/level/relay`  ·  status **GREEN**  ·  classifier **authored**: the model's findings subtracted at legs [22, 23, 24, 25, 26, 27, 38, 39, 40, 41, 42, 43]
 
 ```
 U>A[-], A>L[-], L>A[-], A>T1[-], ..V1.., T1>A[s1 s2 s3 -], A>L[s1 s2 s3 -], L>A[s1 s2 s3 -], A>T2[s1 s2 s3 -], T2>V2[s1 s2 s3 -], V2>T2[-], T2>A[-], A>L[-], L>A[-], A>U[-] ~2min> U>A[-], A>L[-], L>A[-], A>T2[-], T2>V2[-], V2>T2[s1@subject s2@account s3@ref -], T2>A[s1@subject s2@account s3@ref -], A>L[s1@subject s2@account s3@ref -], L>A[s1@subject s2@account s3@ref -], A>T3[s1@subject s2@account s3@ref -], T3>V3[s1@subject s2@account s3@ref -], V3>T3[-], T3>A[-], A>L[-], L>A[-], A>U[-] ~2min> U>A[-], A>L[-], L>A[-], A>T3[-], T3>V3[-], V3>T3[s1@subject -], T3>A[s1@subject -], A>L[s1@subject -], L>A[s1@subject -], A>T4[s1@subject -], T4>V4[s1@subject -]⚑, V4>T4[-], T4>A[-], A>L[-], L>A[-], A>U[-]
@@ -56,10 +56,8 @@ SSN     s1    ·      ·      ·      ·      ·      ━━━━━━○━�
 MRN     s2    ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      
 DOB     s3    ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      
 DIS     s4    ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      
-verdict at 43: expected off=allow / conv=allow / cross=block, observed off=allow / conv=allow / cross=allow
+verdict at 43: expected off=allow / conv=allow / cross=block, observed off=allow / conv=allow / cross=block
 ```
-
-**Reasons.** pending: the crossing and the edges that rest on it are drawn; the level on its way carries crossed and its level to every later leg and into the policy input, which passes on no label from another conversation before it, so the cross run blocks at the flagged leg. The off and conv runs already match · verdict cross: want block, got allow · evidence at 23 s1: want [crossed co], got [inherited] · evidence at 23 s2: want [crossed co], got [inherited] · evidence at 23 s3: want [crossed co], got [inherited] · evidence at 24 s1: want [crossed co], got [inherited] · evidence at 24 s2: want [crossed co], got [inherited] · evidence at 24 s3: want [crossed co], got [inherited] · evidence at 25 s1: want [crossed co], got [inherited] · evidence at 25 s2: want [crossed co], got [inherited] · evidence at 25 s3: want [crossed co], got [inherited] · evidence at 26 s1: want [crossed co], got [inherited] · evidence at 26 s2: want [crossed co], got [inherited] · evidence at 26 s3: want [crossed co], got [inherited] · evidence at 27 s1: want [crossed co], got [inherited] · evidence at 27 s2: want [crossed co], got [inherited] · evidence at 27 s3: want [crossed co], got [inherited] · evidence at 39 s1: want [crossed vo], got [inherited] · evidence at 40 s1: want [crossed vo], got [inherited] · evidence at 41 s1: want [crossed vo], got [inherited] · evidence at 42 s1: want [crossed vo], got [inherited] · evidence at 43 s1: want [crossed vo], got [inherited]
 
 **Rows (cross run).**
 
@@ -85,12 +83,12 @@ verdict at 43: expected off=allow / conv=allow / cross=block, observed off=allow
 | 19 | L>A | PUBLIC  | — | — |
 | 20 | A>T2 | PUBLIC  | — | — |
 | 21 | T2>V2 | PUBLIC  | — | — |
-| 22 | V2>T2 | PUBLIC  | s2=4471820 (MRN, from 11, co), s3=1961-03-14 (DOB, from 11, co), s1=123-45-6789 (SSN, from 11, co) | — |
-| 23 | T2>A | PUBLIC  | s2=4471820 (MRN, from 22), s3=1961-03-14 (DOB, from 22), s1=123-45-6789 (SSN, from 22) | — |
-| 24 | A>L | PUBLIC  | s2=4471820 (MRN, from 23), s3=1961-03-14 (DOB, from 23), s1=123-45-6789 (SSN, from 23) | — |
-| 25 | L>A | PUBLIC  | s2=4471820 (MRN, from 24), s3=1961-03-14 (DOB, from 24), s1=123-45-6789 (SSN, from 24) | — |
-| 26 | A>T3 | PUBLIC  | s2=4471820 (MRN, from 23), s2=4471820 (MRN, from 25), s3=1961-03-14 (DOB, from 23), s3=1961-03-14 (DOB, from 25), s1=123-45-6789 (SSN, from 23), s1=123-45-6789 (SSN, from 25) | — |
-| 27 | T3>V3 | PUBLIC  | s2=4471820 (MRN, from 26), s3=1961-03-14 (DOB, from 26), s1=123-45-6789 (SSN, from 26) | — |
+| 22 | V2>T2 | PUBLIC  | s2=4471820 (MRN, from 11, co; crossed co), s3=1961-03-14 (DOB, from 11, co; crossed co), s1=123-45-6789 (SSN, from 11, co; crossed co) | — |
+| 23 | T2>A | PUBLIC  | s2=4471820 (MRN, from 22; crossed co), s3=1961-03-14 (DOB, from 22; crossed co), s1=123-45-6789 (SSN, from 22; crossed co) | — |
+| 24 | A>L | PUBLIC  | s2=4471820 (MRN, from 23; crossed co), s3=1961-03-14 (DOB, from 23; crossed co), s1=123-45-6789 (SSN, from 23; crossed co) | — |
+| 25 | L>A | PUBLIC  | s2=4471820 (MRN, from 24; crossed co), s3=1961-03-14 (DOB, from 24; crossed co), s1=123-45-6789 (SSN, from 24; crossed co) | — |
+| 26 | A>T3 | PUBLIC  | s2=4471820 (MRN, from 23; crossed co), s2=4471820 (MRN, from 25; crossed co), s3=1961-03-14 (DOB, from 23; crossed co), s3=1961-03-14 (DOB, from 25; crossed co), s1=123-45-6789 (SSN, from 23; crossed co), s1=123-45-6789 (SSN, from 25; crossed co) | — |
+| 27 | T3>V3 | PUBLIC  | s2=4471820 (MRN, from 26; crossed co), s3=1961-03-14 (DOB, from 26; crossed co), s1=123-45-6789 (SSN, from 26; crossed co) | — |
 | 28 | V3>T3 | PUBLIC  | — | — |
 | 29 | T3>A | PUBLIC  | — | — |
 | 30 | A>L | PUBLIC  | — | — |
@@ -101,12 +99,12 @@ verdict at 43: expected off=allow / conv=allow / cross=block, observed off=allow
 | 35 | L>A | PUBLIC  | — | — |
 | 36 | A>T3 | PUBLIC  | — | — |
 | 37 | T3>V3 | PUBLIC  | — | — |
-| 38 | V3>T3 | PUBLIC  | s1=123-45-6789 (SSN, from 27, vo) | — |
-| 39 | T3>A | PUBLIC  | s1=123-45-6789 (SSN, from 38) | — |
-| 40 | A>L | PUBLIC  | s1=123-45-6789 (SSN, from 39) | — |
-| 41 | L>A | PUBLIC  | s1=123-45-6789 (SSN, from 40) | — |
-| 42 | A>T4 | PUBLIC  | s1=123-45-6789 (SSN, from 41), s1=123-45-6789 (SSN, from 39) | — |
-| 43 | T4>V4⚑ | PUBLIC  | s1=123-45-6789 (SSN, from 42) | none allow [] v1 |
+| 38 | V3>T3 | PUBLIC  | s1=123-45-6789 (SSN, from 27, vo; crossed vo) | — |
+| 39 | T3>A | PUBLIC  | s1=123-45-6789 (SSN, from 38; crossed vo) | — |
+| 40 | A>L | PUBLIC  | s1=123-45-6789 (SSN, from 39; crossed vo) | — |
+| 41 | L>A | PUBLIC  | s1=123-45-6789 (SSN, from 40; crossed vo) | — |
+| 42 | A>T4 | PUBLIC  | s1=123-45-6789 (SSN, from 41; crossed vo), s1=123-45-6789 (SSN, from 39; crossed vo) | — |
+| 43 | T4>V4⚑ | PUBLIC  | s1=123-45-6789 (SSN, from 42; crossed vo) | critical block ['T-SENS'] v1 |
 | 44 | V4>T4 | PUBLIC  | — | — |
 | 45 | T4>A | PUBLIC  | — | — |
 | 46 | A>L | PUBLIC  | — | — |

@@ -166,3 +166,36 @@ def test_a_common_value_is_a_crossing_row_without_an_edge(configured_db: str) ->
         store.write(tx, d, "exact")
     assert _rows(configured_db, "SELECT leg_type::text, conversations, edge_id, level FROM label_crossings") == [
         ("response", 4, None, None)]
+
+
+def test_every_edge_that_rests_on_a_crossing_has_its_carried_row(configured_db: str) -> None:
+    first, second = _crossing()
+    for _ in range(2):
+        with db.transaction() as tx:
+            store.write(tx, first, "exact")
+            store.write(tx, second, "exact")
+    rows = _rows(configured_db,
+                 "SELECT e.to_interaction_id, e.to_leg_type::text, e.entity_type, c.trace_id, c.level, c.ambiguous "
+                 "FROM label_crossed_edges c JOIN payload_label_edges e ON e.edge_id = c.edge_id ORDER BY 1, 2, 3")
+    assert rows == [("2", "response", "DOB", "T2", "corroborated", False),
+                    ("2", "response", "SSN", "T2", "corroborated", False),
+                    ("3", "request", "DOB", "T2", "corroborated", False),
+                    ("3", "request", "SSN", "T2", "corroborated", False)]
+    with db.transaction() as tx:
+        store.write(tx, fold.derive(_second(), find.exact), "exact")
+    assert _rows(configured_db, "SELECT count(*) FROM label_crossed_edges") == [(0,)]
+
+
+def test_a_changed_level_alone_is_a_change(configured_db: str) -> None:
+    """The same edges and summaries, the level they were carried with changed: the decisions on those legs read
+    the level, so their interactions are recomputed."""
+    first, second = _crossing()
+    weaker = [dataclasses.replace(h, evidence="crossed", level=cross.VALUE_ONLY) for h in first.holdings]
+    again = fold.derive(_second(weaker), find.exact, crossing=cross.Crossing())
+    assert {store.edge_id(e) for e in again.edges} == {store.edge_id(e) for e in second.edges}
+    assert again.legs == second.legs
+    with db.transaction() as tx:
+        store.write(tx, second, "exact")
+    with db.transaction() as tx:
+        assert store.write(tx, second, "exact") == set()
+        assert store.write(tx, again, "exact") == {"2", "3"}

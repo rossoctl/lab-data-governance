@@ -86,16 +86,18 @@ def main() -> int:
         return 2
 
     # RISK_INHERITED_LABELS decides this consumer's readiness and its recompute
-    # drain: an unsupported value (`all`, a typo) stops it here with the message,
-    # before any DB work, rather than as a traceback mid-drain.
-    from data_governance.risk.config import inherited_labels_mode
+    # drain, LABEL_CROSS_CONVERSATION whether labels from other conversations reach
+    # its decisions: an unsupported value (`all`, a typo) stops it here with the
+    # message, before any DB work, rather than as a traceback mid-drain.
+    from data_governance.risk.config import cross_conversation, inherited_labels_mode
 
     try:
-        mode = inherited_labels_mode()
+        mode, crossed = inherited_labels_mode(), cross_conversation()
     except ValueError as exc:
         sys.stderr.write(f"{exc}\n")
         return 2
-    log.info("inherited labels %s (RISK_INHERITED_LABELS)", mode)
+    log.info("inherited labels %s (RISK_INHERITED_LABELS), across conversations %s (LABEL_CROSS_CONVERSATION)",
+             mode, ("on" if mode == "on" else "on, no effect while inherited labels are off") if crossed else "off")
 
     db.configure(dsn)
 

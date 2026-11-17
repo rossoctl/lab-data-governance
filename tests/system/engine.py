@@ -7,8 +7,8 @@ drain (replayed model output through the production seam) -> label-lineage drain
 A case runs its steps (by default: send every leg, then drain): ``send`` puts legs on
 the wire, ``drain`` runs every drain from where it stopped, ``derive`` queues a
 conversation for derivation again through the production correction queue, ``cross`` turns the
-cross-conversation switch on or off for the drains after it (as a restart would). A run is
-in one of three modes, set through the production switches (:func:`switches`). A case's
+cross-conversation switch on or off for the drains after it (label lineage and leg-ready, as a
+restart would). A run is in one of three modes, set through the production switches (:func:`switches`). A case's
 ``scopes:`` reach label lineage as the production declaration (:func:`declaration`).
 
 A drain may stop early by design (leg-ready holds its cursor while OPA is down) and
@@ -76,7 +76,7 @@ class LegRows:
     leg_type: str
     payload_hash: str | None
     classification: dict[str, Any] | None      # sensitivity, tags, findings [(tag, text)]
-    inherited: list[dict[str, Any]]            # edges INTO this leg: unit, value, from_leg, level
+    inherited: list[dict[str, Any]]            # edges INTO this leg: unit, value, from_leg, level, known
     risk: dict[str, Any] | None                # the risk record that evidences this leg (sink only)
 
 
@@ -174,13 +174,15 @@ def resolve_edges(case: Case, rows, leg_of_key: dict[tuple[str, str], int]):
     carrying a label that is not one of its unit's types, or whose evidence is not a whole match of the value's
     own bytes (the suite runs the exact finder), is a problem; so is an edge drawn by more than one row of one label
     type and origin, which the edge set would hide (two origins of one value are two rows by right, under one type or
-    two). A row's level is a crossing's (``None`` for an edge inside one conversation), read from its crossing row."""
+    two). A row's level is a crossing's (``None`` for an edge inside one conversation), read from its crossing row; how
+    the value is known at the to leg (``known``) is ``inherited``, or ``crossed L [ambiguous]`` read from the edge's
+    carried row when it rests on a crossing."""
     value_unit = {v: u for u, v in case.values.items()}
     rows_of: Counter[tuple[Edge, str]] = Counter()
     raw: list[dict[str, Any]] = []
     inherited: dict[int, list[dict[str, Any]]] = defaultdict(list)
     problems: list[str] = []
-    for fi, flt, ti, tlt, etype, value, matched, kind, level, origin in rows:
+    for fi, flt, ti, tlt, etype, value, matched, kind, level, origin, known in rows:
         f = leg_of_key.get((fi, flt))
         to = leg_of_key.get((ti, tlt))
         unit = value_unit.get(value, f"?{value}")
@@ -193,7 +195,8 @@ def resolve_edges(case: Case, rows, leg_of_key: dict[tuple[str, str], int]):
         if kind != "whole" or matched != value:
             problems.append(f"edge {unit} {f}>{to} matched {matched!r} as {kind!r}, not the whole value")
         rows_of[((unit, f, to, level), etype, origin)] += 1
-        inherited[to].append({"unit": unit, "label": etype, "value": value, "from": f, "level": level})
+        inherited[to].append({"unit": unit, "label": etype, "value": value, "from": f, "level": level,
+                              "known": known or "inherited"})
     problems += [f"edge {fmt_edges([e])} ({etype}) drawn by {n} rows"
                  for (e, etype, _), n in sorted(rows_of.items(), key=str) if n > 1]
     return {e for e, _, _ in rows_of}, raw, inherited, problems
@@ -201,9 +204,9 @@ def resolve_edges(case: Case, rows, leg_of_key: dict[tuple[str, str], int]):
 
 def evidence_at(case: Case, legs: dict[int, "LegRows"]) -> dict[int, dict[str, frozenset[str]]]:
     """leg -> unit -> how the unit is known there, read from the rows: ``classified TYPE`` for every type the model
-    gave the unit's own bytes at the leg, and one kind per edge row into it: ``inherited`` for an edge inside the
-    conversation, ``crossed L`` for a crossing. A crossed label carried on inside a conversation and
-    an ambiguous result are read from the rows that write them; until then they are never observed."""
+    gave the unit's own bytes at the leg, and one kind per edge row into it: ``inherited`` for an edge known inside
+    the conversation, ``crossed L [ambiguous]`` for one whose value rests on a crossing there (its carried row: the
+    crossing edge itself and every edge that carries the label on)."""
     out: dict[int, dict[str, frozenset[str]]] = {}
     for i, r in legs.items():
         cells: dict[str, set[str]] = defaultdict(set)
@@ -211,7 +214,7 @@ def evidence_at(case: Case, legs: dict[int, "LegRows"]) -> dict[int, dict[str, f
         for unit, value in case.values.items():
             cells[unit] |= {f"classified {t}" for t, text in findings if text == value}
         for e in r.inherited:
-            cells[e["unit"]].add(f"crossed {e['level']}" if e["level"] else "inherited")
+            cells[e["unit"]].add(e["known"])
         out[i] = {u: frozenset(k) for u, k in cells.items() if k}
     return out
 
@@ -280,15 +283,21 @@ def undeclared(declared: Mapping[str, str], derived: set[str]) -> list[str]:
 @contextlib.contextmanager
 def switches(mode: str):
     """The production switches of *mode*, through the environment the processors read: inherited labels off in
-    ``off``, on in ``conv`` and ``cross``; the cross-conversation switch on in ``off`` (inherited labels off must stop
-    it) and ``cross``, off in ``conv``."""
+    ``off``, on in ``conv`` and ``cross``; the cross-conversation switch on in ``off`` and ``cross`` (label lineage
+    draws the crossings in both; with inherited labels off none may reach a verdict), off in ``conv``."""
     with environment({"RISK_INHERITED_LABELS": "off" if mode == "off" else "on",
                       cross.SWITCH_ENV_VAR: "off" if mode == "conv" else "on"}):
-        risk_config.inherited_labels_mode.cache_clear()
+        restarted()
         try:
             yield
         finally:
-            risk_config.inherited_labels_mode.cache_clear()
+            restarted()
+
+
+def restarted() -> None:
+    """What a restart of leg-ready does to its configuration: both switches are read again."""
+    risk_config.inherited_labels_mode.cache_clear()
+    risk_config.cross_conversation.cache_clear()
 
 
 def run_case(case: Case, *, dsn: str, grpc_endpoint: str, opa_client, mode: str) -> Observation:
@@ -341,6 +350,7 @@ def run_case(case: Case, *, dsn: str, grpc_endpoint: str, opa_client, mode: str)
                 elif step[0] == "cross":
                     os.environ[cross.SWITCH_ENV_VAR] = step[1]     # restored by switches()
                     config = label_lineage.configured()
+                    restarted()
                 elif step[0] == "drain":
                     cursors["interactions"] = interactions.drain(cursors["interactions"])
                     lap("interactions")
@@ -388,10 +398,12 @@ def _read(case: Case, rendered: list[Rendered], dsn: str, mode: str) -> Observat
             "SELECT e.from_interaction_id, e.from_leg_type::text, e.to_interaction_id, e.to_leg_type::text, "
             "e.entity_type, e.unit_value, e.matched_text, e.match_kind, c.level, "
             "concat_ws('/', coalesce(e.origin_trace_id, e.trace_id), e.origin_interaction_id, e.origin_leg_type, "
-            "          e.unit_start, e.unit_end) "
+            "          e.unit_start, e.unit_end), x.level, x.ambiguous "
             "FROM payload_label_edges e LEFT JOIN label_crossings c ON c.edge_id = e.edge_id "
+            "LEFT JOIN label_crossed_edges x ON x.edge_id = e.edge_id "
             "ORDER BY e.matched_start, e.entity_type, e.from_interaction_id, e.from_leg_type, e.edge_id").fetchall()
-        edges = [(*r[:8], _LEVELS[r[8]] if r[8] else None, r[9]) for r in edges]
+        edges = [(*r[:8], _LEVELS[r[8]] if r[8] else None, r[9],
+                  f"crossed {_LEVELS[r[10]]}{' ambiguous' if r[11] else ''}" if r[10] else None) for r in edges]
         commons = conn.execute("SELECT interaction_id, leg_type::text, conversations FROM label_crossings "
                                "WHERE edge_id IS NULL").fetchall()
         doubled = conn.execute(

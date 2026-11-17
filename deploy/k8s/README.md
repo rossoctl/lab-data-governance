@@ -162,8 +162,9 @@ See [ADR-0031](../../docs/adr/0031-non-reversible-namespace-lineage-activation.m
   `LABEL_MEMORY_SCOPES` (unset by default) declares an entity's memory scope by
   its natural key; an invalid declaration exits 2 the same way.
   `LABEL_CROSS_CONVERSATION` (default `off`): `on` also writes migration 0031's
-  tables and draws crossings from persistent entities; it has effect only with
-  `RISK_INHERITED_LABELS=on` on this Deployment too, the one risk setting it reads
+  tables and draws crossings from persistent entities, whatever the risk flag says
+  (it reads no risk configuration); set it to leg-ready's value, which hands
+  crossed labels to the policy only with `RISK_INHERITED_LABELS=on` there
   (`docs/label-lineage.md`).
 - **Leg-ready consumer Deployment (the risk engine).** **Single replica**
   running `python -m data_governance.processors.leg_ready` on the shared
@@ -178,6 +179,10 @@ See [ADR-0031](../../docs/adr/0031-non-reversible-namespace-lineage-activation.m
   reached it through label lineage, makes a leg ready only once label lineage
   has derived it (a stopped label-lineage processor holds the stream, with a
   WARNING per wake once one leg has waited 30 s), and drains `risk_recompute_requests`.
+  `LABEL_CROSS_CONVERSATION` (default `off`, must equal the label-lineage
+  Deployment's): with `RISK_INHERITED_LABELS=on`, `on` also hands each flow the
+  labels that reached it by a crossing, as one more item, and states their level
+  in the flow's `crossed` field (`docs/label-lineage.md`). A bad value exits 2.
 - **Verdict service Deployment.** **Two replicas**, `maxUnavailable:0`, running
   `python -m data_governance.risk.api.verdict_app` from the classification image.
   What a Sentry gate asks before an outbound request leaves

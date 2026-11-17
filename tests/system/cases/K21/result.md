@@ -1,6 +1,6 @@
 # K21 — the partner returns it in a later call
 
-cell `across/scope/same-conversation`  ·  status **PENDING**  ·  classifier **authored**: the model's findings subtracted at legs [6, 10, 11, 12, 13]
+cell `across/scope/same-conversation`  ·  status **GREEN**  ·  classifier **authored**: the model's findings subtracted at legs [6, 10, 11, 12, 13]
 
 ```
 U>A[-], A>T2[-], T2>V1[-], V1>T2[s1 -], T2>V2[s1 -], V2>T2[s1@subject -], T2>A[-], A>T3[-], T3>V2[-], V2>T3[s1@subject -], T3>A[s1@subject -], A>T4[s1@subject -], T4>V4[s1@subject -]⚑, V4>T4[-], T4>A[-], A>U[-]
@@ -19,8 +19,6 @@ SSN     s1    ·      ·      ·      ●      ━━━━━━●━━━━
 verdict at 13: expected off=allow / conv=allow / cross=block, observed off=allow / conv=allow / cross=block
 ```
 
-**Reasons.** pending: the crossing and the edges that rest on it are drawn; the level on its way carries crossed and its level to every later leg. Its origin is in this conversation, so the policy already reads the label and the verdicts match · evidence at 11 s1: want [crossed vo], got [inherited] · evidence at 12 s1: want [crossed vo], got [inherited] · evidence at 13 s1: want [crossed vo], got [inherited]
-
 **Rows (cross run).**
 
 | leg | who | classification | inherited labels (from leg) | risk |
@@ -34,10 +32,10 @@ verdict at 13: expected off=allow / conv=allow / cross=block, observed off=allow
 | 7 | T2>A | PUBLIC  | — | — |
 | 8 | A>T3 | PUBLIC  | — | — |
 | 9 | T3>V2 | PUBLIC  | — | — |
-| 10 | V2>T3 | PUBLIC  | s1=123-45-6789 (SSN, from 5, vo) | — |
-| 11 | T3>A | PUBLIC  | s1=123-45-6789 (SSN, from 10) | — |
-| 12 | A>T4 | PUBLIC  | s1=123-45-6789 (SSN, from 11) | — |
-| 13 | T4>V4⚑ | PUBLIC  | s1=123-45-6789 (SSN, from 12) | critical block ['T-SENS'] v1 |
+| 10 | V2>T3 | PUBLIC  | s1=123-45-6789 (SSN, from 5, vo; crossed vo) | — |
+| 11 | T3>A | PUBLIC  | s1=123-45-6789 (SSN, from 10; crossed vo) | — |
+| 12 | A>T4 | PUBLIC  | s1=123-45-6789 (SSN, from 11; crossed vo) | — |
+| 13 | T4>V4⚑ | PUBLIC  | s1=123-45-6789 (SSN, from 12; crossed vo) | critical block ['T-SENS'] v1 |
 | 14 | V4>T4 | PUBLIC  | — | — |
 | 15 | T4>A | PUBLIC  | — | — |
 | 16 | A>U | PUBLIC  | — | — |

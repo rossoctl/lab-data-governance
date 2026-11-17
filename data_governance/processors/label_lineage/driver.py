@@ -36,14 +36,15 @@ Across conversations (``LABEL_CROSS_CONVERSATION=on``, default off): the derivat
 of a trace also loads what its persistent senders received in other conversations
 (``label_occurrences``, valid in the trace's time window, whose value is in a payload
 they send) and writes what its persistent receivers received, replacing the
-trace's rows. The switch has effect only while inherited labels are on: it reads
-``RISK_INHERITED_LABELS`` (through the risk configuration's own parser) only to
-honour that, and with it off nothing crosses and nothing is stored.
+trace's rows. The switch alone governs it, whatever the risk flag says (as the rest
+of this processor runs); the risk engine hands crossed labels to the policy only while
+leg-ready has both ``RISK_INHERITED_LABELS`` and this switch on. With it off nothing
+crosses and nothing is stored.
 
 When a re-derivation changes a leg's inherited summary — including a leg that
 gains its first edges — the leg's interaction is written to
 ``risk_recompute_requests`` in the same transaction. That is a fact about the
-derivation; apart from the switch above this processor reads no risk configuration. Leg-ready alone decides
+derivation; this processor reads no risk configuration. Leg-ready alone decides
 what to do with label-only requests (``RISK_INHERITED_LABELS``): recompute when
 on, retain them when off (one row per interaction bounds the table). Structural
 correction requests are processed in either mode without losing pending labels.
@@ -68,7 +69,6 @@ from data_governance.processors import readiness_cursor as rc
 from data_governance.processors.data_lineage import memory
 from data_governance.processors.data_lineage.traversal import Entity
 from data_governance.processors.trace_lock import lock_trace
-from data_governance.risk.config import parse_inherited_labels
 
 from . import store
 
@@ -102,15 +102,10 @@ class Config:
 
 def configured() -> Config:
     """The configuration from the environment; raises on an unknown finder, an
-    invalid scope declaration or an invalid cross-conversation configuration. The
-    cross switch on with inherited labels off is a configuration that crosses
-    nothing."""
+    invalid scope declaration or an invalid cross-conversation configuration."""
     name = find.configured_name()
-    crossing = cross.configured(os.environ)
-    if crossing is not None and parse_inherited_labels(os.environ.get("RISK_INHERITED_LABELS")) != "on":
-        crossing = None
     return Config(find.get_finder(name), name, memory.parse_scopes(os.environ.get(memory.SCOPES_ENV_VAR)),
-                  crossing)
+                  cross.configured(os.environ))
 
 
 _FETCH_SQL = """
@@ -228,7 +223,7 @@ def derive_and_persist(tx: db.Transaction, trace_id: str, config: Config) -> set
     trace = load_trace(tx, trace_id, config)
     if not trace.legs:
         for table in ("payload_label_edges", "leg_inherited_labels", "label_lineage_trace_status",
-                      "label_occurrences", "label_crossings"):
+                      "label_occurrences", "label_crossings", "label_crossed_edges"):
             tx.execute(f"DELETE FROM {table} WHERE trace_id = %s", (trace_id,))
         tx.execute("SELECT pg_notify(%s, '')", (NOTIFY_CHANNEL,))
         return set()

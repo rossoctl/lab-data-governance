@@ -5,6 +5,7 @@ whose answer follows from the rule, never from a measurement."""
 
 from __future__ import annotations
 
+import dataclasses
 import datetime as dt
 import json
 
@@ -243,7 +244,8 @@ ENTITIES = {e.id: e for e in (Entity("a", "agent:lab/a", "agent"), Entity("v", "
                               Entity("t", "tool:lab/t", "tool"))}
 
 
-def _trace(trace_id: str, legs: list[tuple[str, str, str, str, object, list | None]], t0: dt.datetime):
+def _trace(trace_id: str, legs: list[tuple[str, str, str, str, object, list | None]], t0: dt.datetime,
+           entities=ENTITIES):
     """legs: (interaction, leg type, caller, callee, content, findings marks or None = unclassified)."""
     wire, payloads, findings = [], {}, {}
     for n, (ix, lt, caller, callee, content, marks) in enumerate(legs):
@@ -252,7 +254,7 @@ def _trace(trace_id: str, legs: list[tuple[str, str, str, str, object, list | No
         if marks is not None:
             findings[h] = _findings(project(content), *marks)
         wire.append(fold.WireLeg(ix, lt, n + 1, caller, callee, h, occurred_at=t0 + dt.timedelta(seconds=2 * n)))
-    return fold.TraceInput(trace_id, wire, ENTITIES, payloads, findings)
+    return fold.TraceInput(trace_id, wire, entities, payloads, findings)
 
 
 RECORD = {"ssn": SSN, "dob": DOB}
@@ -364,3 +366,125 @@ def test_candidates_from_inside_the_conversation_claim_exactly_as_before():
     assert [o.unit.origin for o in occs] == [store]
     occs, _ = fold.attribute([], own, candidates)
     assert sorted(o.unit.origin.interaction_id for o in occs) == ["ix-out", "ix-store"]
+
+
+# --- the level on its way (R3) -------------------------------------------------------------------------
+
+def _carried(d: fold.Derivation) -> list[tuple]:
+    """Every edge: from leg, to leg, type, origin trace, the crossing's own level (rule table), and how the value
+    is known at the to leg: (level, ambiguous) when it rests on a crossing, else None."""
+    return sorted((e.from_key, e.to_key, e.unit.entity_type, e.unit.origin.trace_id,
+                   d.levels[e.key].level if e.key in d.levels else None,
+                   (d.carried[e.key].level, d.carried[e.key].ambiguous) if e.key in d.carried else None)
+                  for e in d.edges)
+
+
+def test_a_crossed_label_keeps_crossed_and_its_level_on_every_later_leg():
+    d = fold.derive(_second(fold.derive(_first(), find.exact, crossing=ON).holdings), find.exact, crossing=ON)
+    co = (cross.CORROBORATED, False)
+    assert _carried(d) == [
+        (("1", "request"), ("2", "response"), "DOB", "T1", cross.CORROBORATED, co),
+        (("1", "request"), ("2", "response"), "SSN", "T1", cross.CORROBORATED, co),
+        (("2", "response"), ("3", "request"), "DOB", "T1", None, co),
+        (("2", "response"), ("3", "request"), "SSN", "T1", None, co),
+    ]
+
+
+@pytest.mark.parametrize("held_level, returned, rule, carried", [
+    (cross.CORROBORATED, {"subject": SSN}, cross.VALUE_ONLY, cross.VALUE_ONLY),        # K17: co, then vo
+    (cross.VALUE_ONLY, {"subject": SSN, "since": DOB}, cross.CORROBORATED, cross.VALUE_ONLY),  # vo, then co
+])
+def test_along_one_path_the_weakest_level_holds(held_level, returned, rule, carried):
+    held = [dataclasses.replace(h, evidence="crossed", level=held_level)
+            for h in fold.derive(_first(), find.exact, crossing=ON).holdings]
+    t = _second(held)
+    h = t.legs[1].payload_hash
+    t = fold.TraceInput(t.trace_id, t.legs, t.entities, {**t.payloads, h: returned}, t.findings, priors=t.priors)
+    d = fold.derive(t, find.exact, crossing=ON)
+    ssn = [row for row in _carried(d) if row[2] == "SSN"]
+    assert [row[4:] for row in ssn] == [(rule, (carried, False)), (None, (carried, False))]
+
+
+def test_several_crossed_origins_carry_the_strongest_level_and_are_ambiguous():
+    held = (_holdings("T1", RECORD, ("SSN", SSN), ("DOB", DOB)) + _holdings("T0", {"ssn": SSN}, ("SSN", SSN)))
+    d = fold.derive(_second(held), find.exact, crossing=ON)
+    assert sorted(row[2:] for row in _carried(d) if row[4] is not None) == [
+        ("DOB", "T1", cross.CORROBORATED, (cross.CORROBORATED, False)),
+        ("SSN", "T0", cross.VALUE_ONLY, (cross.CORROBORATED, True)),
+        ("SSN", "T1", cross.CORROBORATED, (cross.CORROBORATED, True)),
+    ]
+    assert sorted(row[2:] for row in _carried(d) if row[4] is None) == [
+        ("DOB", "T1", None, (cross.CORROBORATED, False)),
+        ("SSN", "T0", None, (cross.CORROBORATED, True)),
+        ("SSN", "T1", None, (cross.CORROBORATED, True)),
+    ]
+
+
+USER = {**ENTITIES, "u": Entity("u", "user:alice", "user")}
+
+
+def test_one_origin_through_two_carriers_is_not_ambiguous():
+    first = _trace("T1", [("0", "request", "u", "a", {"ssn": SSN}, [("SSN", SSN)]),
+                          ("1", "request", "a", "v", {"ssn": SSN}, []), ("1", "response", "a", "v", {"ok": 1}, []),
+                          ("2", "request", "a", "v", {"ssn": SSN}, []), ("2", "response", "a", "v", {"ok": 1}, [])],
+                   T0, USER)
+    held = fold.derive(first, find.exact, crossing=ON).holdings
+    assert len(held) == 2 and len({h.occurrence.unit.key for h in held}) == 1
+    d = fold.derive(_second(held), find.exact, crossing=ON)
+    at_return = [row for row in _carried(d) if row[1] == ("2", "response")]
+    assert [row[4:] for row in at_return] == [(cross.VALUE_ONLY, (cross.VALUE_ONLY, False))] * 2
+
+
+def test_a_value_known_inside_the_conversation_too_is_certain_and_reads_inherited():
+    """The same origin reaches a's request both inside the conversation (from the user) and by a crossing in a later
+    call (R7): of the paths of one origin the best holds. The edge before the crossing is ordinary (K21's leg 6)."""
+    t = _trace("T1", [("0", "request", "u", "a", {"ssn": SSN}, [("SSN", SSN)]),
+                      ("1", "request", "a", "v", {"ssn": SSN}, []), ("1", "response", "a", "v", {"ok": 1}, []),
+                      ("2", "request", "a", "v", {"q": "again"}, []), ("2", "response", "a", "v", {"subject": SSN}, []),
+                      ("3", "request", "a", "t", {"subject": SSN}, [])], T0, USER)
+    d = fold.derive(t, find.exact, crossing=ON)
+    assert [(row[0], row[1], row[4], row[5]) for row in _carried(d)] == [
+        (("0", "request"), ("1", "request"), None, None),
+        (("0", "request"), ("3", "request"), None, None),
+        (("1", "request"), ("2", "response"), cross.VALUE_ONLY, (cross.VALUE_ONLY, False)),
+        (("2", "response"), ("3", "request"), None, None),
+    ]
+
+
+def test_a_later_leg_registers_a_crossed_value_as_crossed_with_its_level():
+    first = fold.derive(_first(), find.exact, crossing=ON).holdings
+    d = fold.derive(_second(first), find.exact, {"tool:lab/t": "persistent"}, crossing=ON)
+    at = {(h.value, h.evidence, h.level) for h in d.holdings if h.occurrence.at.leg == ("3", "request")}
+    assert at == {(SSN, "crossed", cross.CORROBORATED), (DOB, "crossed", cross.CORROBORATED)}
+
+
+def test_without_the_switch_nothing_is_carried():
+    assert fold.derive(_second(), find.exact).carried == {}
+
+
+def test_a_value_classified_one_leg_after_its_crossing_keeps_its_own_origin():
+    """a crossed occurrence carried on inside the conversation claims no finding either; the
+    classified origin and the crossed one both travel on, and a persistent receiver holds both."""
+    first = fold.derive(_first(), find.exact, crossing=ON).holdings
+    t = _trace("T2", [("2", "request", "a", "v", {"q": "lookup"}, []),
+                      ("2", "response", "a", "v", {"subject": SSN, "since": DOB}, []),
+                      ("3", "request", "a", "t", {"ssn": SSN, "since": DOB}, [("SSN", SSN)]),
+                      ("3", "response", "a", "t", {"subject": SSN}, None)], T0 + dt.timedelta(minutes=5))
+    t = fold.TraceInput(t.trace_id, t.legs, t.entities, t.payloads, t.findings, priors=tuple(first))
+    d = fold.derive(t, find.exact, {"tool:lab/t": "persistent"}, crossing=ON)
+    at_3 = {(o.unit.origin.trace_id, o.unit.entity_type) for o in d.occurrences[("3", "request")]}
+    assert at_3 == {("T1", "SSN"), ("T1", "DOB"), ("T2", "SSN")}
+    on = sorted((row[2], row[3], row[5]) for row in _carried(d) if row[1] == ("3", "response"))
+    assert on == [("SSN", "T1", (cross.CORROBORATED, False)), ("SSN", "T2", None)]
+    held = {(h.value, h.occurrence.unit.origin.trace_id, h.evidence, h.level) for h in d.holdings
+            if h.occurrence.at.leg == ("3", "request")}
+    assert held == {(SSN, "T2", "classified", None), (SSN, "T1", "crossed", cross.CORROBORATED),
+                    (DOB, "T1", "crossed", cross.CORROBORATED)}
+
+
+def test_without_the_switch_a_carried_candidate_claims_as_before():
+    t = _trace("T1", [("0", "request", "u", "a", {"ssn": SSN}, [("SSN", SSN)]),
+                      ("1", "request", "a", "t", {"ssn": SSN}, [("SSN", SSN)])], T0, USER)
+    for crossing in (None, ON):
+        d = fold.derive(t, find.exact, crossing=crossing)
+        assert {o.unit.origin.interaction_id for o in d.occurrences[("1", "request")]} == {"0"}

@@ -62,18 +62,6 @@ expect:
     '27':
       s1:
       - crossed vo
-  pending:
-    reason: the crossing and the edges that rest on it are drawn; the level on its way carries crossed and its level to every
-      later leg and into the policy input, which passes on no label from another conversation before it, so the cross run
-      blocks at the flagged leg. The off and conv runs already match
-    verdict:
-    - cross
-    evidence:
-    - 23
-    - 24
-    - 25
-    - 26
-    - 27
 classifier:
   must_see:
     '7':
@@ -110,5 +98,5 @@ classifier:
     '27':
     - s1
   authored: true
-notes: 'K2 with conversation 2 starting 876 s after conversation 1: V2 answers at 09:14:58.1, 17.9 s before the occurrence
+notes: 'K2 with conversation 2 starting 876 s after conversation 1: V2 answers at 09:15:14.1, 1.9 s before the occurrence
   of leg 11 expires (09:15:16, R1, R9). The crossing stands, value-only, and blocks.'

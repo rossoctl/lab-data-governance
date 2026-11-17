@@ -920,9 +920,22 @@ the **Holding** where it received the value to the leg that sends it, carrying
 that holding's origin unit, at a level (`value_only` for an anchoring
 identifier alone, `corroborated` for an identifier with another value of the same
 record). A `payload_label_edges` row; its level is a `label_crossings` row.
-Behind `LABEL_CROSS_CONVERSATION`, which acts only while `RISK_INHERITED_LABELS`
-is on. A value held from more than M other conversations is a *common value*:
+Behind `LABEL_CROSS_CONVERSATION` alone in label lineage; the risk engine hands a
+crossed label to the policy only while `RISK_INHERITED_LABELS` is on too. A value held from more than M other conversations is a *common value*:
 no crossing, only its count.
+
+**Crossed label**:
+A label that reached a leg resting on a **Crossing**, there or on its way: the
+crossing edge itself and every edge that carries it on, in its conversation and
+after a further crossing. It keeps *crossed* and a level: the weakest step along
+its path, the strongest of its crossed origins on one span, *ambiguous* when those
+are more than one origin unit (R3). An origin known inside the conversation is
+*certain* and wins over a crossed path of the same origin. A
+`label_crossed_edges` row per edge; the policy reads it as the flow's last data
+item and its `crossed` field, the classifier's verdict and the in-conversation
+labels coming first.
+_Avoid_: reading the level of a crossing edge (`label_crossings`, the rule
+table's word at that crossing) as the label's level at the leg.
 
 **Holding** (label lineage):
 One labelled value a **persistent** entity received at one leg: the record that
