@@ -219,9 +219,9 @@ and two labels never fold into one. `lineage_status` is null when the trace is n
 has not run), never `complete`. The trace page's Classification tab shows this as facts about the
 payload; it never says a label was used, because the API pod does not read `RISK_INHERITED_LABELS`.
 The risk layer says "used in this decision" only from the record's
-`classification_summary.<leg>.inherited`, which leg-ready writes only for edges it forwarded; the risk
-panel does not show a crossed label (`classification_summary.<leg>.crossed`) as the cause of a decision
-yet. Which
+`classification_summary.<leg>.inherited`, which leg-ready writes only for edges it forwarded; a label
+resting on a crossing is in `classification_summary.<leg>.crossed` instead, and the risk panel shows it
+in a row of its own (**Crossed in**) with its level and whether it is ambiguous. Which
 rule a label fired is not stored, and no page claims it.
 
 **The lineage of each value.** Every carried-in origin on a label carries `chains`: the routes
