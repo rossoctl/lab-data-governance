@@ -22,7 +22,7 @@ import { useLabelTrack } from '../components/flow/labelTrack';
 import { namedByRules, trackedValueOf } from '../lib/labelTrack';
 import type { HopLinks } from '../lib/hopLinks';
 import { useLegLabels } from '../api/hooks';
-import { regulatoryTagsOf, classificationLevelsOf, carriedOfSummary } from '../lib/classificationSummary';
+import { regulatoryTagsOf, classificationLevelsOf, carriedOfSummary, crossedOfSummary } from '../lib/classificationSummary';
 import type { Entity } from '../lib/flow';
 import type { LegLabels, LineageHop } from '../types';
 import type { ForestInteraction, RuleListItem } from '../risk-api/types';
@@ -117,6 +117,23 @@ export function PolicyDecisionPanel({
   ]);
   const allowedActions = [...new Set(rules.flatMap((r) => r.allowed_actions))];
   const carried = carriedOfSummary(risk.classification_summary);
+  const crossed = crossedOfSummary(risk.classification_summary);
+  // Opens the values on this payload with their lineage, below the list. A
+  // toggle, not a row of its own: it is a view of the labels of the row it sits
+  // in, value by value. Each label-lineage row has it; both open the same list.
+  const valuesToggle = (
+    <div>
+      <Button
+        variant="link"
+        isInline
+        onClick={() => setValuesOpen((v) => !v)}
+        aria-expanded={valuesOpen}
+        data-testid="toggle-values"
+      >
+        {valuesOpen ? 'Hide the values' : 'Show the values and where each came from'}
+      </Button>
+    </div>
+  );
 
   return (
     <Card data-testid="policy-decision-panel">
@@ -188,20 +205,25 @@ export function PolicyDecisionPanel({
               <DescriptionListDescription>
                 {carried.level != null && <><SensitivityBadge level={carried.level} />{' '}</>}
                 {carried.tags.length > 0 && `${carried.tags.join(', ')} `}— used in this decision
-                {/* Opens the values on this payload with their lineage, below
-                    the list. A toggle, not a row of its own: it is a view of
-                    this row's labels, value by value. */}
-                <div>
-                  <Button
-                    variant="link"
-                    isInline
-                    onClick={() => setValuesOpen((v) => !v)}
-                    aria-expanded={valuesOpen}
-                    data-testid="toggle-values"
-                  >
-                    {valuesOpen ? 'Hide the values' : 'Show the values and where each came from'}
-                  </Button>
-                </div>
+                {valuesToggle}
+              </DescriptionListDescription>
+            </DescriptionListGroup>
+          )}
+          {/* Labels that rest on a crossing: the value came back through an entity
+              that remembers, most often from an earlier conversation (the row does
+              not say "another conversation": a persistent entity's later call in
+              the same one crosses too). The record's `crossed` block,
+              written only for labels forwarded into the OPA input, apart from
+              `inherited`. The row says how surely the value is the label's. */}
+          {crossed && (
+            <DescriptionListGroup>
+              <DescriptionListTerm>Crossed in</DescriptionListTerm>
+              <DescriptionListDescription>
+                {crossed.level != null && <><SensitivityBadge level={crossed.level} />{' '}</>}
+                {crossed.tags.length > 0 && `${crossed.tags.join(', ')} `}— crossed
+                {crossed.levels.length > 0 && `, ${crossed.levels.map((l) => l.replace('_', '-')).join(' and ')}`}
+                {crossed.ambiguous && ', ambiguous'} — used in this decision
+                {valuesToggle}
               </DescriptionListDescription>
             </DescriptionListGroup>
           )}
@@ -210,7 +232,7 @@ export function PolicyDecisionPanel({
             <DescriptionListDescription>{joinOrNone(allowedActions)}</DescriptionListDescription>
           </DescriptionListGroup>
         </DescriptionList>
-        {carried && valuesOpen && (
+        {(carried || crossed) && valuesOpen && (
           <ValuesOnPayload
             traceId={violation.trace_id}
             interactionId={violation.interaction_id}

@@ -310,6 +310,47 @@ describe('PolicyDecisionPanel', () => {
       // The row's text, before its toggle to the values panel.
       expect(row('Carried in')).toHaveTextContent(/^Carried inRESTRICTED — used in this decisionShow the values/);
     });
+
+    // Label lineage across conversations: the record's `crossed` block, apart from `inherited`.
+    describe('Crossed in row', () => {
+      const CROSSED = { levels: ['value_only'], ambiguous: false, count: 2, regulatory_tags: ['PII'], max_level: 'RESTRICTED' };
+
+      it('names the crossed label as used in the decision, with its level, when nothing else was carried in', () => {
+        renderPanel(
+          mkViolation({}, { classification_summary: { request: { sensitivity_level: 'INTERNAL', regulatory_tags: ['PI'], crossed: CROSSED } } }),
+          new Map([['DG-001', mkRule()]]),
+          ENTITIES,
+        );
+
+        expect(screen.queryByText('Carried in')).not.toBeInTheDocument();
+        // The toggle to the values sits in this row when it is the only label-lineage row.
+        expect(row('Crossed in')).toHaveTextContent(/^Crossed inRESTRICTED PII — crossed, value-only — used in this decisionShow the values/);
+        expect(row('Regulatory tags')).toHaveTextContent(/^Regulatory tagsPI$/);
+      });
+
+      it('says ambiguous and both levels, and has the toggle in both rows when both show', () => {
+        const both = { ...CROSSED, levels: ['corroborated', 'value_only'], ambiguous: true };
+        renderPanel(
+          mkViolation({}, { classification_summary: { request: { sensitivity_level: 'INTERNAL', regulatory_tags: ['PI'], inherited: INHERITED, crossed: both } } }),
+          new Map([['DG-001', mkRule()]]),
+          ENTITIES,
+        );
+
+        expect(row('Crossed in')).toHaveTextContent(/^Crossed inRESTRICTED PII — crossed, corroborated and value-only, ambiguous — used in this decisionShow the values/);
+        expect(within(row('Carried in')).getByTestId('toggle-values')).toBeInTheDocument();
+        expect(within(row('Crossed in')).getByTestId('toggle-values')).toBeInTheDocument();
+      });
+
+      it('has no Crossed in row without the block', () => {
+        renderPanel(
+          mkViolation({}, { classification_summary: PARTNER }),
+          new Map([['DG-001', mkRule()]]),
+          ENTITIES,
+        );
+
+        expect(screen.queryByText('Crossed in')).not.toBeInTheDocument();
+      });
+    });
   });
 });
 
@@ -362,6 +403,23 @@ describe('PolicyDecisionPanel — values on this payload', () => {
     ['DG-001', mkRule({ rule_id: 'DG-001', data_items: [{ regulatory_tags: ['PII'] }] })],
     ['DG-004', mkRule({ rule_id: 'DG-004', rule_name: 'restricted_external_sharing', data_items: [{ classification_level: 'RESTRICTED' }] })],
   ]);
+
+  it('opens from the Crossed in row when the record carries only crossed labels', async () => {
+    const crossedOnly = { request: { sensitivity_level: 'INTERNAL', regulatory_tags: ['PI'], crossed: { levels: ['value_only'], ambiguous: false, count: 1, regulatory_tags: ['PII'], max_level: 'RESTRICTED' } } };
+    renderWithProviders(
+      <PolicyDecisionPanel
+        violation={mkViolation({}, { triggered_rule_ids: ['DG-001'], classification_summary: crossedOnly })}
+        ruleIndex={RULES}
+        entities={ENTITIES}
+      />,
+      { route: '/traces/t1/graph?risk=1&violation=2' },
+    );
+    expect(screen.queryByTestId('values-on-payload')).toBeNull();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Show the values and where each came from' }));
+    expect(await screen.findByTestId('values-on-payload')).toBeInTheDocument();
+    expect(labelsCalls()).toHaveLength(1);
+  });
 
   it('opens from the Carried in row, reads the labels only then, and shows the rules\' criteria above the values', async () => {
     renderWithProviders(

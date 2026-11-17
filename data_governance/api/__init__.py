@@ -497,8 +497,11 @@ async def _interaction_labels_handler(request: Request) -> Response:
     Thin adapter over :func:`retrieval.get_leg_labels` — per payload-bearing leg,
     the labels the classifier found on the payload beside those label lineage
     carried into it, with each carried label's origin and, on the origin, the
-    ``chains`` the value travelled from there to this leg (every route, hops in
-    seq order, each hop with its trace id; see the retrieval module). Same
+    ``chains`` the value travelled from there to this leg (one shortest route per
+    edge into the leg, hops in seq order, each hop with its trace id) and the
+    ``route_count`` of all routes, at most 2**53 - 1 (see the retrieval module);
+    a hop that rests on a crossing adds ``crossed`` and ``crossing``, left out
+    otherwise (``retrieval.labels.wire_dict``). Same
     empty-on-unknown convention as :func:`_interaction_spans_handler`;
     ``lineage_status`` is ``null`` when the trace's label lineage is not derived
     (never defaulted).
@@ -517,7 +520,7 @@ async def _interaction_labels_handler(request: Request) -> Response:
         return JSONResponse({"error": str(exc)}, status_code=500)
     return _json_ok(
         {
-            "legs": [dataclasses.asdict(leg) for leg in result.legs],
+            "legs": [dataclasses.asdict(leg, dict_factory=retrieval.labels.wire_dict) for leg in result.legs],
             "lineage_status": result.lineage_status,
         }
     )

@@ -30,6 +30,8 @@ export interface ClassifiedLegSummary {
   regulatory_tags?: unknown;
   /** Label lineage's block (see `carriedOf`); on any of the three shapes. */
   inherited?: unknown;
+  /** Label lineage's block for labels resting on a crossing (see `crossedOf`); on any of the three shapes. */
+  crossed?: unknown;
 }
 
 /**
@@ -155,6 +157,59 @@ export function carriedOfSummary(summary: Record<string, unknown> | null): Carri
     level = higherLevel(level, carried.level);
   }
   return any ? { tags: [...tags], level } : null;
+}
+
+/**
+ * The labels a leg's payload carries that rest on a CROSSING between
+ * conversations, and how surely they are its values': `levels` holds the
+ * crossing levels present (`value_only`, `corroborated`), `ambiguous` whether
+ * any came from several origins.
+ */
+export interface CrossedLabels extends CarriedLabels {
+  levels: readonly string[];
+  ambiguous: boolean;
+}
+
+/**
+ * One leg's `crossed` block — `{levels, ambiguous, count, regulatory_tags,
+ * max_level}`, written by `risk/engine/utils.py`'s `classification_summary()`
+ * only when crossed labels were forwarded into the decision's OPA input
+ * (`labels.crossed_summary`). Apart from `inherited`: an edge is in one block
+ * or the other, never both. `count` counts edges and is not read.
+ *
+ * `null` when the block is absent or malformed, or names neither a tag nor a
+ * level — never a claim the record does not make.
+ */
+export function crossedOf(leg: ClassifiedLegSummary): CrossedLabels | null {
+  const block = leg.crossed;
+  if (block == null || typeof block !== 'object') return null;
+  const { regulatory_tags: tags, max_level: level, levels, ambiguous } = block as Record<string, unknown>;
+  const crossed: CrossedLabels = {
+    tags: Array.isArray(tags) ? [...new Set(tags.filter((t): t is string => typeof t === 'string'))] : [],
+    level: typeof level === 'string' ? level : null,
+    levels: Array.isArray(levels) ? [...new Set(levels.filter((l): l is string => typeof l === 'string'))] : [],
+    ambiguous: ambiguous === true,
+  };
+  return crossed.tags.length > 0 || crossed.level != null ? crossed : null;
+}
+
+/** `crossedOf` across both legs: tags and crossing levels unioned first-seen, the highest level, ambiguous if any is. */
+export function crossedOfSummary(summary: Record<string, unknown> | null): CrossedLabels | null {
+  const tags = new Set<string>();
+  const levels = new Set<string>();
+  let level: string | null = null;
+  let ambiguous = false;
+  let any = false;
+  for (const leg of classifiedLegs(summary)) {
+    const crossed = crossedOf(leg);
+    if (crossed == null) continue;
+    any = true;
+    for (const tag of crossed.tags) tags.add(tag);
+    for (const l of crossed.levels) levels.add(l);
+    level = higherLevel(level, crossed.level);
+    ambiguous = ambiguous || crossed.ambiguous;
+  }
+  return any ? { tags: [...tags], level, levels: [...levels], ambiguous } : null;
 }
 
 /**

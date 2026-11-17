@@ -1373,6 +1373,11 @@ body {
   font-style: italic;
 }
 
+/* How a value that crossed between conversations is known at a hop: a qualifier, muted like the gap. */
+.dg-label-lineage__crossed {
+  color: var(--dg-color-muted);
+}
+
 .dg-label-lineage__excerpt {
   margin: 0.125rem 0 0.125rem 2.75rem;
   padding: 0.25rem 0.5rem;

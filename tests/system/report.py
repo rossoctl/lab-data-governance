@@ -89,6 +89,14 @@ def judge(case: Case, runs: dict[str, Observation]) -> Outcome:
     reasons += [f"marks at {leg}: want {_kinds(case.marks.get(leg, ()))}, got {_kinds(cross.marks.get(leg, ()))}"
                 for leg in sorted(wrong_marks)]
 
+    wrong_read = set()
+    for leg, cells in sorted(case.read.items()):
+        for unit, chains in sorted(cells.items()):
+            got = cross.read.get(leg, {}).get(unit, frozenset())
+            if got != chains:
+                wrong_read.add(leg)
+                reasons.append(f"read at {leg} {unit}: want {_kinds(chains)}, got {_kinds(got)}")
+
     hard = [f"{mode}: {p}" for mode in MODES for p in runs[mode].problems]
     for mode, want, what in (("conv", case.edges, "expect.edges (with the cross switch off only the "
                                                   "conversation's own)"),
@@ -102,7 +110,7 @@ def judge(case: Case, runs: dict[str, Observation]) -> Outcome:
 
     p = case.pending
     diff = (frozenset(missing), frozenset(extra), frozenset(wrong_verdict), frozenset(wrong_evidence),
-            frozenset(wrong_marks))
+            frozenset(wrong_marks), frozenset(wrong_read))
     if hard:
         status, reasons = "RED", hard + reasons
     elif p is None:
@@ -116,7 +124,7 @@ def judge(case: Case, runs: dict[str, Observation]) -> Outcome:
     elif not any(diff):
         status = "RED"
         reasons.insert(0, f"passes while marked pending ({p.reason}): drop the pending block")
-    elif diff == (p.missing, p.extra, p.verdict, p.evidence, p.marks):
+    elif diff == (p.missing, p.extra, p.verdict, p.evidence, p.marks, frozenset()):   # a read is never pending
         status = "PENDING"
         reasons.insert(0, f"pending: {p.reason}")
     else:
@@ -173,6 +181,10 @@ def case_markdown(o: Outcome) -> str:
                 risk = f"{r.risk['risk_level']} {r.risk['enforcement_type']} {r.risk['rules']} v{r.risk['version']}"
             lines.append(f"| {leg.index} | {leg.label()}{'⚑' if leg.sink else ''} | {cls} | {inh} | {risk} |")
         lines.append("")
+        if cross.read:
+            read = "; ".join(f"leg {leg} {unit} {_kinds(c)}" for leg, cells in sorted(cross.read.items())
+                              for unit, c in sorted(cells.items()))
+            lines += [f"Read (cross run): {read}", ""]
         if cross.marks:
             marks = " · ".join(f"leg {leg} {_kinds(m)}" for leg, m in sorted(cross.marks.items()))
             lines += [f"Marks (cross run): {marks}", ""]

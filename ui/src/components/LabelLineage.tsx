@@ -3,14 +3,17 @@ import { Button, Label } from '@patternfly/react-core';
 import { Link } from 'react-router-dom';
 import type { LabelOrigin, LegLabel, LineageHop } from '../types';
 import { useHopHover } from './flow/hopHover';
-import { NO_HOP_LINKS, hopText, otherTraceHref, type HopLinks } from '../lib/hopLinks';
+import { LEVEL_WORD, NO_HOP_LINKS, crossedText, hopText, otherTraceHref, type HopLinks } from '../lib/hopLinks';
 
 /**
  * The lineage of one labelled value on a leg: for each origin label lineage
- * reached it from, every chain the value travelled — the payload where the
- * classifier found it (the excerpt, unit highlighted), each carrier, and this
- * leg — in seq order. The first chain of each origin is open; the rest fold
+ * reached it from, the chains the read lists (one shortest route per previous
+ * hop) — the payload where the classifier found it (the excerpt, unit
+ * highlighted), each carrier, and this leg — in seq order. The first chain of each origin is open; the rest fold
  * under a count. Rendered on both pages that show a leg's labels.
+ *
+ * A hop the read marks as resting on a crossing between conversations shows the
+ * crossing rule's level where the crossing lands, and how the value is known there.
  *
  * Facts only: a chain says where the value was, never that it caused a decision.
  * A value with no carried-in origin, or an origin whose read carried no chains
@@ -88,6 +91,22 @@ function Hop({ hop, traceId, links }: { hop: LineageHop; traceId: string; links:
           <Label isCompact color="gold" data-testid="trace-boundary">
             in trace {hop.trace_id.slice(0, 8)}…
           </Label>
+        </>
+      )}
+      {hop.crossing != null && (
+        <>
+          {' '}
+          <Label isCompact color="purple" data-testid="crossing">
+            crossing · {LEVEL_WORD[hop.crossing]}
+          </Label>
+        </>
+      )}
+      {hop.crossed != null && (
+        <>
+          {' '}
+          <span className="dg-label-lineage__crossed" data-testid="crossed">
+            {crossedText(hop.crossed)}
+          </span>
         </>
       )}
       {hop.role === 'origin' && hop.excerpt != null ? (

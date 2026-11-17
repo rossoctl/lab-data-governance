@@ -96,15 +96,15 @@ def test_downgrade_drops_the_tables_and_upgrade_restores_them(pg_dsn: str, monke
     cfg = _alembic_config()
     command.upgrade(cfg, "head")
     assert set(TABLES) <= _tables(pg_dsn)
-    command.downgrade(cfg, "0029_hash_evidence_fingerprints")
+    command.downgrade(cfg, "0030_label_edges_holding_index")
     assert not (set(TABLES) & _tables(pg_dsn)) and "payload_label_edges" in _tables(pg_dsn)
     command.upgrade(cfg, "head")
     assert set(TABLES) <= _tables(pg_dsn)
 
 
-def test_0031_follows_0029_in_the_chain() -> None:
+def test_0031_follows_0030_in_the_chain() -> None:
     from alembic.config import Config
     from alembic.script import ScriptDirectory
 
     script = ScriptDirectory.from_config(Config("alembic.ini"))
-    assert script.get_revision("0031_label_crossings").down_revision == "0029_hash_evidence_fingerprints"
+    assert script.get_revision("0031_label_crossings").down_revision == "0030_label_edges_holding_index"

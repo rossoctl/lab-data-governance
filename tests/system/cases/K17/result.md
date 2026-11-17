@@ -111,7 +111,9 @@ verdict at 43: expected off=allow / conv=allow / cross=block, observed off=allow
 | 47 | L>A | PUBLIC  | — | — |
 | 48 | A>U | PUBLIC  | — | — |
 
+Read (cross run): leg 43 s1 [from 7 · 11>22 co · 27>38 vo · crossed vo]
+
 Risk observer calls: 59
 
-**Notes.** Conversation 1 to 2 by a corroborated crossing at V2 (as K1): V3 receives the three at leg 27 as crossed, corroborated, and holds them (what is registered includes a crossing's label). Conversation 3 gets the SSN alone back from V3: value-only. Along the path the weakest level holds: the label reaches conversation 3 as crossed, value-only.
+**Notes.** Conversation 1 to 2 by a corroborated crossing at V2 (as K1): V3 receives the three at leg 27 as crossed, corroborated, and holds them (what is registered includes a crossing's label). Conversation 3 gets the SSN alone back from V3: value-only. Along the path the weakest level holds: the label reaches conversation 3 as crossed, value-only. The labels read at the flagged leg walks back through both crossings to the origin in conversation 1, each with its rule level.
 

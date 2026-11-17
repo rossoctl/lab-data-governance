@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { render, screen, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { ClassificationView } from './ClassificationView';
-import type { Classification, LabelOrigin, LegLabels } from '../types';
+import type { Classification, LabelOrigin, LegLabel, LegLabels } from '../types';
 
 /** A fully-populated verdict fixture; individual tests override slices of it. */
 function verdict(over: Partial<Classification> = {}): Classification {
@@ -272,7 +272,7 @@ describe('ClassificationView — found here and carried in', () => {
     expect(screen.queryByText(/not derived/)).toBeNull();
   });
 
-  it('links an origin in this trace to its interaction, and leaves one in another trace unlinked', () => {
+  it('links an origin in this trace to its interaction, and one in another trace to that trace, marked', () => {
     const [pid, ...rest] = REFERENCE_LEG.labels;
     const elsewhere = { ...pid, carried_in: [{ ...pid.carried_in[0], origin_trace_id: 'an-earlier-trace' }] };
     render(
@@ -284,9 +284,104 @@ describe('ClassificationView — found here and carried in', () => {
       </MemoryRouter>,
     );
     const [first, second] = within(screen.getByLabelText('Labels')).getAllByRole('row').slice(1);
-    expect(within(first).queryByRole('link')).toBeNull();
-    expect(first).toHaveTextContent('booking-agent → create-booking, response #90574');
+    expect(within(first).getByRole('link', { name: 'booking-agent → create-booking, response #90574' }))
+      .toHaveAttribute('href', '/traces/an-earlier-trace/flow?iid=efc92832');
+    expect(within(first).getByTestId('trace-boundary')).toHaveTextContent('in trace an-earli…');
     expect(within(second).getByRole('link')).toHaveAttribute('href', expect.stringContaining('iid=c0f9059b'));
+    expect(within(second).queryByTestId('trace-boundary')).toBeNull();
+    // An origin in another trace alone does not say crossed: only a chain does.
+    expect(screen.queryByText(/Crossed in/)).toBeNull();
+  });
+
+  // A value that came back through an entity that remembers: its chain's last hop says crossed.
+  describe('crossed in', () => {
+    const hop = (role: 'origin' | 'hop' | 'here', trace: string, crossed?: { level: 'value_only' | 'corroborated'; ambiguous: boolean }) => ({
+      interaction_id: 'x', leg_type: 'request' as const, seq: 1, trace_id: trace, caller: null, callee: null,
+      text: null, start: null, end: null, role, excerpt: null, ...(crossed ? { crossed } : {}),
+    });
+    const crossedOrigin = (level: 'value_only' | 'corroborated', ambiguous = false): LabelOrigin => ({
+      ...origin('aa11', 'response', 500, 'assistant', 'lookup-patient', '5902317'),
+      origin_trace_id: 'earlier0000',
+      chains: [[hop('origin', 'earlier0000'), hop('here', 'this', { level, ambiguous })]],
+    });
+    const MRN: LegLabel = {
+      text: '5902317', start: 80, end: 87, entity_type: 'MRN', sensitivity_level: 'RESTRICTED',
+      regulatory_tags: ['PHI', 'PII'], found_here: false, carried_in: [crossedOrigin('value_only')],
+    };
+    const DRUG: LegLabel = {
+      text: 'Lisinopril', start: 22, end: 32, entity_type: 'DRUG', sensitivity_level: 'INTERNAL',
+      regulatory_tags: ['PI'], found_here: true,
+      carried_in: [{ ...origin('bb22', 'response', 900, 'export', 'records', 'Lisinopril'),
+        chains: [[hop('origin', 'this'), hop('here', 'this')]] }],
+    };
+    const LEG: LegLabels = {
+      ...REFERENCE_LEG, carried: { max_level: 'RESTRICTED', regulatory_tags: ['PHI', 'PI', 'PII'], origin_count: 2 },
+      labels: [DRUG, MRN],
+    };
+    const show = (leg: LegLabels) => render(
+      <MemoryRouter initialEntries={['/traces/this/flow']}>
+        <ClassificationView classification={REFERENCE_VERDICT} labels={{ leg, lineageStatus: 'complete' }} />
+      </MemoryRouter>,
+    );
+
+    it('splits the summary: what the conversation carried, and what crossed with its level', () => {
+      show(LEG);
+      const carried = screen.getByText('Carried in (data lineage)').parentElement!;
+      expect(carried).toHaveTextContent('Carried in (data lineage)INTERNALPIfrom 1 earlier step');
+      const crossed = screen.getByText('Crossed in (data lineage)').parentElement!;
+      expect(crossed).toHaveTextContent('Crossed in (data lineage)RESTRICTEDPHI, PIIcrossed, value-only, from 1 earlier step');
+      expect(screen.getByText(/this same text had this label earlier in the conversation/)).toBeInTheDocument();
+      expect(screen.getByText(/an entity that remembers received this text with this label earlier/)).toBeInTheDocument();
+    });
+
+    it('marks the row Crossed in, links its origin to the other conversation and says the level', () => {
+      show(LEG);
+      const [drug, mrn] = within(screen.getByLabelText('Labels')).getAllByRole('row').slice(1);
+      expect(within(drug).getByText('Carried in')).toBeInTheDocument();
+      expect(within(drug).queryByText('Crossed in')).toBeNull();
+      expect(within(mrn).getByText('Crossed in')).toBeInTheDocument();
+      expect(within(mrn).queryByText('Carried in')).toBeNull();
+      expect(within(mrn).getByRole('link')).toHaveAttribute('href', '/traces/earlier0000/flow?iid=aa11');
+      expect(mrn).toHaveTextContent('in trace earlier0…');
+      expect(mrn).toHaveTextContent('crossed, value-only');
+    });
+
+    it('says both levels and ambiguous, and drops the Carried in line when everything crossed', () => {
+      const both = { ...MRN, carried_in: [crossedOrigin('value_only'), { ...crossedOrigin('corroborated', true), origin_interaction_id: 'cc33' }] };
+      show({ ...LEG, labels: [both] });
+      expect(screen.queryByText('Carried in (data lineage)')).toBeNull();
+      expect(screen.queryByText(/earlier in the conversation/)).toBeNull();
+      expect(screen.getByTestId('crossed-summary')).toHaveTextContent('crossed, corroborated and value-only, ambiguous, from 2 earlier steps');
+    });
+
+    it('counts an origin leg once when two labels came from it', () => {
+      const dob = { ...MRN, text: '1971-11-05', entity_type: 'DOB' };
+      show({ ...LEG, labels: [MRN, dob] });
+      expect(screen.getByTestId('crossed-summary')).toHaveTextContent('crossed, value-only, from 1 earlier step');
+    });
+
+    it('reads the last hop of a chain: a crossing further back, then carried inside the conversation, is Carried in', () => {
+      const relayed: LabelOrigin = {
+        ...crossedOrigin('value_only'),
+        chains: [[hop('origin', 'earlier0000'), hop('hop', 'this', { level: 'value_only', ambiguous: false }), hop('here', 'this')]],
+      };
+      show({ ...LEG, labels: [{ ...MRN, carried_in: [relayed] }] });
+      expect(screen.queryByText('Crossed in (data lineage)')).toBeNull();
+      const [row] = within(screen.getByLabelText('Labels')).getAllByRole('row').slice(1);
+      expect(within(row).getByText('Carried in')).toBeInTheDocument();
+      expect(within(row).queryByText('Crossed in')).toBeNull();
+      expect(row).not.toHaveTextContent('crossed, value-only');
+    });
+
+    it('counts a label with origins of both kinds on both lines', () => {
+      const mixed = { ...MRN, carried_in: [crossedOrigin('value_only'), DRUG.carried_in[0]] };
+      show({ ...LEG, labels: [mixed] });
+      expect(screen.getByText('Carried in (data lineage)').parentElement!).toHaveTextContent('RESTRICTEDPHI, PIIfrom 1 earlier step');
+      expect(screen.getByText('Crossed in (data lineage)').parentElement!).toHaveTextContent('RESTRICTEDPHI, PIIcrossed, value-only, from 1 earlier step');
+      const [row] = within(screen.getByLabelText('Labels')).getAllByRole('row').slice(1);
+      expect(within(row).getByText('Carried in')).toBeInTheDocument();
+      expect(within(row).getByText('Crossed in')).toBeInTheDocument();
+    });
   });
 
   it('lists what was carried into a payload the classifier has not read yet', () => {

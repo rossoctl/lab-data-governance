@@ -8,6 +8,8 @@ import {
   EDGE_TAG_MAX_TAGS,
   carriedOf,
   carriedOfSummary,
+  crossedOf,
+  crossedOfSummary,
 } from './classificationSummary';
 
 // These three functions moved here from `risk-components/PolicyDecisionPanel.tsx`
@@ -181,5 +183,40 @@ describe('carriedOf / carriedOfSummary', () => {
     // A level off the ladder never hides a known one, but shows when alone.
     expect(at('SECRET-ISH', 'PUBLIC')).toBe('PUBLIC');
     expect(carriedOfSummary({ request: { inherited: { max_level: 'SECRET-ISH' } } })?.level).toBe('SECRET-ISH');
+  });
+});
+
+// Label lineage's `crossed` block (`risk/engine/labels.py`'s `crossed_summary`):
+// labels resting on a crossing between conversations, apart from `inherited`.
+describe('crossedOf / crossedOfSummary', () => {
+  const CROSSED = { levels: ['value_only'], ambiguous: false, count: 2, regulatory_tags: ['PII'], max_level: 'RESTRICTED' };
+
+  it('reads tags, level, crossing levels and ambiguous; the edge count is not read', () => {
+    expect(crossedOf({ crossed: CROSSED })).toEqual({ tags: ['PII'], level: 'RESTRICTED', levels: ['value_only'], ambiguous: false });
+  });
+
+  it('is null without the block, for a malformed one, and for one naming neither a tag nor a level', () => {
+    expect(crossedOf({ inherited: CROSSED })).toBeNull();
+    expect(crossedOf({ crossed: 'PII' })).toBeNull();
+    expect(crossedOf({ crossed: null })).toBeNull();
+    expect(crossedOf({ crossed: { levels: ['value_only'], ambiguous: true, count: 1, regulatory_tags: [] } })).toBeNull();
+  });
+
+  it('drops non-string entries and reads ambiguous only from a true', () => {
+    expect(crossedOf({ crossed: { regulatory_tags: ['PII', 7], levels: ['corroborated', null], ambiguous: 'yes' } })).toEqual({
+      tags: ['PII'], level: null, levels: ['corroborated'], ambiguous: false,
+    });
+  });
+
+  it('unions both legs: tags and crossing levels, the highest level, ambiguous if any leg is', () => {
+    const summary = {
+      request: { crossed: { levels: ['value_only'], ambiguous: false, regulatory_tags: ['PII'], max_level: 'CONFIDENTIAL' } },
+      response: { payload: null, crossed: { levels: ['corroborated'], ambiguous: true, regulatory_tags: ['PCI'], max_level: 'RESTRICTED' } },
+    };
+    expect(crossedOfSummary(summary)).toEqual({
+      tags: ['PII', 'PCI'], level: 'RESTRICTED', levels: ['value_only', 'corroborated'], ambiguous: true,
+    });
+    expect(crossedOfSummary({ request: { inherited: { regulatory_tags: ['PII'] } } })).toBeNull();
+    expect(crossedOfSummary(null)).toBeNull();
   });
 });

@@ -40,6 +40,8 @@ verdict at 13: expected off=allow / conv=allow / cross=block, observed off=allow
 | 15 | T4>A | PUBLIC  | — | — |
 | 16 | A>U | PUBLIC  | — | — |
 
+Read (cross run): leg 13 s1 [from 4 · 5>10 vo · crossed vo]
+
 Risk observer calls: 21
 
 **Notes.** One conversation. T2 gets the SSN from V1 and sends it to V2, which echoes it inside the same call (5>6, the conversation's own edge). In a later call, from T3, V2 returns it again. V2 is persistent: the same mechanism links the two calls (R7), one edge, value-only; inside one call the existing edge stands alone, never a second row (5>6 is not drawn again as a crossing).

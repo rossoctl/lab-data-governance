@@ -4,6 +4,8 @@ import { ExclamationTriangleIcon } from '@patternfly/react-icons';
 import { Link, useInRouterContext, useSearchParams } from 'react-router-dom';
 import type { Classification, Finding, LabelOrigin, LegLabel, LegLabels, LineageStatus } from '../types';
 import { SensitivityBadge } from './SensitivityBadge';
+import { LEVEL_WORD, crossedOfOrigin, crossedText, otherTraceOriginHref } from '../lib/hopLinks';
+import { SENSITIVITY_LEVELS } from '../lib/classificationSummary';
 
 /**
  * What the labels read said about this leg — passed only once that read
@@ -23,7 +25,9 @@ export interface LegLabelsState {
  * With `labels` (the per-interaction labels read) and something carried in, the
  * verdict splits in two: **Found here** — the classifier's reading of this
  * payload — and **Carried in** — label lineage: the same text carried the label
- * earlier in the conversation. Both are facts about the payload; nothing here
+ * earlier in the conversation. A label whose route rests on a crossing (an entity
+ * that remembers sent the value again) is a third line, **Crossed in**, with how
+ * surely the value is the label's. All are facts about the payload; nothing here
  * says whether a risk decision used them. While that read is loading or failed,
  * or nothing was carried in, the view is the classifier's alone, unchanged.
  */
@@ -127,25 +131,98 @@ function SummaryLine({ caption, children }: { caption: string; children: React.R
   );
 }
 
+/** One side of the leg's carried-in labels: tags first-seen, the highest level, the origin legs counted once. */
+interface SourceSummary {
+  max_level: string | null;
+  regulatory_tags: string[];
+  origin_count: number;
+}
+
+/**
+ * The leg's carried-in labels split by how they got here: inside the
+ * conversation (`carried`) or resting on a crossing (`crossed`, with the levels
+ * present and whether any is ambiguous). A label with origins of both kinds
+ * counts on both sides. `crossed` is `null` when no origin's chain says crossed;
+ * the caller then shows the server's own summary, as before.
+ */
+function splitSources(labels: LegLabel[]): {
+  carried: SourceSummary | null;
+  crossed: (SourceSummary & { levels: string[]; ambiguous: boolean }) | null;
+} {
+  const side = () => ({ tags: new Set<string>(), level: null as string | null, origins: new Set<string>() });
+  const add = (s: ReturnType<typeof side>, l: LegLabel, o: LabelOrigin) => {
+    for (const t of l.regulatory_tags) s.tags.add(t);
+    const rank = (x: string) => SENSITIVITY_LEVELS.indexOf(x);
+    if (l.sensitivity_level != null && (s.level == null || rank(l.sensitivity_level) > rank(s.level))) {
+      s.level = l.sensitivity_level;
+    }
+    s.origins.add(`${o.origin_trace_id ?? ''}/${o.origin_interaction_id}/${o.origin_leg_type}`);
+  };
+  const within = side();
+  const across = side();
+  const levels = new Set<string>();
+  let ambiguous = false;
+  for (const l of labels) {
+    for (const o of l.carried_in) {
+      const c = crossedOfOrigin(o);
+      if (c == null) add(within, l, o);
+      else {
+        add(across, l, o);
+        levels.add(LEVEL_WORD[c.level]);
+        ambiguous = ambiguous || c.ambiguous;
+      }
+    }
+  }
+  const summary = (s: ReturnType<typeof side>): SourceSummary => ({
+    max_level: s.level, regulatory_tags: [...s.tags].sort(), origin_count: s.origins.size,
+  });
+  return {
+    carried: within.origins.size > 0 ? summary(within) : null,
+    crossed: across.origins.size > 0 ? { ...summary(across), levels: [...levels].sort(), ambiguous } : null,
+  };
+}
+
 /**
  * The carried-in summary line, the sentence that defines it, and the **Labels**
- * table. "from N earlier steps" counts origin legs, never edges.
+ * table. "from N earlier steps" counts origin legs, never edges. When some label
+ * rests on a crossing, the summary is two lines, each with its own sentence.
  */
 function LabelSources({ leg }: { leg: LegLabels }) {
-  const carried = leg.carried!;
-  const steps = carried.origin_count;
+  const split = splitSources(leg.labels);
+  // Nothing crossed: the server's own summary, as before.
+  const carried = split.crossed == null ? leg.carried! : split.carried;
+  const muted = { color: 'var(--dg-color-muted)', fontSize: '0.85rem' };
+  const stepsOf = (n: number) => `from ${n} earlier ${n === 1 ? 'step' : 'steps'}`;
   return (
     <>
-      <SummaryLine caption="Carried in (data lineage)">
-        {carried.max_level && <SensitivityBadge level={carried.max_level} />}
-        {carried.regulatory_tags.length > 0 && <span>{carried.regulatory_tags.join(', ')}</span>}
-        <span style={{ color: 'var(--dg-color-muted)', fontSize: '0.85rem' }}>
-          from {steps} earlier {steps === 1 ? 'step' : 'steps'}
-        </span>
-      </SummaryLine>
-      <div style={{ color: 'var(--dg-color-muted)', fontSize: '0.8rem', marginTop: '0.375rem' }}>
-        &ldquo;Carried in&rdquo; = this same text had this label earlier in the conversation.
-      </div>
+      {carried && (
+        <SummaryLine caption="Carried in (data lineage)">
+          {carried.max_level && <SensitivityBadge level={carried.max_level} />}
+          {carried.regulatory_tags.length > 0 && <span>{carried.regulatory_tags.join(', ')}</span>}
+          <span style={muted}>{stepsOf(carried.origin_count)}</span>
+        </SummaryLine>
+      )}
+      {split.crossed && (
+        <SummaryLine caption="Crossed in (data lineage)">
+          {split.crossed.max_level && <SensitivityBadge level={split.crossed.max_level} />}
+          {split.crossed.regulatory_tags.length > 0 && <span>{split.crossed.regulatory_tags.join(', ')}</span>}
+          <span style={muted} data-testid="crossed-summary">
+            crossed, {split.crossed.levels.join(' and ')}
+            {split.crossed.ambiguous ? ', ambiguous' : ''}, {stepsOf(split.crossed.origin_count)}
+          </span>
+        </SummaryLine>
+      )}
+      {carried && (
+        <div style={{ color: 'var(--dg-color-muted)', fontSize: '0.8rem', marginTop: '0.375rem' }}>
+          &ldquo;Carried in&rdquo; = this same text had this label earlier in the conversation.
+        </div>
+      )}
+      {split.crossed && (
+        <div style={{ color: 'var(--dg-color-muted)', fontSize: '0.8rem', marginTop: '0.375rem' }}>
+          &ldquo;Crossed in&rdquo; = an entity that remembers received this text with this label earlier, most often
+          in another conversation, and sent it again here.
+        </div>
+      )}
       <Title headingLevel="h5" size="md" style={{ marginTop: '0.5rem' }}>
         Labels
       </Title>
@@ -197,9 +274,14 @@ function LabelsTable({ labels }: { labels: LegLabel[] }) {
                     Found here
                   </Label>
                 )}
-                {l.carried_in.length > 0 && (
+                {l.carried_in.some((o) => crossedOfOrigin(o) == null) && (
                   <Label isCompact variant="outline" color="purple">
                     Carried in
+                  </Label>
+                )}
+                {l.carried_in.some((o) => crossedOfOrigin(o) != null) && (
+                  <Label isCompact color="purple">
+                    Crossed in
                   </Label>
                 )}
               </span>
@@ -208,6 +290,17 @@ function LabelsTable({ labels }: { labels: LegLabel[] }) {
               {l.carried_in.map((o, j) => (
                 <div key={`${o.origin_interaction_id}-${o.origin_leg_type}-${j}`}>
                   <OriginLink origin={o} />
+                  {o.origin_trace_id != null && (
+                    <>
+                      {' '}
+                      <Label isCompact color="gold" data-testid="trace-boundary">
+                        in trace {o.origin_trace_id.slice(0, 8)}…
+                      </Label>
+                    </>
+                  )}
+                  {crossedOfOrigin(o) != null && (
+                    <span style={{ color: 'var(--dg-color-muted)' }}> {crossedText(crossedOfOrigin(o)!)}</span>
+                  )}
                   {o.unit_text !== o.unit_value && (
                     <span style={{ color: 'var(--dg-color-muted)' }}>
                       {' '}
@@ -235,13 +328,14 @@ function originText(o: LabelOrigin): string {
 
 /**
  * An origin, linked to its interaction on the current view (`?iid=`, keeping
- * the other params). Plain text outside a router, so the view still renders
- * where there is nothing to navigate, and for an origin in another trace,
- * whose interaction this view does not hold.
+ * the other params); an origin in another trace links to that trace's flow
+ * view, as a chain's hop does. Plain text outside a router, so the view still
+ * renders where there is nothing to navigate.
  */
 function OriginLink({ origin }: { origin: LabelOrigin }) {
-  const linkable = useInRouterContext() && origin.origin_trace_id == null;
-  return linkable ? <RoutedOriginLink origin={origin} /> : <>{originText(origin)}</>;
+  if (!useInRouterContext()) return <>{originText(origin)}</>;
+  if (origin.origin_trace_id != null) return <Link to={otherTraceOriginHref(origin)}>{originText(origin)}</Link>;
+  return <RoutedOriginLink origin={origin} />;
 }
 
 function RoutedOriginLink({ origin }: { origin: LabelOrigin }) {

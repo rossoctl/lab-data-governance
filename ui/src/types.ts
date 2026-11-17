@@ -136,11 +136,29 @@ export interface LabelOrigin {
   /** The origin's trace when it is another one; `null` for this trace. */
   origin_trace_id: string | null;
   /**
-   * Every route the value took from this origin to the leg read, shortest
+   * One shortest route from this origin per edge into the leg read, shortest
    * first, each a list of hops in seq order (origin → carriers → here). Absent
    * from a server that predates the walk; the UI then shows the origin alone.
    */
   chains?: LineageHop[][];
+  /**
+   * How many routes there are in all; `chains` lists the shortest of them. Saturates at
+   * `Number.MAX_SAFE_INTEGER` (2^53 − 1): a count at the cap means at least that many. Absent from an older server.
+   */
+  route_count?: number | null;
+  /**
+   * Every leg on any route from this origin to the leg read, both ends included:
+   * what tracking lights (the chains are only the shortest routes). Absent from
+   * an older server; tracking then lights the chains' hops.
+   */
+  carriers?: CarrierLeg[];
+}
+
+/** One leg a carried-in value sat on, on some route from its origin to the leg read. */
+export interface CarrierLeg {
+  trace_id: string;
+  interaction_id: string;
+  leg_type: 'request' | 'response';
 }
 
 /**
@@ -164,7 +182,17 @@ export interface LineageHop {
   end: number | null;
   role: 'origin' | 'hop' | 'here';
   excerpt: { text: string; start: number; end: number } | null;
+  /**
+   * Set when the edge into this hop rests on a crossing between conversations: how
+   * the value is known here and whether it rests on more than one origin. Absent otherwise.
+   */
+  crossed?: { level: CrossedLevel; ambiguous: boolean };
+  /** Set on the hop a crossing reaches: the crossing rule's own level. Absent otherwise. */
+  crossing?: CrossedLevel;
 }
+
+/** How surely a value that crossed between conversations is the label's: one identifier alone, or with more of its record. */
+export type CrossedLevel = 'value_only' | 'corroborated';
 
 /**
  * One label on one span of a leg's payload: `found_here` when the classifier

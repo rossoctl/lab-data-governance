@@ -1,5 +1,5 @@
 import type { To } from 'react-router-dom';
-import type { LineageHop } from '../types';
+import type { CrossedLevel, LabelOrigin, LineageHop } from '../types';
 
 /**
  * Where a lineage hop links (`LabelLineage`). `sameTrace` is the page's own
@@ -16,6 +16,33 @@ export const NO_HOP_LINKS: HopLinks = { sameTrace: () => null };
 /** The other trace's flow view, selecting the hop's interaction. */
 export function otherTraceHref(hop: LineageHop): string {
   return `/traces/${hop.trace_id}/flow?iid=${encodeURIComponent(hop.interaction_id)}`;
+}
+
+/** An origin leg in another trace: that trace's flow view, selecting the origin's interaction. */
+export function otherTraceOriginHref(o: LabelOrigin): string {
+  return `/traces/${o.origin_trace_id}/flow?iid=${encodeURIComponent(o.origin_interaction_id)}`;
+}
+
+export const LEVEL_WORD: Record<CrossedLevel, string> = { value_only: 'value-only', corroborated: 'corroborated' };
+
+/** `crossed, value-only` / `crossed, corroborated, ambiguous`: how a crossed value is known. */
+export function crossedText(c: { level: CrossedLevel; ambiguous: boolean }): string {
+  return `crossed, ${LEVEL_WORD[c.level]}${c.ambiguous ? ', ambiguous' : ''}`;
+}
+
+/**
+ * How the value from this origin is known at the leg read, when its route rests
+ * on a crossing: the `crossed` of a chain's last hop (the leg read). `null` when
+ * no chain says so — an origin inside the conversation, or a server without chains.
+ * An origin in another trace is not asked here: a persistent entity's later call
+ * in the same conversation crosses too, and only the chain says which.
+ */
+export function crossedOfOrigin(o: LabelOrigin): { level: CrossedLevel; ambiguous: boolean } | null {
+  for (const chain of o.chains ?? []) {
+    const here = chain[chain.length - 1];
+    if (here?.crossed != null) return here.crossed;
+  }
+  return null;
 }
 
 /** `#seq caller → callee leg`, as far as the leg is still known. */

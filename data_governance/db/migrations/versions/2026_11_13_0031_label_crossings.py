@@ -42,8 +42,7 @@ is what the policy reads; a crossing's own rule level stays in ``label_crossings
 An edge with no row here is known inside its conversation.
 
 Revision ID: 0031_label_crossings
-Revises: 0029_hash_evidence_fingerprints (0030 is held by an open pull request;
-re-pointed to it when that merges)
+Revises: 0030_label_edges_holding_index
 Create Date: 2026-11-13
 """
 
@@ -54,7 +53,7 @@ from typing import Sequence, Union
 from alembic import op
 
 revision: str = "0031_label_crossings"
-down_revision: Union[str, Sequence[str], None] = "0029_hash_evidence_fingerprints"
+down_revision: Union[str, Sequence[str], None] = "0030_label_edges_holding_index"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

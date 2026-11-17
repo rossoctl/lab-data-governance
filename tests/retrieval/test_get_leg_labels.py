@@ -12,13 +12,14 @@ pin what only the SQL decides: pinning to the current payload, where the origin'
 
 from __future__ import annotations
 
+import dataclasses
 import json
-import logging
 
 import psycopg
 import pytest
 
-from data_governance import retrieval
+from data_governance import db, retrieval
+from data_governance.retrieval import labels
 
 _TID = "e06cd67dedd004056a388a8ac48842a0"
 _IX = "f48567d1-a81a-5b37-a96e-022d4729b829"
@@ -228,8 +229,9 @@ def test_before_the_interactions_migration_empty(seeded: str, configured_db: str
 # From the live edges: every edge into 83053 comes from 82049 (notify-partner's
 # request); into 82049 the PID comes twice, from create-booking's response 80565
 # (the origin) and from the LLM response 82082, which got it from the LLM request
-# 80603, which got it from 80565. So the PID has two chains, the OPID (born at
-# 82082) one.
+# 80603, which got it from 80565. So the PID has two routes, the OPID (born at
+# 82082) one; the read lists one shortest route per edge into the leg and counts
+# them all.
 
 _B12 = "98134844c66d7a7996303b049d6fc350"
 _P = "02ef1eb2"      # notify-partner → partner (83053 request, 83054 response)
@@ -320,17 +322,24 @@ def _route(chain) -> list[tuple]:
     return [(h.seq, h.role) for h in chain]
 
 
-def test_the_partner_request_pid_has_two_chains_shortest_first(booking_trace: str) -> None:
+def test_the_partner_request_pid_has_one_shortest_chain_and_counts_two_routes(booking_trace: str) -> None:
     req = _legs(retrieval.get_leg_labels(booking_trace, _P))["request"]
     pid, opid = req.labels
     assert (pid.entity_type, pid.found_here, opid.entity_type, opid.found_here) == (
         "PID", False, "OPID", True)
     (origin,) = pid.carried_in
     assert origin.origin_seq == 80565
+    # One edge into 83053, so one chain: the shortest route. The route via the
+    # LLM (80603 → 82082) is counted, not listed.
     assert [_route(c) for c in origin.chains] == [
         [(80565, "origin"), (82049, "hop"), (83053, "here")],
-        [(80565, "origin"), (80603, "hop"), (82082, "hop"), (82049, "hop"), (83053, "here")],
     ]
+    assert origin.route_count == 2
+    # Tracking lights every leg on any route, so the LLM round trip the chain
+    # skips (80603, 82082) is a carrier.
+    assert [(c.interaction_id, c.leg_type) for c in origin.carriers] == [
+        (_P, "request"), (_NP, "request"), (_LLM2, "request"), (_LLM2, "response"), (_CB, "response")]
+    assert {c.trace_id for c in origin.carriers} == {booking_trace}
     born = origin.chains[0][0]
     assert (born.interaction_id, born.leg_type, born.trace_id) == (_CB, "response", booking_trace)
     assert (born.caller, born.callee) == ("booking-agent", "create-booking")
@@ -339,9 +348,6 @@ def test_the_partner_request_pid_has_two_chains_shortest_first(booking_trace: st
     # re-based into it; this payload is short, so no ellipsis.
     assert born.excerpt.text == _CB_TEXT
     assert born.excerpt.text[born.excerpt.start:born.excerpt.end] == "BK-83CE5F"
-    # Carriers show the span the finder matched at THEIR payload.
-    llm_req = origin.chains[1][1]
-    assert (llm_req.text, llm_req.start, llm_req.end, llm_req.excerpt) == ("BK-83CE5F", 2396, 2405, None)
     here = origin.chains[0][-1]
     assert (here.interaction_id, here.leg_type, here.start, here.end) == (_P, "request", 16, 25)
 
@@ -351,6 +357,10 @@ def test_the_partner_request_opid_born_at_the_llm_has_one_chain(booking_trace: s
     (origin,) = req.labels[1].carried_in
     assert origin.origin_seq == 82082
     assert [_route(c) for c in origin.chains] == [[(82082, "origin"), (82049, "hop"), (83053, "here")]]
+    assert origin.route_count == 1
+    # Not every leg of the trace: only those on the OPID's one route.
+    assert [(c.interaction_id, c.leg_type) for c in origin.carriers] == [
+        (_P, "request"), (_NP, "request"), (_LLM2, "response")]
     # The LLM response has no stored payload here: the hop stands, the excerpt does not.
     assert origin.chains[0][0].excerpt is None
 
@@ -364,7 +374,8 @@ def test_the_partner_response_found_here_only_leg_gains_nothing(booking_trace: s
 
 def test_two_edges_of_one_origin_into_one_leg_are_one_origin_with_both_chains(
         booking_trace: str, configured_db: str) -> None:
-    # Into 82049 the PID arrives twice (direct and via the LLM): one origin, two chains.
+    # Into 82049 the PID arrives twice (direct and via the LLM): one origin, one
+    # chain per edge into the leg, two routes.
     req = _legs(retrieval.get_leg_labels(booking_trace, _NP))["request"]
     (origin,) = req.labels[0].carried_in
     assert req.labels[0].entity_type == "PID" and req.carried.origin_count == 2
@@ -372,6 +383,10 @@ def test_two_edges_of_one_origin_into_one_leg_are_one_origin_with_both_chains(
         [(80565, "origin"), (82049, "here")],
         [(80565, "origin"), (80603, "hop"), (82082, "hop"), (82049, "here")],
     ]
+    # Carriers show the span the finder matched at THEIR payload.
+    llm_req = origin.chains[1][1]
+    assert (llm_req.text, llm_req.start, llm_req.end, llm_req.excerpt) == ("BK-83CE5F", 2396, 2405, None)
+    assert origin.route_count == 2
 
 
 def test_a_long_excerpt_is_cut_around_the_unit(booking_trace: str, configured_db: str) -> None:
@@ -445,8 +460,102 @@ def test_the_one_hop_cross_trace_chain(two_traces) -> None:
     assert [(h.seq, h.trace_id) for h in origin.chains[0]] == [(5, _EARLIER), (12, _LATER)]
 
 
+# The same rows as a crossing the derivation drew (migration 0031): x-from-o is the
+# crossing, its rule level corroborated; the value is known value-only and
+# ambiguous at X and at Y (another origin weakened it; the rows say so, the read
+# only shows them).
+
+
+def _crossed(conn, eid: str, trace: str, level: str, ambiguous: bool, crossing: str | None = None) -> None:
+    conn.execute("INSERT INTO label_crossed_edges (edge_id, trace_id, level, ambiguous) VALUES (%s, %s, %s, %s)",
+                 (eid, trace, level, ambiguous))
+    if crossing is not None:
+        conn.execute(
+            "INSERT INTO label_crossings (crossing_id, trace_id, interaction_id, leg_type, value_hash, "
+            "conversations, edge_id, occurrence_id, level) VALUES (%s, %s, 'ix-x', 'request', 'vh', 1, %s, 'occ', %s)",
+            (f"c-{eid}", trace, eid, crossing))
+
+
+def _chain_marks(interaction: str) -> list[tuple]:
+    (origin,) = _legs(retrieval.get_leg_labels(_LATER, interaction))["request"].labels[0].carried_in
+    return [(h.seq, h.role, h.crossing, h.crossed) for h in origin.chains[0]]
+
+
+def test_a_hop_shows_the_crossing_s_level_and_how_the_value_is_known_there(two_traces, configured_db) -> None:
+    with psycopg.connect(configured_db) as conn:
+        _crossed(conn, "x-from-o", _LATER, "value_only", True, crossing="corroborated")
+        _crossed(conn, "y-from-x", _LATER, "value_only", True)
+        conn.commit()
+    vo = labels.CrossedView(level="value_only", ambiguous=True)
+    assert _chain_marks("ix-y") == [(5, "origin", None, None), (12, "hop", "corroborated", vo), (19, "here", None, vo)]
+    assert _chain_marks("ix-x") == [(5, "origin", None, None), (12, "here", "corroborated", vo)]
+
+
+def test_a_crossing_edge_without_a_carried_row_still_shows_its_level(two_traces, configured_db) -> None:
+    # A unit that also reaches the leg inside its conversation is read as inherited there (no carried row);
+    # the crossing still shows the rule's level.
+    with psycopg.connect(configured_db) as conn:
+        conn.execute(
+            "INSERT INTO label_crossings (crossing_id, trace_id, interaction_id, leg_type, value_hash, "
+            "conversations, edge_id, occurrence_id, level) VALUES ('c', %s, 'ix-x', 'request', 'vh', 1, "
+            "'x-from-o', 'occ', 'value_only')", (_LATER,))
+        conn.commit()
+    assert _chain_marks("ix-y") == [(5, "origin", None, None), (12, "hop", "value_only", None), (19, "here", None, None)]
+
+
+def test_a_relay_through_two_crossings_marks_every_hop_with_its_own_rows(configured_db) -> None:
+    # K17's shape: the origin O in conversation 1; A in conversation 2 is reached by a corroborated
+    # crossing and B carries it on; C in conversation 3 is reached by a value-only crossing and D,
+    # the leg read, carries it on. Each hop shows the rows of the edge into it, none another's.
+    t1, t2, t3 = "trace-1", "trace-2", "trace-3"
+    with psycopg.connect(configured_db) as conn:
+        conn.execute(
+            "INSERT INTO entities (id, kind, natural_key, display_name, detected_from, original_seq) "
+            "VALUES ('e-a', 'agent', 'nk-a', 'agent-a', 'span-attr', 1), "
+            "('e-b', 'tool', 'nk-b', 'tool-b', 'span-attr', 1)"
+        )
+        legs = {"o": (t1, 5), "a": (t2, 12), "b": (t2, 19), "c": (t3, 26), "d": (t3, 33)}
+        for name, (trace, seq) in legs.items():
+            _interaction(conn, f"ix-{name}", trace, "e-a", "e-b", [("request", f"{name}-req", seq)])
+        leg = {name: (f"ix-{name}", "request", f"{name}-req") for name in legs}
+        ssn = dict(origin=leg["o"], unit=(3, 14), entity_type="SSN", tags=["PII"], level="RESTRICTED",
+                   value="123-45-6789", span=(0, 11))
+        for eid, to, frm, from_trace in (("a-from-o", "a", "o", t1), ("b-from-a", "b", "a", None),
+                                         ("c-from-b", "c", "b", t2), ("d-from-c", "d", "c", None)):
+            trace, seq = legs[to]
+            _edge2(conn, eid=eid, trace=trace, to=leg[to], frm=leg[frm], from_trace=from_trace,
+                   origin_trace=t1, seq=seq, **ssn)
+        for eid, trace, level in (("a-from-o", t2, "corroborated"), ("b-from-a", t2, "corroborated"),
+                                  ("c-from-b", t3, "value_only"), ("d-from-c", t3, "value_only")):
+            _crossed(conn, eid, trace, level, False,
+                     crossing=level if eid in ("a-from-o", "c-from-b") else None)
+        conn.commit()
+    (origin,) = _legs(retrieval.get_leg_labels(t3, "ix-d"))["request"].labels[0].carried_in
+    co, vo = labels.CrossedView("corroborated", False), labels.CrossedView("value_only", False)
+    assert [(h.seq, h.trace_id, h.role, h.crossing, h.crossed) for h in origin.chains[0]] == [
+        (5, t1, "origin", None, None), (12, t2, "hop", "corroborated", co), (19, t2, "hop", None, co),
+        (26, t3, "hop", "value_only", vo), (33, t3, "here", None, vo)]
+
+
+def test_without_crossing_rows_the_wire_shape_is_today_s(two_traces, configured_db) -> None:
+    # Byte identity holds per "no rows in the 0031 tables": the two keys are left out, not sent as null;
+    # and the same read without the 0031 tables at all.
+    def wire() -> str:
+        return json.dumps([dataclasses.asdict(leg, dict_factory=labels.wire_dict)
+                           for leg in retrieval.get_leg_labels(_LATER, "ix-y").legs])
+    now = wire()
+    assert '"crossed"' not in now and '"crossing"' not in now
+    hop_keys = set(json.loads(now)[0]["labels"][0]["carried_in"][0]["chains"][0][0])
+    assert hop_keys == {"interaction_id", "leg_type", "seq", "trace_id", "caller", "callee", "text", "start", "end",
+                        "role", "excerpt"}
+    with psycopg.connect(configured_db) as conn:
+        conn.execute("DROP TABLE label_crossed_edges, label_crossings")
+        conn.commit()
+    assert wire() == now
+
+
 # Guards: edges run from earlier to later seq, so a cycle cannot exist; the walk
-# must still end, and a run past the cap must stop and say so.
+# must still end, and the route count must stay a count, never a listing.
 
 
 def test_a_cycle_ends_the_walk_as_a_truncated_chain(configured_db: str) -> None:
@@ -468,23 +577,136 @@ def test_a_cycle_ends_the_walk_as_a_truncated_chain(configured_db: str) -> None:
         ("ix-a", "hop"), ("ix-b", "hop"), ("ix-a", "hop"), ("ix-z", "here")]
 
 
-def test_the_depth_cap_stops_the_walk_and_logs(configured_db: str, monkeypatch, caplog) -> None:
-    from data_governance.retrieval import labels as mod
-    monkeypatch.setattr(mod, "MAX_CHAIN_DEPTH", 3)
+def test_converging_branches_do_not_end_a_route_that_cannot_reach_the_origin(configured_db: str) -> None:
+    # z ← m, m ← b and c, b and c ← d, d ← e, e ← f; the origin is never reached.
+    # The second branch meets d already walked: that is convergence, not a dead
+    # end, so the route runs on to f, the edge with no edge of its own.
     with psycopg.connect(configured_db) as conn:
-        legs = [(f"ix-{i}", "request", f"h{i}") for i in range(6)]
-        for i, (ix, lt, h) in enumerate(legs):
-            _interaction(conn, ix, "t-deep", "e-a", "e-b", [(lt, h, 10 + i)])
-        k = dict(origin=legs[0], unit=(0, 9), entity_type="PID", tags=["PII"], level="RESTRICTED")
-        for i in range(1, 6):
-            _edge2(conn, eid=f"e{i}", trace="t-deep", to=legs[i], frm=legs[i - 1], span=(0, 9), **k)
+        names = ("f", "e", "d", "c", "b", "m", "z")
+        legs = {n: (f"ix-{n}", "request", n) for n in names}
+        for i, n in enumerate(names):
+            _interaction(conn, legs[n][0], "t-conv", "e-a", "e-b", [("request", n, 10 + i)])
+        k = dict(origin=("ix-never", "response", "never"), unit=(0, 9), entity_type="PID",
+                 tags=["PII"], level="RESTRICTED")
+        for to, frm in [("z", "m"), ("m", "b"), ("m", "c"), ("b", "d"), ("c", "d"), ("d", "e"), ("e", "f")]:
+            _edge2(conn, eid=f"{to}-{frm}", trace="t-conv", to=legs[to], frm=legs[frm], span=(0, 9), **k)
         conn.commit()
-    with caplog.at_level(logging.WARNING, logger="data_governance.retrieval.labels"):
-        (origin,) = _legs(retrieval.get_leg_labels("t-deep", "ix-5"))["request"].labels[0].carried_in
+    (origin,) = _legs(retrieval.get_leg_labels("t-conv", "ix-z"))["request"].labels[0].carried_in
     (chain,) = origin.chains
-    assert [h.interaction_id for h in chain] == ["ix-2", "ix-3", "ix-4", "ix-5"]
-    assert chain[0].role == "hop"
-    assert any("stopped at depth 3" in r.message for r in caplog.records)
-    monkeypatch.setattr(mod, "MAX_CHAIN_DEPTH", 32)
-    (origin,) = _legs(retrieval.get_leg_labels("t-deep", "ix-5"))["request"].labels[0].carried_in
-    assert [h.role for h in origin.chains[0]] == ["origin", "hop", "hop", "hop", "hop", "here"]
+    assert [(h.interaction_id, h.role) for h in chain] == [
+        ("ix-f", "hop"), ("ix-e", "hop"), ("ix-d", "hop"), ("ix-b", "hop"), ("ix-m", "hop"), ("ix-z", "here")]
+    assert origin.route_count == 2
+    assert {c.interaction_id for c in origin.carriers} == {f"ix-{n}" for n in names}
+
+
+def test_the_walk_stops_at_the_origin_whatever_leads_into_it(configured_db: str) -> None:
+    # A data fault: two edges of the unit lead INTO the origin leg itself. The
+    # walk ends at the origin and counts one route, never what lies behind it.
+    with psycopg.connect(configured_db) as conn:
+        legs = [(f"ix-{n}", "request", n) for n in ("o", "p", "q", "z")]
+        for i, (ix, lt, h) in enumerate(legs):
+            _interaction(conn, ix, "t-behind", "e-a", "e-b", [(lt, h, 10 + i)])
+        o, p, q, z = legs
+        k = dict(origin=o, unit=(0, 9), entity_type="PID", tags=["PII"], level="RESTRICTED")
+        _edge2(conn, eid="z-o", trace="t-behind", to=z, frm=o, span=(0, 9), **k)
+        _edge2(conn, eid="o-p", trace="t-behind", to=o, frm=p, span=(0, 9), **k)
+        _edge2(conn, eid="o-q", trace="t-behind", to=o, frm=q, span=(0, 9), **k)
+        conn.commit()
+    (origin,) = _legs(retrieval.get_leg_labels("t-behind", "ix-z"))["request"].labels[0].carried_in
+    assert origin.route_count == 1
+    assert [_route(c) for c in origin.chains] == [[(10, "origin"), (13, "here")]]
+
+
+def test_routes_are_counted_not_listed_when_fan_in_multiplies_them(configured_db: str) -> None:
+    # A ladder where every payload holds the value from the two before it (an
+    # agent that remembers, echoed once per step): routes to rung n are the n-th
+    # Fibonacci number. Enumerating them (the read before this one) is 832,040
+    # walks for 30 rungs; the sub-graph is 57 edges.
+    with psycopg.connect(configured_db) as conn:
+        legs = [(f"ix-{i}", "request", f"h{i}") for i in range(30)]
+        for i, (ix, lt, h) in enumerate(legs):
+            _interaction(conn, ix, "t-fib", "e-a", "e-b", [(lt, h, 10 + i)])
+        k = dict(origin=legs[0], unit=(0, 9), entity_type="PID", tags=["PII"], level="RESTRICTED")
+        for i in range(1, 30):
+            for back in (1, 2):
+                if i - back >= 0:
+                    _edge2(conn, eid=f"e{i}-{back}", trace="t-fib", to=legs[i], frm=legs[i - back],
+                           span=(0, 9), **k)
+        conn.commit()
+    req = _legs(retrieval.get_leg_labels("t-fib", "ix-29"))["request"]
+    (origin,) = req.labels[0].carried_in
+    assert origin.route_count == 832040
+    # One chain per edge into the leg (from ix-28 and from ix-27), each the
+    # shortest route from the origin through that hop: 15 steps of two rungs.
+    assert len(origin.chains) == 2
+    assert [h.role for h in origin.chains[0]] == ["origin", *["hop"] * 14, "here"]
+    assert origin.chains[0][0].interaction_id == "ix-0"
+
+
+def _plan_rows(node: dict) -> int:
+    """Rows every node of an EXPLAIN ANALYZE plan produced, over all its loops
+    (``Actual Rows`` is the per-loop mean, rounded, so this is approximate)."""
+    return int(node["Actual Rows"] * node["Actual Loops"]) + sum(_plan_rows(c) for c in node.get("Plans", []))
+
+
+def test_the_sub_graph_read_joins_each_holding_once_not_each_pair_of_edges(configured_db: str) -> None:
+    # The value reaches x n times and leaves it n times. A walk edge by edge joins
+    # every edge out of x to every edge into it, n x n rows; the walk by holding
+    # reads x's edges once.
+    n = 300
+    with psycopg.connect(configured_db) as conn:
+        o, x, y = (("ix-o", "response", "o"), ("ix-x", "request", "x"), ("ix-y", "request", "y"))
+        k = dict(trace="t-fan", origin=o, unit=(0, 9), entity_type="PID", tags=["PII"], level="RESTRICTED")
+        for i in range(n):
+            _edge2(conn, eid=f"in-{i}", to=x, frm=o, span=(10 * i, 10 * i + 9), **k)
+            _edge2(conn, eid=f"out-{i}", to=y, frm=x, span=(10 * i, 10 * i + 9), **k)
+        conn.commit()
+    anchors = [f"out-{i}" for i in range(n)]
+    with db.transaction() as tx:
+        assert len(tx.fetch_all(labels._SUBGRAPH_SQL, (anchors, anchors))) == 2 * n
+        (plan,) = tx.fetch_one("EXPLAIN (ANALYZE, FORMAT JSON) " + labels._SUBGRAPH_SQL, (anchors, anchors))
+    work = _plan_rows(plan[0]["Plan"])
+    assert work < 10 * 2 * n, work  # a walk edge by edge: about n * n (94,800 here)
+
+
+def _plan_values(node: dict, key: str) -> list:
+    """Every value of *key* in an EXPLAIN (FORMAT JSON) plan, depth first."""
+    return [*([node[key]] if key in node else []), *(v for c in node.get("Plans", []) for v in _plan_values(c, key))]
+
+
+def test_a_long_chain_among_other_traces_is_read_by_holding_through_the_to_index(configured_db: str) -> None:
+    # One value carried through 2,000 hops in a table that also holds 60,000 edges
+    # of other traces and units, analysed: the planner faces the real choice. The
+    # origin-unit index looks like 1 row per lookup but returns all 2,000 edges of
+    # the value at every hop (a product); the to-index on (leg, payload) returns
+    # the one edge into each holding. Migration 0030 adds the payload to it.
+    n, noise = 2_000, 60_000
+    cols = ("edge_id, trace_id, to_interaction_id, to_leg_type, to_payload_hash, from_interaction_id, "
+            "from_leg_type, from_payload_hash, origin_interaction_id, origin_leg_type, origin_payload_hash, "
+            "unit_start, unit_end, unit_text, unit_value, entity_type, regulatory_tags, sensitivity_level, "
+            "matcher, match_kind, score, held_from, held_to, seq")
+
+    def edge(eid, trace, to, frm, origin, start):
+        return [eid, trace, to, "request", to, frm, "request", frm, origin, "request", origin,
+                start, start + 9, "v", "v", "PID", "{PII}", "RESTRICTED", "exact", "whole", 1, 0, 9, 1]
+
+    with psycopg.connect(configured_db) as conn:
+        with conn.cursor() as cur, cur.copy(f"COPY payload_label_edges ({cols}) FROM STDIN") as copy:
+            for i in range(noise):  # 30 traces, 600 values of 100 edges, 20 edges into each leg
+                copy.write_row(edge(f"nz{i}", f"t-nz{i // 2000}", f"nz{i // 20}", f"nz{i // 20 - 1}",
+                                    f"nzo{i // 100}", i % 20))
+            for i in range(1, n + 1):
+                copy.write_row(edge(f"c{i}", "t-chain", f"c{i}", f"c{i - 1}", "c0", 0))
+        conn.commit()
+        conn.execute("ANALYZE payload_label_edges")
+    anchors = [f"c{n}"]
+    with db.transaction() as tx:
+        assert len(tx.fetch_all(labels._SUBGRAPH_SQL, (anchors, anchors))) == n
+        (plan,) = tx.fetch_one("EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + labels._SUBGRAPH_SQL, (anchors, anchors))
+    root = plan[0]["Plan"]
+    indexes = set(_plan_values(root, "Index Name"))
+    blocks = root["Shared Hit Blocks"] + root["Shared Read Blocks"]
+    # A few buffer blocks per hop (6 here); through the origin-unit index, a block
+    # count that grows with the chain at every hop.
+    assert blocks < 30 * n, (blocks, indexes)
+    assert "payload_label_edges_to_idx" in indexes and "payload_label_edges_origin_idx" not in indexes, indexes

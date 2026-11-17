@@ -31,7 +31,7 @@ from typing import Any
 
 import psycopg
 
-from data_governance import db
+from data_governance import db, retrieval
 from data_governance.label_lineage import cross
 from data_governance.processors.classification import driver as classification
 from data_governance.processors.data_lineage import driver as data_lineage
@@ -39,6 +39,7 @@ from data_governance.processors.data_lineage import memory
 from data_governance.processors.interactions import sidecar_driver as interactions
 from data_governance.processors.label_lineage import driver as label_lineage
 from data_governance.processors.leg_ready import driver as leg_ready
+from data_governance.retrieval.labels import GetLegLabelsResult
 from data_governance.risk import config as risk_config
 from data_governance.risk.engine.observer import make_risk_observer
 from tools.load_trace import rows_to_request
@@ -95,6 +96,7 @@ class Observation:
     problems: list[str] = dataclasses.field(default_factory=list)   # rows the judge cannot read: always red
     evidence: dict[int, dict[str, frozenset[str]]] = dataclasses.field(default_factory=dict)  # leg -> unit -> kinds
     marks: dict[int, frozenset[str]] = dataclasses.field(default_factory=dict)              # leg -> marks
+    read: dict[int, dict[str, frozenset[str]]] = dataclasses.field(default_factory=dict)  # leg -> unit -> chains
 
 
 def _send(rows: list[dict[str, Any]], grpc_endpoint: str) -> None:
@@ -224,6 +226,31 @@ def evidence_at(case: Case, legs: dict[int, "LegRows"]) -> dict[int, dict[str, f
             cells[e["unit"]].add(e["known"])
         out[i] = {u: frozenset(k) for u, k in cells.items() if k}
     return out
+
+
+def read_at(case: Case, result: GetLegLabelsResult, leg_type: str,
+            leg_of_key: dict[tuple[str, str], int]) -> dict[str, frozenset[str]]:
+    """unit -> what the production labels read shows of it at one leg, one line per chain: ``from`` its first hop's
+    line leg (``?`` before it when the chain ends short of the origin), each hop whose incoming edge is a crossing as
+    ``A>B LEVEL`` (the crossing's rule level), and how the value is known at the leg read (``crossed L [ambiguous]``
+    or ``inherited``). A unit is found by its bytes, as for the edges."""
+    value_unit = {v: u for u, v in case.values.items()}
+
+    def at(hop) -> str:
+        return str(leg_of_key.get((hop.interaction_id, hop.leg_type), "?"))
+
+    out: dict[str, set[str]] = defaultdict(set)
+    for leg in result.legs:
+        for label in leg.labels if leg.leg_type == leg_type else ():
+            for chain in (c for o in label.carried_in for c in o.chains):
+                first, here = chain[0], chain[-1]
+                parts = [f"from {'' if first.role == 'origin' else '?'}{at(first)}"]
+                parts += [f"{at(a)}>{at(b)} {_LEVELS[b.crossing]}" for a, b in zip(chain, chain[1:]) if b.crossing]
+                parts.append("inherited" if here.crossed is None else f"crossed {_LEVELS[here.crossed.level]}"
+                             + (" ambiguous" if here.crossed.ambiguous else ""))
+                if label.text in value_unit:
+                    out[value_unit[label.text]].add(" · ".join(parts))
+    return {u: frozenset(c) for u, c in out.items()}
 
 
 # Each drain the run calls and the table whose ``seq`` its cursor walks; the work queues the drains own. With
@@ -442,6 +469,7 @@ def _read(case: Case, rendered: list[Rendered], dsn: str, mode: str) -> Observat
             "FROM label_occurrences GROUP BY holder_entity_id, interaction_id, leg_type, origin_trace_id, "
             "origin_interaction_id, origin_leg_type, unit_start, unit_end, entity_type, value_text, "
             "span_start, span_end, held_from, held_to HAVING count(*) > 1").fetchall()
+        trace_of = dict(conn.execute("SELECT id, trace_id FROM interactions").fetchall())
         risk_rows = conn.execute(
             "SELECT r.interaction_id, r.version, r.risk_level, r.enforcement_type, r.triggered_rule_ids, "
             "r.legs_evidenced, r.classification_summary, t.tier, t.late FROM interaction_risk_records r "
@@ -500,7 +528,10 @@ def _read(case: Case, rendered: list[Rendered], dsn: str, mode: str) -> Observat
     value_unit = {v: u for u, v in case.values.items()}
     problems += [f"occurrence of {value_unit.get(value, '?' + value)} ({etype}) at leg "
                  f"{leg_of_key.get((iid, lt))} registered by {n} rows" for _, iid, lt, etype, value, n in doubled]
+    # the read the UI gets, through the production retrieval function, at each leg the case states one
+    read = {i: read_at(case, retrieval.get_leg_labels(trace_of[key[0]], key[0]), key[1], leg_of_key)
+            for i in case.read if (key := key_of_leg.get(i))}
     return Observation(mode=mode, legs=legs, edges=resolved, raw_edges=raw, verdict=verdict, timings={},
                        observer_calls=0, problems=problems, evidence=evidence_at(case, legs),
-                       marks={leg: frozenset(m) for leg, m in marks.items()})
+                       marks={leg: frozenset(m) for leg, m in marks.items()}, read=read)
 
