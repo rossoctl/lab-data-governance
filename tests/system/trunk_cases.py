@@ -338,10 +338,10 @@ def across_cases() -> None:
 
     two("K12", "the partner declared call scope", THREE, THREE, scopes={"V2": "call"},
         cell="across/rule/scope",
-        pending={"reason": "the scope declared per entity is not on this branch; held, not run",
-                 "held": ["scopes"]},
         notes="K1 with V2 declared call scope: it remembers nothing past one call, so nothing it returns in "
-              "conversation 2 can cross. No crossing, allow.")
+              "conversation 2 can cross. No crossing, allow. A declared key that is no derived entity makes the run "
+              "red; that the declaration reaches the processor at all is K22c's check. "
+              + TRIVIAL.format("the declaration ignored, V2 back at its default, persistent"))
 
     # K13: a persistent agent; user B's conversation comes first in time, user A's later, but A's legs are sent first
     # so A's occurrence is in the table when B's leaving leg is matched: only the interval keeps them apart (R1).
@@ -352,12 +352,11 @@ def across_cases() -> None:
          steps=[{"send": "9-10"}, "drain", {"send": "1-8"}, "drain"],
          verdict=aa, edges=[], evidence={4: {"s1": []}, 9: {"s1": ["classified SSN"]}},
          must_see={9: ["s1"]}, must_miss={3: ["s1"], 4: ["s1"], 5: ["s1"]}, authored=True,
-         pending={"reason": "the scope declared per entity is not on this branch; held, not run",
-                  "held": ["scopes"]},
          notes="Agent A is declared persistent and serves two users. In user B's conversation (legs 1-8) the LLM "
                "writes a number equal to user A's SSN, unlabelled, and A sends it on at 09:00:06. User A gives A that "
                "SSN at 09:01:16 (leg 9). A's legs arrive first, so the occurrence exists when B's leg is matched, "
-               "but it is valid only after 09:01:16 (R1): no crossing, allow.")
+               "but it is valid only after 09:01:16 (R1): no crossing, allow. "
+               + TRIVIAL.format("the valid interval ignored"))
 
     # K14: a listing of two patients, each a record; V2 returns patient A's SSN and patient B's birthdate.
     k14_units = {"s1": "SSN", "s3": "DOB", "s5": "SSN", "s6": "DOB"}
@@ -497,8 +496,7 @@ def across_cases() -> None:
          scopes={"T2": "persistent"}, verdict=crossed_block, edges=[], cross=k22_cross,
          evidence={4: {"s1": ["classified SSN"], "s2": ["classified MRN"]},
                    **every((7, 8, 9), ["s1", "s2"], "crossed co")}, **k22_premise,
-         pending={"reason": "the scope declared per entity is not on this branch; held, not run",
-                  "held": ["scopes"]},
+         pending={"reason": CROSS_PENDING, "missing": k22_cross, "verdict": ["cross"], "evidence": [7, 8, 9]},
          notes="T2 is declared persistent (a store). In its first call it fetches the SSN and the MRN from V1 (it "
                "received them); in a second call it returns them. One edge per anchoring unit, corroborated (two "
                "identifiers of one record), carried to V3, which blocks.")
@@ -506,6 +504,15 @@ def across_cases() -> None:
          verdict=aa, edges=[], evidence={7: {"s1": [], "s2": []}}, **k22_premise,
          notes="K22a without the declaration: a tool is call scope by default and keeps nothing between its two "
                "calls. No edge, allow. " + TRIVIAL.format("a tool persistent by default"))
+    case("K22c", "the same tool, declared conversation", k22, cell="across/scope/declared-store", units=k22_units,
+         scopes={"T2": "conversation"}, verdict=v("allow", "block", "block"),
+         edges=chain([4, 7, 8, 9], ["s1", "s2"]),
+         evidence={4: {"s1": ["classified SSN"], "s2": ["classified MRN"]},
+                   **every((7, 8, 9), ["s1", "s2"], "inherited")}, **k22_premise,
+         notes="K22b with T2 declared conversation scope: inside one conversation it pools its two calls, so what it "
+               "received in the first (leg 4) reaches what it returns in the second (leg 7), an edge of the "
+               "conversation's own, carried to V3, which blocks once inherited labels are on. The declaration is what "
+               "draws the edges: if it did not reach the processor, the line would be K22b's.")
 
     # --- limits, order, correction ----------------------------------------------------------------------------
     limits_pending = {"reason": "the limits are not configuration on this branch; held, not run",

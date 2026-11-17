@@ -63,11 +63,16 @@ The keys of a case across conversations (`cases.py` shows each; R1–R10 are the
   drain on from where it stopped), `derive: 2` (the conversation queued again through the production
   correction queue, `dg_queue_label_trace`), `reclassify: {7: [s1]}`, `cross: 'on'`. By default: send
   every leg in line order, then drain.
-- **`scopes`** (`{V2: call}`) and **`config`** (`{payload_bytes: 16}`): a memory scope declared per party
-  and a limit, applied through the production declaration and configuration.
+- **`scopes`** (`{V2: call}`): a memory scope declared per party, applied through the production
+  declaration: `LABEL_MEMORY_SCOPES` (a JSON object, `{"<natural_key>": "<scope>"}`), set for the label-lineage processor's
+  `driver.configured()`, each party named by the natural key the derivation gives it
+  (`Renderer.natural_key`: `agent:lab/a`, `tool:lab/t2`, `service:api.v2.partner.example:8000`,
+  `llm:host.containers.internal:11434/qwen2.5:7b`). A declared party whose key is no derived entity is red.
+  Every run sets the variable, `{}` for a case without `scopes`, so the shell's own value never leaks in.
+- **`config`** (`{payload_bytes: 16}`): a limit, applied through the production configuration.
 - **`expect.verdict`** per mode, or a decision history per mode: `[allow tier 1, block tier 2]`.
 
-A case that needs a production path this branch lacks (scopes, the cross switch, a limit, a
+A case that needs a production path this branch lacks (the cross switch, a limit, a
 reclassification, the tiers: `engine.NOT_ON_BRANCH`, one row each naming the path
 and where the engine applies it) is **held**: not run, and PENDING only when `expect.pending.held` names
 exactly those paths. The change that builds a path removes its row and the case runs from then on. The

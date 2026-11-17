@@ -1,0 +1,63 @@
+id: K22c
+title: the same tool, declared conversation
+cell: across/scope/declared-store
+line: U>A[-], A>T2[-], T2>V1[-], V1>T2[s1 s2 -], T2>A[-], A>T2[-], T2>A[s1@subject s2@account -], A>T3[s1@subject s2@account
+  -], T3>V3[s1@subject s2@account -]⚑, V3>T3[-], T3>A[-], A>U[-]
+units:
+  s1: SSN
+  s2: MRN
+scopes:
+  T2: conversation
+expect:
+  verdict:
+    'off': allow
+    conv: block
+    cross: block
+  edges:
+  - s1 4>7
+  - s1 7>8
+  - s1 8>9
+  - s2 4>7
+  - s2 7>8
+  - s2 8>9
+  evidence:
+    '4':
+      s1:
+      - classified SSN
+      s2:
+      - classified MRN
+    '7':
+      s1:
+      - inherited
+      s2:
+      - inherited
+    '8':
+      s1:
+      - inherited
+      s2:
+      - inherited
+    '9':
+      s1:
+      - inherited
+      s2:
+      - inherited
+classifier:
+  must_see:
+    '4':
+    - s1
+    - s2
+  must_miss:
+    '7':
+    - s1
+    - s2
+    '8':
+    - s1
+    - s2
+    '9':
+    - s1
+    - s2
+  authored: true
+notes: 'K22b with T2 declared conversation scope: inside one conversation it pools its two calls, so what it received in the
+  first (leg 4) reaches what it returns in the second (leg 7), an edge of the conversation''s own, carried to V3, which blocks
+  once inherited labels are on. The declaration is what draws the edges: if it did not reach the processor, the line would
+  be K22b''s.'

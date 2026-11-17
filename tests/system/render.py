@@ -31,6 +31,7 @@ from typing import Any
 from . import caseline as cl
 
 NAMESPACE = "lab"
+MODEL = "qwen2.5:7b"
 T0 = dt.datetime(2026, 11, 8, 9, 0, 0, tzinfo=dt.timezone.utc)
 
 # One value per label; a second unit with the same label takes the next value. NAME and PN share names: a
@@ -175,6 +176,19 @@ class Renderer:
     def _sidecar(party: str) -> bool:
         return cl.kind_of(party) in ("agent", "tool")
 
+    def natural_key(self, party: str) -> str:
+        """The ``entities.natural_key`` the sidecar derivation gives *party*: a pod (agent, tool) by its namespace
+        and self id, an LLM by its host and model, a partner (a service) by its host, the user as the anonymous
+        client it reaches the agent as."""
+        k = cl.kind_of(party)
+        if k in ("agent", "tool"):
+            return f"{k}:{NAMESPACE}/{party.lower()}"
+        if k == "llm":
+            return f"llm:{self._peer_host(party)}/{MODEL}"
+        if k == "external":
+            return f"service:{self._peer_host(party)}"
+        return "client:(unknown)"
+
     def _peer_host(self, to: str) -> str:
         k = cl.kind_of(to)
         if k == "external":
@@ -200,7 +214,7 @@ class Renderer:
         if protocol == "a2a":
             return {"a2a.method": "message/send"}
         if protocol == "inference":
-            return {"inference.model": "qwen2.5:7b"}
+            return {"inference.model": MODEL}
         return {"http.method": "POST", "url.path": "/intake", "url.scheme": "http"}
 
     def _serving(self, leg: cl.Leg, open_: list["Renderer._Open"]) -> "Renderer._Open | None":

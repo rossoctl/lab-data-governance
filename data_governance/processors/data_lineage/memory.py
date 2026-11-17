@@ -48,11 +48,25 @@ data-flow claim). So the memory node is modelled as :class:`MemoryNode`
 default. Inbound payloads pool per *memory node*, not per entity, so introducing
 keying later is a value change in :func:`memory_node_for_leg` — not a migration and
 not a change to the traversal.
+
+**Memory scope (label lineage only).** Every entity has one scope: ``call`` links
+what it received inside one invocation to what it sends later in it;
+``conversation`` links across its invocations under one root; ``persistent`` is
+memory across conversations. The default comes from the kind
+(:data:`SCOPE_BY_KIND`); a declaration per entity, keyed by its ``natural_key``
+(``LABEL_MEMORY_SCOPES``, a JSON object, parsed by :func:`parse_scopes`), overrides it.
+:func:`scope` answers it. Inside one conversation the label fold asks
+:func:`mixes_calls`: what :func:`accumulates` says by kind, unless a declaration
+says ``call`` or ``conversation``; an entity declared ``persistent`` keeps what its
+kind does there. Nothing reads ``persistent`` yet. A declared key that matches no
+entity changes nothing and is not reported. Data lineage reads none of this.
 """
 
 from __future__ import annotations
 
 import dataclasses
+import json
+from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -186,3 +200,84 @@ def memory_node_for_leg(entity: Entity, leg: Leg) -> MemoryNode:
     to change.
     """
     return memory_node(entity)
+
+
+# --- memory scope (label lineage) ---------------------------------------------
+
+SCOPES = ("call", "conversation", "persistent")
+
+# The scope of each **Entity** kind when nothing is declared. An LLM is call scope
+# wherever it runs, recognised by its kind, never by a hostname. `service` is an
+# external service that is not an LLM: it remembers what it was sent. `user` and
+# `client` keep what the fold does with them today.
+SCOPE_BY_KIND: Mapping[str, str] = {
+    "llm": "call", "tool": "call", "user": "call", "client": "call",
+    "agent": "conversation",
+    "service": "persistent",
+}
+
+# The declaration: a JSON object, natural key -> scope. Read by the label-lineage
+# processor at startup (``driver.configured``).
+SCOPES_ENV_VAR = "LABEL_MEMORY_SCOPES"
+
+NO_DECLARATION: Mapping[str, str] = {}   # never mutated: a default, read only
+
+
+class InvalidScopes(ValueError):
+    """``LABEL_MEMORY_SCOPES`` is not a JSON object of natural keys to scopes."""
+
+
+def _no_duplicates(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    out: dict[str, object] = {}
+    for key, value in pairs:
+        if key in out:
+            raise InvalidScopes(f"{SCOPES_ENV_VAR}: the key {key!r} is given twice in one object")
+        out[key] = value
+    return out
+
+
+def parse_scopes(raw: str | None) -> dict[str, str]:
+    """natural key -> declared scope, from a JSON object ``{"<natural_key>": "<scope>"}``
+    (unset or blank: nothing declared). Not JSON this parser can read (nesting too deep
+    or an integer too long included), not an object, an empty key, a value that is not a
+    scope, or a key given twice (at any depth) raises; nothing falls back."""
+    if not (raw or "").strip():
+        return {}
+    try:
+        parsed = json.loads(raw, object_pairs_hook=_no_duplicates)
+    except InvalidScopes:
+        raise
+    except ValueError as exc:   # JSONDecodeError, or an integer longer than the parser's digit limit
+        raise InvalidScopes(f"{SCOPES_ENV_VAR} is not JSON this parser can read: {exc}") from None
+    except RecursionError:
+        raise InvalidScopes(f"{SCOPES_ENV_VAR} is not JSON this parser can read: nested too deeply") from None
+    if not isinstance(parsed, dict):
+        raise InvalidScopes(f"{SCOPES_ENV_VAR} is a JSON object of natural keys to scopes, got {raw.strip()!r}")
+    for key, value in parsed.items():
+        if not key:
+            raise InvalidScopes(f"{SCOPES_ENV_VAR}: an empty natural key")
+        if not isinstance(value, str) or value not in SCOPES:
+            raise InvalidScopes(f"{SCOPES_ENV_VAR}: {key!r} declares {value!r}; a scope is one of {', '.join(SCOPES)}")
+    return parsed
+
+
+def scope(entity: Entity, declared: Mapping[str, str] = NO_DECLARATION) -> str:
+    """The memory scope of *entity*: its declaration, else its kind's default. A kind
+    outside the entity vocabulary raises (``entities.kind`` is a closed enum)."""
+    if entity.natural_key in declared:
+        return declared[entity.natural_key]
+    try:
+        return SCOPE_BY_KIND[entity.kind]
+    except KeyError:
+        raise ValueError(f"entity {entity.natural_key} has kind {entity.kind!r}, which has no memory scope") from None
+
+
+def mixes_calls(entity: Entity, declared: Mapping[str, str] = NO_DECLARATION) -> bool:
+    """Inside one conversation, does label lineage pool *entity*'s calls into one
+    memory? What :func:`accumulates` says by kind, unless *entity* is declared
+    ``call`` (per call) or ``conversation`` (pooled); ``persistent`` keeps the kind's
+    answer here."""
+    declared_scope = declared.get(entity.natural_key)
+    if declared_scope in ("call", "conversation"):
+        return declared_scope == "conversation"
+    return accumulates(entity)

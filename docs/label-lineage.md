@@ -3,8 +3,11 @@
 A classifier finds **units** in payloads (an SSN, a name, a booking reference). Label lineage says,
 for every payload of a trace, which earlier units are still present in it, and gives the risk engine
 those labels as if the classifier had found them there. It is a second derivation beside data
-lineage (ADR-0028, untouched): the same legs, the same inbound routing
-(`traversal.inbound_sets`), the same classifier output.
+lineage (ADR-0028, untouched): the same legs and the same classifier output. Its inbound routing
+starts from the same function (`traversal.inbound_sets`, D1 and D2) and differs from data lineage's
+in three ways: a memoryless entity's response answers its own request, a tool or an LLM inside a call
+is routed by that call, and an entity's declared memory scope replaces its kind's (all under
+[The fold at one leg](#the-fold-at-one-leg)).
 
 ## Terms
 
@@ -23,6 +26,18 @@ lineage (ADR-0028, untouched): the same legs, the same inbound routing
   a number must be the whole number there (`123-45-6789` is not found inside `7788-123-45-6789`).
   No case fold, no separator reading, no digit comparison. Identifier and content are the same
   thing under exact match.
+- **memory scope** — what an entity remembers: `call` (inside one invocation), `conversation`
+  (across its invocations under one root), `persistent` (across conversations). By kind: `llm`,
+  `tool`, `user`, `client` call; `agent` conversation; `service` persistent. `LABEL_MEMORY_SCOPES`
+  (a JSON object, `{"<natural_key>": "<scope>"}`) declares it per entity; not JSON this parser can
+  read (nested too deeply or an integer too long included), not an object, an empty key, an unknown scope or a key given twice
+  (at any depth) exits 2. A declared key that matches no entity changes nothing and is not reported.
+  Inside one conversation only a declared `call` or `conversation` changes the fold; an entity
+  declared `persistent` keeps what its kind does there, and nothing reads `persistent` yet.
+  A changed declaration re-derives nothing by itself: it reaches a conversation when that
+  conversation is derived again, so until the replay (the recovery in `deploy/k8s/93-label-lineage.yaml`)
+  history is a mix of the old and the new declaration, conversation by conversation.
+  `processors/data_lineage/memory.py` holds it; data lineage reads none of it.
 
 ## The fold at one leg
 
@@ -31,7 +46,7 @@ egress request can carry a lower seq than the store read that fed it). At each p
 
 1. **inputs** — the leg's inbound legs (requests reach the callee, responses the caller; agents
    keep every prior, every other kind only its latest; a memoryless entity's response answers its own
-   request). Each contributes the occurrences it holds.
+   request; an entity declared `conversation` keeps every prior, one declared `call` only its call's). Each contributes the occurrences it holds.
 2. **find** — the finder, once per input, returns candidate occurrences at this payload.
 3. **attribute** — one owner per span: (a) a same-type finding inside what reached (by span, or
    as a value inside the held value) is that unit confirmed, not a new origin; (b) nested

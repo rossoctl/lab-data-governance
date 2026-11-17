@@ -161,6 +161,14 @@ def test_a_problem_reading_the_rows_of_any_one_run_is_red(mode):
     assert out.status == "RED" and out.reasons == [f"{mode}: the flagged leg's record is missing"]
 
 
+def test_a_declared_key_no_derived_entity_has_is_a_problem():
+    from .engine import undeclared
+    declared = {"tool:lab/t2": "conversation", "T2": "conversation"}   # the second names a party, not an entity
+    problems = undeclared(declared, {"tool:lab/t2", "agent:lab/a"})
+    assert problems == ["scopes declares T2 as conversation, which is no derived entity"]
+    assert undeclared(declared, {"tool:lab/t2", "T2"}) == [] and undeclared({}, set()) == []
+    assert _judge(_case(), problems=problems).status == "RED"
+
 
 # --- the evidence and the marks of the cross run -----------------------------------------------------------------
 
@@ -226,15 +234,42 @@ def test_a_problem_reading_the_rows_is_red_even_for_a_pending_case():
 
 def test_a_held_case_is_pending_only_for_exactly_what_this_branch_lacks():
     from .report import judge_held
-    held = _case(scopes={"V1": "call"}, pending=Pending("waits", held=frozenset({"scopes"})))
+    held = _case(config={"payload_bytes": 1}, pending=Pending("waits", held=frozenset({"config"})))
     out = judge_held(held)
-    assert out.status == "PENDING" and out.runs == {} and out.reasons[1].startswith("held, not run: needs the memory")
+    assert out.status == "PENDING" and out.runs == {} and out.reasons[1].startswith("held, not run: needs the limits")
     assert judge_held(_case(scopes={"V1": "call"}, config={"payload_bytes": 1},
-                            pending=Pending("waits", held=frozenset({"scopes"})))).status == "RED"
-    assert judge_held(_case(scopes={"V1": "call"})).status == "RED"            # no pending block at all
+                            pending=Pending("waits", held=frozenset({"scopes", "config"})))).status == "RED"
+    assert judge_held(_case(config={"payload_bytes": 1})).status == "RED"      # no pending block at all
+    ran = _judge(_case(scopes={"V1": "call"}, pending=Pending("waits", held=frozenset({"scopes"}))))   # the branch has it
+    assert ran.status == "RED" and ran.reasons[0].startswith("held for ['scopes'], which this branch has")
     unused = _judge(_case(pending=Pending("waits", held=frozenset({"switch"}))))   # lacked or not, the case uses none
     assert unused.status == "RED" and unused.reasons[0].startswith(
         "held for ['switch'], but the case does not use ['switch']")
+
+
+@pytest.mark.parametrize("case_id, want", [
+    ("K12", {"service:api.v2.partner.example:8000": "call"}),
+    ("K13", {"agent:lab/a": "persistent"}),
+    ("K22a", {"tool:lab/t2": "persistent"}),
+    ("K1", {}),
+])
+def test_a_case_declares_its_scopes_through_the_production_parser(case_id, want):
+    from data_governance.processors.data_lineage import memory
+    from .engine import declaration
+    case = load_case(CASES_DIR / case_id)
+    assert dict(memory.parse_scopes(declaration(case, render(case.id, case.units, case.line)))) == want
+
+
+def test_every_party_kind_has_a_natural_key_the_parser_takes():
+    from data_governance.processors.data_lineage import memory
+    from .engine import declaration
+    line = "U>A[-], A>L[-], L>A[-], A>T1[-], T1>V1[-], V1>T1[-], T1>A[-], A>U[-]"
+    case = _case(line_text=line, line=cl.parse(line), edges=set(),
+                 scopes={"U": "call", "A": "call", "L": "conversation", "T1": "persistent", "V1": "call"})
+    assert dict(memory.parse_scopes(declaration(case, render(case.id, case.units, case.line)))) == {
+        "client:(unknown)": "call", "agent:lab/a": "call",
+        "llm:host.containers.internal:11434/qwen2.5:7b": "conversation", "tool:lab/t1": "persistent",
+        "service:api.v1.partner.example:8000": "call"}
 
 
 def test_a_case_uses_what_its_keys_and_steps_name():

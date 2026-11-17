@@ -68,7 +68,7 @@ from __future__ import annotations
 import dataclasses
 import datetime as dt
 import enum
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 from data_governance.interaction_order import (
     LegOrderEvent,
@@ -345,6 +345,7 @@ def inbound_sets(
     entities: dict[str, Entity],
     *,
     pair_responses: bool = False,
+    accumulates: Callable[[Entity], bool] | None = None,
 ) -> dict[LegKey, tuple[LegKey, ...]]:
     """The inbound legs of every leg of *legs*, walking them **in the order given**.
 
@@ -360,7 +361,12 @@ def inbound_sets(
     interaction's request (when that request is among *legs*) instead of the
     latest request the entity received: with two callers in flight, "latest" is
     the other caller's question. Off by default, so data lineage keeps D2 exactly.
+
+    ``accumulates`` replaces :func:`.memory.accumulates` as D2's predicate (label
+    lineage passes :func:`.memory.mixes_calls` under its scope declaration). Unset
+    by default, so data lineage keeps D2 exactly.
     """
+    accumulates = accumulates or memory.accumulates
     retained: dict[memory.MemoryNode, list[LegKey]] = {}
     given = {(leg.interaction_id, leg.leg_type) for leg in legs}
     result: dict[LegKey, tuple[LegKey, ...]] = {}
@@ -372,7 +378,7 @@ def inbound_sets(
             if (
                 pair_responses
                 and leg.leg_type == "response"
-                and not memory.accumulates(producer)
+                and not accumulates(producer)
                 and own_request in given
             ):
                 result[key] = (own_request,)
@@ -382,7 +388,7 @@ def inbound_sets(
         # Routed AFTER its own entry is read, so a leg never sees itself and sees
         # only legs earlier in the order given (D1's "an interaction with LOWER
         # sequence" when the order is seq; wire order for label lineage).
-        _route_inbound(leg, entities, retained)
+        _route_inbound(leg, entities, retained, accumulates)
     return result
 
 
@@ -435,6 +441,7 @@ def _route_inbound(
     leg: Leg,
     entities: dict[str, Entity],
     retained: dict[memory.MemoryNode, list[LegKey]],
+    accumulates: Callable[[Entity], bool],
 ) -> None:
     """Deliver *leg*'s payload into its consumer's memory node (D1 + D2).
 
@@ -458,7 +465,7 @@ def _route_inbound(
         return
     node = memory.memory_node_for_leg(consumer, leg)
     key = (leg.interaction_id, leg.leg_type)
-    if memory.accumulates(consumer):
+    if accumulates(consumer):
         retained.setdefault(node, []).append(key)
     else:
         retained[node] = [key]

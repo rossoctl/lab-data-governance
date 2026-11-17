@@ -893,6 +893,24 @@ value and is never persisted, so this says nothing either way about schema
 churn: `lineage_metadata` records the resulting sources, transformations and
 entities, not the memory nodes they were pooled through.
 
+**Memory scope**:
+What an **Entity** remembers, for label lineage only: `call` (inside one
+invocation), `conversation` (across its invocations under one root) or
+`persistent` (across conversations). The default
+is by kind (`llm`, `tool`, `user`, `client` call; `agent` conversation; `service`
+persistent), a declaration per entity natural key (`LABEL_MEMORY_SCOPES`, a
+JSON object) overrides it. An LLM is recognised by its kind, never by a hostname. Inside one
+trace the label fold pools an entity's calls as the **Accumulating entity**
+predicate says, unless the entity is declared `call` or `conversation`; an
+entity declared `persistent` keeps what its kind does there. Nothing reads
+`persistent` yet. A declared key that matches no entity changes nothing and is
+not reported. A changed declaration re-derives nothing by itself: until the
+replay, history is a mix of the old and the new declaration, conversation by
+conversation. Lives beside that predicate in `processors/data_lineage/memory.py`;
+data lineage reads none of it.
+_Avoid_: reading "persistent" as "accumulating" — a `service` is persistent and
+still keeps one memory per call inside a trace.
+
 **P-data-lineage**:
 The processor that derives **Data lineage**. A Layer-2 processor, sibling of
 `P-interactions` and **P-classification**; drains the `interaction_legs` stream

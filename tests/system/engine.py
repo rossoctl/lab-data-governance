@@ -7,7 +7,8 @@ drain (replayed model output through the production seam) -> label-lineage drain
 A case runs its steps (by default: send every leg, then drain): ``send`` puts legs on
 the wire, ``drain`` runs every drain from where it stopped, ``derive`` queues a
 conversation for derivation again through the production correction queue. A run is
-in one of three modes, set through the production switches (:func:`switches`).
+in one of three modes, set through the production switches (:func:`switches`). A case's
+``scopes:`` reach label lineage as the production declaration (:func:`declaration`).
 
 A drain may stop early by design (leg-ready holds its cursor while OPA is down) and
 returns where it stopped: a run where a drain stopped short of its stream's end or
@@ -22,14 +23,15 @@ import json
 import os
 import time
 from collections import Counter, defaultdict
+from collections.abc import Mapping
 from typing import Any
 
 import psycopg
 
 from data_governance import db
-from data_governance.label_lineage import find
 from data_governance.processors.classification import driver as classification
 from data_governance.processors.data_lineage import driver as data_lineage
+from data_governance.processors.data_lineage import memory
 from data_governance.processors.interactions import sidecar_driver as interactions
 from data_governance.processors.label_lineage import driver as label_lineage
 from data_governance.processors.leg_ready import driver as leg_ready
@@ -39,13 +41,12 @@ from tools.load_trace import rows_to_request
 
 from . import classify
 from .cases import Case, Edge, fmt_edges
-from .render import Rendered, render
+from .render import Renderer, Rendered, render
 
 # The production paths a case can need that this branch does not have yet: a case that uses one is held, not run
 # (``Case.uses``; its ``expect.pending.held`` names them). The change that builds a path removes its row here and
 # applies it in :func:`run_case`, where the comment of each row says.
 NOT_ON_BRANCH = {
-    "scopes": "the memory scope declared per entity: applied in run_case before the first send",
     "switch": "the cross-conversation switch: set by switches() per mode, and by a cross step",
     "config": "the limits as configuration: set in run_case before the first send",
     "reclassify": "a classification replaced and its conversation derived again: a reclassify step",
@@ -239,6 +240,40 @@ def backlog(dsn: str, mode: str) -> tuple[dict[str, int], dict[str, int]]:
 
 
 @contextlib.contextmanager
+def environment(values: dict[str, str]):
+    """Set *values* in the environment the processors read, and restore it after."""
+    saved = {k: os.environ.get(k) for k in values}
+    os.environ.update(values)
+    try:
+        yield
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k)
+            else:
+                os.environ[k] = v
+
+
+def declaration(case: Case, renderer: Renderer) -> str:
+    """The case's ``scopes:`` as ``LABEL_MEMORY_SCOPES``, a JSON object: each party by the natural key the
+    derivation gives it (``{}`` for a case without scopes)."""
+    return json.dumps({renderer.natural_key(party): scope for party, scope in sorted(case.scopes.items())})
+
+
+def derived_keys(dsn: str) -> set[str]:
+    """The natural key of every entity the run derived."""
+    with psycopg.connect(dsn) as conn:
+        return {r[0] for r in conn.execute("SELECT natural_key FROM entities").fetchall()}
+
+
+def undeclared(declared: Mapping[str, str], derived: set[str]) -> list[str]:
+    """A key the processor was configured with (*declared*, as it parsed it) that no derived entity has: the
+    declaration reached nothing."""
+    return [f"scopes declares {key} as {declared[key]}, which is no derived entity"
+            for key in sorted(declared) if key not in derived]
+
+
+@contextlib.contextmanager
 def switches(mode: str):
     """The production switches of *mode*, through the environment the processors read: inherited labels off in
     ``off``, on in ``conv`` and ``cross``. The cross-conversation switch arrives with the crossing core, which
@@ -290,7 +325,9 @@ def run_case(case: Case, *, dsn: str, grpc_endpoint: str, opa_client, mode: str)
 
     cursors = {s: 0 for s in STREAMS}
     sent = 0
-    with switches(mode):
+    # the suite runs the exact finder; the case's scopes, or none, through the processor's own configuration
+    with switches(mode), environment({"LABEL_MATCHER": "exact", memory.SCOPES_ENV_VAR: declaration(case, renderer)}):
+        config = label_lineage.configured()
         try:
             for step in case.steps:
                 if step[0] == "send":
@@ -310,8 +347,7 @@ def run_case(case: Case, *, dsn: str, grpc_endpoint: str, opa_client, mode: str)
                     cursors["classification"] = classification.drain(
                         cursors["classification"], detector=detector, model_version=detector.model_version)
                     lap("classification")
-                    cursors["label_lineage"] = label_lineage.drain(cursors["label_lineage"],
-                                                                   label_lineage.Config(find.exact, "exact"))
+                    cursors["label_lineage"] = label_lineage.drain(cursors["label_lineage"], config)
                     lap("label_lineage")
                     # made at each drain, once the legs it judges are in (the outage test reads the last leg then)
                     cursors["leg_ready"] = leg_ready.drain(cursors["leg_ready"],
@@ -323,7 +359,7 @@ def run_case(case: Case, *, dsn: str, grpc_endpoint: str, opa_client, mode: str)
             leg_ready._label_hold[:] = saved_hold
 
     obs = _read(case, renderer.rendered, dsn, mode)
-    obs.problems[:0] = unfinished(cursors, *backlog(dsn, mode))
+    obs.problems[:0] = unfinished(cursors, *backlog(dsn, mode)) + undeclared(config.scopes, derived_keys(dsn))
     obs.observer_calls = calls["n"]
     lap("read")
     obs.timings = {**timings, "total": round(sum(timings.values()), 4)}
