@@ -1,13 +1,16 @@
 """Prometheus metrics for the P-leg-ready consumer (issue #123, ADR-0027).
 
-The observability surface is one counter, registry-isolated per test
-(``make_registry``, mirroring the sibling consumers' metrics tests):
+The observability surface is two counters, registry-isolated per test
+(``make_registry``, mirroring the sibling consumers' metrics tests); this module pins
+the first, ``tests/risk/engine/test_tiers.py`` the second:
 
 - ``legs_observed_total`` — one increment per ready **Interaction leg** the drain
   loop delivers to the downstream governance consumer. A second, independent check
   on the exactly-once + readiness-gate acceptance criteria: after a full drain it
   equals the number of ready legs past the cursor, an unready leg is not counted,
   and a restart re-draining from the durable cursor does not advance it.
+- ``late_findings_total`` — one increment per risk record version that is a late
+  finding (``interaction_risk_tiers.late``).
 """
 
 from __future__ import annotations

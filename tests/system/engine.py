@@ -9,7 +9,7 @@ the wire, ``drain`` runs every drain from where it stopped, ``derive`` queues a
 conversation for derivation again through the production correction queue, ``reclassify`` classifies every
 payload again by ADR-0024's runbook with the stated findings taken away (:func:`reclassify`), ``cross`` turns the
 cross-conversation switch on or off for the drains after it (label lineage and leg-ready, as a
-restart would). A run is in one of three modes, set through the production switches (:func:`switches`). A case's
+restart would), in the off and cross runs; the conv run keeps it off. A run is in one of three modes, set through the production switches (:func:`switches`). A case's
 ``scopes:`` reach label lineage as the production declaration (:func:`declaration`), its ``config:`` as the
 production limits (:data:`LIMIT_ENV`).
 
@@ -49,10 +49,8 @@ from .render import Renderer, Rendered, render
 
 # The production paths a case can need that this branch does not have yet: a case that uses one is held, not run
 # (``Case.uses``; its ``expect.pending.held`` names them). The change that builds a path removes its row here and
-# applies it in :func:`run_case`, where the comment of each row says.
-NOT_ON_BRANCH = {
-    "tiers": "the verdict tiers: read by verdict_at",
-}
+# applies it in :func:`run_case`, where the comment of each row says. Every path is on this branch now.
+NOT_ON_BRANCH: dict[str, str] = {}
 
 # A case's ``config:`` key -> the environment variable the label-lineage processor reads it from.
 LIMIT_ENV = {cross.HOLDINGS_PER_ENTITY: cross.HOLDINGS_LIMIT_ENV_VAR, cross.PAYLOAD_BYTES: cross.PAYLOAD_BYTES_ENV_VAR,
@@ -118,19 +116,23 @@ def _wait_rows(dsn: str, n: int, timeout: float = 5.0) -> None:
     raise TimeoutError(f"receiver stored fewer than {n} spans")
 
 
-def verdict_at(records: list[dict[str, Any]], role: str
+def verdict_at(records: list[dict[str, Any]], role: str, *, listed: bool = False, tiers: bool = False
                ) -> tuple[dict[str, Any] | None, str | tuple[str, ...] | None, str | None]:
     """The latest risk record of the flagged exchange that evidences the flagged leg (*role* in its ``legs``), the
     decision, and a problem when there is none. The decision is the records' ``enforcement_type`` as written: a
     string when every version agrees (a single stated verdict needs that), else every version in order, repeats
-    included, which a stated history must equal exactly. The harness sends every span before the processors run,
-    so the record evidences the exchange's response too; the renderer refuses a flagged exchange whose response
-    carries a unit, and the judge one whose response the model labelled."""
+    included, which a stated history must equal exactly. When the case states a history (*listed*) it is always the
+    tuple, and every version that is a late finding says ``late`` (a single verdict cannot hide one: a late version
+    differs from the one before it); with *tiers* (the case names a tier anywhere) every version says the tier that
+    decided it. The harness sends every span before the processors run, so the record evidences the exchange's
+    response too; the renderer refuses a flagged exchange whose response carries a unit, and the judge one whose
+    response the model labelled."""
     mine = [r for r in records if role in r["legs"]]
     if not mine:
         return None, None, f"no risk record evidences the flagged {role} leg"
-    history = tuple(r["enforcement_type"] for r in mine)
-    return mine[-1], history[0] if len(set(history)) == 1 else history, None
+    history = tuple(r["enforcement_type"] + (f" tier {r['tier']}" if tiers else "")
+                    + (" late" if listed and r["late"] else "") for r in mine)
+    return mine[-1], history[0] if len(set(history)) == 1 and not listed else history, None
 
 
 def flagged_response_problems(rendered: list[Rendered], legs: dict[int, "LegRows"], sink: int) -> list[str]:
@@ -373,9 +375,10 @@ def run_case(case: Case, *, dsn: str, grpc_endpoint: str, opa_client, mode: str)
                     detector = reclassify(dsn, detector, case, renderer, step[1])
                     cursors["classification"] = 0
                 elif step[0] == "cross":
-                    os.environ[cross.SWITCH_ENV_VAR] = step[1]     # restored by switches()
-                    config = label_lineage.configured()
-                    restarted()
+                    if mode != "conv":       # the conv run is the cross switch off, whatever a step says
+                        os.environ[cross.SWITCH_ENV_VAR] = step[1]     # restored by switches()
+                        config = label_lineage.configured()
+                        restarted()
                 elif step[0] == "drain":
                     cursors["interactions"] = interactions.drain(cursors["interactions"])
                     lap("interactions")
@@ -439,16 +442,22 @@ def _read(case: Case, rendered: list[Rendered], dsn: str, mode: str) -> Observat
             "origin_interaction_id, origin_leg_type, unit_start, unit_end, entity_type, value_text, "
             "span_start, span_end, held_from, held_to HAVING count(*) > 1").fetchall()
         risk_rows = conn.execute(
-            "SELECT interaction_id, version, risk_level, enforcement_type, triggered_rule_ids, legs_evidenced, "
-            "classification_summary FROM interaction_risk_records ORDER BY interaction_id, version").fetchall()
+            "SELECT r.interaction_id, r.version, r.risk_level, r.enforcement_type, r.triggered_rule_ids, "
+            "r.legs_evidenced, r.classification_summary, t.tier, t.late FROM interaction_risk_records r "
+            "LEFT JOIN interaction_risk_tiers t USING (interaction_id, version) "
+            "ORDER BY r.interaction_id, r.version").fetchall()
 
     records: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for iid, version, level, enf, rules, legs_ev, summary in risk_rows:
+    untiered: list[str] = []
+    for iid, version, level, enf, rules, legs_ev, summary, tier, late in risk_rows:
         records[iid].append({"version": version, "risk_level": level, "enforcement_type": enf,
-                             "rules": list(rules or []), "legs": list(legs_ev or []),
+                             "rules": list(rules or []), "legs": list(legs_ev or []), "tier": tier, "late": late,
                              "summary": summary if isinstance(summary, dict) else json.loads(summary or "{}")})
+        if tier is None:
+            untiered.append(f"risk record {iid} v{version} has no tier row")
 
     key_of_leg, leg_of_key, problems = map_legs(rendered, ix_of, hash_of, set(payload_text))
+    problems += untiered      # every version is written with its tier row, in every mode
     resolved, raw, inherited, edge_problems = resolve_edges(case, edges, leg_of_key)
     problems += edge_problems
     sink = case.line.sink
@@ -456,7 +465,9 @@ def _read(case: Case, rendered: list[Rendered], dsn: str, mode: str) -> Observat
     if sink:
         key = key_of_leg.get(sink.index)
         if key is not None:
-            sink_record, verdict, problem = verdict_at(records.get(key[0], []), key[1])
+            sink_record, verdict, problem = verdict_at(records.get(key[0], []), key[1],
+                                                       listed=isinstance(case.verdict.get(mode), tuple),
+                                                       tiers="tiers" in case.uses)
             if problem:
                 problems.append(problem)
 

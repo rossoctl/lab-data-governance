@@ -250,8 +250,11 @@ def test_a_problem_reading_the_rows_is_red_even_for_a_pending_case():
 TIERED = {"off": ("allow tier 1",), "conv": ("allow tier 1",), "cross": ("allow tier 1", "block tier 2")}
 
 
-def test_a_held_case_is_pending_only_for_exactly_what_this_branch_lacks():
+def test_a_held_case_is_pending_only_for_exactly_what_this_branch_lacks(monkeypatch):
+    from . import engine
     from .report import judge_held
+    # every path is on the branch now: the machinery is shown on the last one built, as if it were not
+    monkeypatch.setitem(engine.NOT_ON_BRANCH, "tiers", "the verdict tiers: read by verdict_at")
     held = _case(verdict=TIERED, pending=Pending("waits", held=frozenset({"tiers"})))
     out = judge_held(held)
     assert out.status == "PENDING" and out.runs == {} and out.reasons[1].startswith("held, not run: needs the verdict")
@@ -438,8 +441,8 @@ def test_two_origins_of_one_value_are_two_rows_by_right_and_one_origin_twice_is_
     assert problems == ["edge s1 1>2 (MRN) drawn by 2 rows"]
 
 
-def _record(version, legs, enforcement):
-    return {"version": version, "legs": legs, "enforcement_type": enforcement}
+def _record(version, legs, enforcement, tier=0, late=False):
+    return {"version": version, "legs": legs, "enforcement_type": enforcement, "tier": tier, "late": late}
 
 
 @pytest.mark.parametrize("records, role, verdict, problem", [
@@ -455,6 +458,20 @@ def test_the_verdict_is_the_decision_history_of_the_records_that_evidence_the_fl
                                                                                           problem):
     _, got, why = verdict_at(records, role)
     assert (got, why) == (verdict, problem)
+
+
+def test_a_stated_history_shows_every_late_finding_and_a_named_tier_on_every_version():
+    records = [_record(1, ["request"], "allow", 1), _record(2, ["request"], "block", 2, True)]
+    assert verdict_at(records, "request", listed=True)[1] == ("allow", "block late")
+    assert verdict_at(records, "request", listed=True, tiers=True)[1] == ("allow tier 1", "block tier 2 late")
+    assert verdict_at(records[:1], "request", listed=True, tiers=True)[1] == ("allow tier 1",)   # one version
+    assert verdict_at(records[:1], "request")[1] == "allow"          # a single verdict states no tier
+
+
+def test_a_late_finding_the_history_does_not_state_is_red():
+    case = _case(verdict={"off": "allow", "conv": "allow", "cross": ("allow", "block")})
+    out = _judge(case, verdicts={"off": "allow", "conv": "allow", "cross": ("allow", "block late")})
+    assert out.status == "RED" and "verdict cross: want ('allow', 'block'), got ('allow', 'block late')" in out.reasons
 
 
 def test_a_single_verdict_stated_against_a_changed_decision_is_red():
@@ -864,6 +881,9 @@ def test_the_loader_reads_a_level_evidence_marks_and_a_history(tmp_path: Path):
     ("{'off': [], conv: allow, cross: allow}", "a decision history lists"),
     ("{'off': [allow at 1], conv: allow, cross: allow}", "a decision history lists"),
     ("{'off': [allow tier 3], conv: allow, cross: allow}", "a decision history lists"),
+    ("{'off': [late], conv: allow, cross: allow}", "a decision history lists"),          # late is no decision
+    ("{'off': [allow tier 1, block late], conv: allow, cross: allow}", "states it on every version"),
+    ("{'off': [allow tier 0], conv: [allow], cross: allow}", "states it on every version"),
 ])
 def test_a_decision_history_names_each_tier(tmp_path: Path, verdict, error):
     with pytest.raises(ValueError, match=re.escape(error)):

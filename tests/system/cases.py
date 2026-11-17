@@ -15,8 +15,9 @@ the shipped cases; it loads, ``test_judge`` loads it), every key shown:
     expect:
       verdict: {'off': allow, conv: allow, cross: block}   # of the flagged exchange in each mode (quote 'off': a
                                                   # bare off is a YAML 1.1 boolean); compared as the record writes
-                                                  # it; a list is the decision history, every version in order
-                                                  # ([allow, block]; with tiers [allow tier 1, ...])
+                                                  # it; a list is the decision history, every version in order,
+                                                  # a late finding marked ([allow, block late]; naming a tier,
+                                                  # every version names it: [allow tier 1, block tier 2 late])
       edges: [s1 2>3, s3 2>3]                     # the in-conversation edges: every run draws exactly these
       cross: [s1 3>10 vo, s1 10>11, s1 11>12]     # what the cross run draws besides: crossings carry their level
                                                   # (vo value-only, co corroborated), and the edges that rest on them
@@ -73,7 +74,7 @@ _LEVEL_OR_NONE = f"(?: ({'|'.join(LEVELS)}))?"
 _EDGE = re.compile(rf"(s\d+) (\d+)>(\d+){_LEVEL_OR_NONE}")
 _KIND = re.compile(rf"classified (\S+)|inherited|crossed ({'|'.join(LEVELS)})( ambiguous)?")
 _MARK = re.compile(rf"common [1-9]\d*|incomplete ({'|'.join(LIMITS)})")
-_DECISION = re.compile(r"\S+( tier [012])?")
+_DECISION = re.compile(r"(?!(?:tier|late)\b)\S+( tier [012])?( late)?")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -238,11 +239,15 @@ def _verdict(name: str, d: dict) -> dict[str, str | tuple[str, ...]]:
         if isinstance(v, list):
             bad = [x for x in v if not _DECISION.fullmatch(str(x))]
             if not v or bad:
-                raise ValueError(f"{name}: a decision history lists \"<decision>\" or \"<decision> tier <0|1|2>\" "
+                raise ValueError(f"{name}: a decision history lists \"<decision>[ tier <0|1|2>][ late]\" "
                                  f"in order, got {v!r}")
             out[mode] = tuple(v)
         else:
             out[mode] = str(v)
+    histories = [d for v in out.values() if not isinstance(v, str) for d in v]
+    if any(" tier " in d for d in histories) and not all(" tier " in d for d in histories):
+        raise ValueError(f"{name}: a case that names a tier states it on every version of every history, "
+                         f"got {histories!r}")
     return out
 
 

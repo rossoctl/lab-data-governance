@@ -17,6 +17,18 @@ commits atomically with the stream's cursor advance.
     actually differs from the latest stored one (FR-DAS-014 idempotency).
     A prior version is never mutated (FR-DAS-013/032 immutability).
 
+**Tiers.** The policy is asked per tier of evidence on one snapshot
+(:func:`labels.tiers`: classification; with inherited labels on, the labels known
+inside the conversation; with the cross switch on too, the crossed labels), and the
+record takes :func:`utils.strictest` of them: a later tier never relaxes an earlier
+one, and a new snapshot asks every tier again, so a correction of the evidence may.
+A lower tier the policy cannot answer never discards a known block (:func:`_decide`).
+Each version gets one ``interaction_risk_tiers`` row in the same write: the tier that
+decided it, and ``late`` when it is stricter than the latest earlier version that
+evidenced the same legs (a finding after the same evidence could have been answered;
+counted by ``late_findings_total``). The record itself is what it was before tiers whenever
+the policy never relaxes on more evidence.
+
 Concurrent recomputes of one interaction are serialized, not retried. Both
 writes (the policy decision and the risk record) are a read → compare →
 insert, and each runs under :data:`_LOCK_SQL`, a transaction-scoped advisory
@@ -44,9 +56,10 @@ import json
 from collections.abc import Callable
 
 from data_governance import db
+from data_governance.processors.leg_ready import metrics as leg_ready_metrics
 from data_governance.risk.engine import labels, utils
 from data_governance.risk.engine.evidence import gather_evidence
-from data_governance.risk.engine.opa import OpaClient
+from data_governance.risk.engine.opa import OpaClient, OpaError
 from data_governance.risk.rules.rego import FALLBACK_RULE_ID
 
 __all__ = ["RecordWrite", "compute_interaction_risk", "prepare_interaction_risk"]
@@ -112,6 +125,19 @@ SELECT %(interaction_id)s, %(trace_id)s, %(parent_interaction_id)s,
        %(overall_confidence)s
   FROM interaction_risk_records WHERE interaction_id = %(interaction_id)s
 """
+
+# The decision this version's evidence could have been answered with before it: the
+# latest version that evidenced the same legs. A version that adds a leg (the response
+# after the request) is a decision on new evidence, not a late finding.
+_PREVIOUS_SAME_LEGS_DECISION_SQL = (
+    "SELECT enforcement_type FROM interaction_risk_records "
+    "WHERE interaction_id = %s AND legs_evidenced = %s "
+    "ORDER BY version DESC LIMIT 1"
+)
+
+_INSERT_TIER_SQL = (
+    "INSERT INTO interaction_risk_tiers (interaction_id, version, tier, late) VALUES (%s, %s, %s, %s)"
+)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -180,6 +206,62 @@ def _cached_decision(
     return stored.decision if stored.evidence_fingerprint == fingerprint else None
 
 
+def _opa_input(evidence, inherited: labels.Inherited | None) -> dict:
+    return utils.build_opa_input(
+        legs=evidence.legs,
+        span_ids=evidence.span_ids,
+        classifications=evidence.classifications,
+        caller_entity_id=evidence.caller_entity_id,
+        callee_entity_id=evidence.callee_entity_id,
+        anchor=evidence.anchor,
+        inherited=inherited,
+    )
+
+
+def _ask(opa_client: OpaClient, interaction_id: str, opa_input: dict) -> utils.PolicyDecision:
+    opa_decision = opa_client.evaluate(interaction_id=interaction_id, opa_input=opa_input)
+    return utils.PolicyDecision(
+        risk_level=opa_decision.risk_level,
+        enforcement_type=opa_decision.enforcement_type,
+        allowed_actions=opa_decision.allowed_actions,
+        explanation=opa_decision.explanation,
+        triggered_rules=opa_decision.triggered_rules,
+        confidence=opa_decision.confidence,
+        policy_version=opa_decision.policy_version,
+    )
+
+
+def _decide(*, interaction_id: str, opa_client: OpaClient, evidence) -> tuple[utils.PolicyDecision, int]:
+    """The decision of one snapshot asked per tier of evidence (:func:`labels.tiers`)
+    and the tier that decided it (:func:`utils.strictest`). The highest tier is the
+    full evidence, decided as before through the cached decision
+    (:func:`_get_or_refresh_decision`); a lower tier is asked only when its input
+    differs from the tier below it and from the full evidence, and is not cached.
+    With nothing inherited every tier's input is the same: one decision.
+
+    A lower tier the policy cannot answer (:class:`~.opa.OpaError`) never discards a
+    block already known: the full evidence's block stands, decided at the highest
+    tier (what is known). Any other full decision is deferred with the error, as
+    before: the missing tier could still be stricter."""
+    views = labels.tiers(evidence.inherited)
+    top = _get_or_refresh_decision(interaction_id=interaction_id, opa_client=opa_client, evidence=evidence)
+    inputs = [_opa_input(evidence, view) for view in views]
+    decisions: list[utils.PolicyDecision] = []
+    try:
+        for k, opa_input in enumerate(inputs[:-1]):
+            if opa_input == inputs[-1]:
+                decisions.append(top)
+            elif k and opa_input == inputs[k - 1]:
+                decisions.append(decisions[k - 1])
+            else:
+                decisions.append(_ask(opa_client, interaction_id, opa_input))
+    except OpaError:
+        if top.enforcement_type != "block":
+            raise
+        return top, len(views) - 1
+    return utils.strictest(decisions + [top])
+
+
 def _get_or_refresh_decision(
     *,
     interaction_id: str,
@@ -217,28 +299,7 @@ def _get_or_refresh_decision(
     if cached is not None:
         return cached
 
-    opa_input = utils.build_opa_input(
-        legs=evidence.legs,
-        span_ids=evidence.span_ids,
-        classifications=evidence.classifications,
-        caller_entity_id=evidence.caller_entity_id,
-        callee_entity_id=evidence.callee_entity_id,
-        anchor=evidence.anchor,
-        inherited=evidence.inherited,
-    )
-    opa_decision = opa_client.evaluate(
-        interaction_id=interaction_id,
-        opa_input=opa_input,
-    )
-    decision = utils.PolicyDecision(
-        risk_level=opa_decision.risk_level,
-        enforcement_type=opa_decision.enforcement_type,
-        allowed_actions=opa_decision.allowed_actions,
-        explanation=opa_decision.explanation,
-        triggered_rules=opa_decision.triggered_rules,
-        confidence=opa_decision.confidence,
-        policy_version=opa_decision.policy_version,
-    )
+    decision = _ask(opa_client, interaction_id, _opa_input(evidence, evidence.inherited))
     with db.transaction() as tx:
         tx.execute(_LOCK_SQL, (_lock_key(interaction_id),))
         cached = _cached_decision(tx, interaction_id, fingerprint)
@@ -314,11 +375,11 @@ def _record_params(
     decision cache (``interaction_policy_decisions``) keeps OPA's answer
     verbatim — this is the one place the sentinel is interpreted.
 
-    ``policy_event_count`` follows from the same list: the engine makes one
-    OPA call per evidence state, so a record is exactly one evaluation — 1
-    when a catalog rule fired, 0 when only the fallback did (#222's
-    definition: a policy event is an evaluation that returned at least one
-    triggered rule).
+    ``policy_event_count`` follows from the same list: a record carries the
+    rules of the one decision it keeps (the full evidence's, cached, or a lower
+    tier's, asked again on every computation when its input differs, never cached) — 1 when a
+    catalog rule fired, 0 when only the fallback did (#222's definition: a
+    policy event is an evaluation that returned at least one triggered rule).
     """
     legs_evidenced = utils.legs_evidenced(legs)
     classification_summary = utils.classification_summary(classifications, inherited)
@@ -389,11 +450,7 @@ def prepare_interaction_risk(
     """
     evidence = gather_evidence(interaction_id)
 
-    decision = _get_or_refresh_decision(
-        interaction_id=interaction_id,
-        opa_client=opa_client,
-        evidence=evidence,
-    )
+    decision, tier = _decide(interaction_id=interaction_id, opa_client=opa_client, evidence=evidence)
 
     params, normalized = _record_params(
         interaction_id=evidence.interaction_id,
@@ -412,7 +469,12 @@ def prepare_interaction_risk(
         latest_row = tx.fetch_one(_LATEST_RISK_RECORD_SQL, (interaction_id,))
         if _normalized_latest_record(latest_row) == normalized:
             return
-        tx.execute(_INSERT_RISK_RECORD_SQL, params)
+        previous = tx.fetch_one(_PREVIOUS_SAME_LEGS_DECISION_SQL, (interaction_id, params["legs_evidenced"]))
+        (version,) = tx.fetch_one(_INSERT_RISK_RECORD_SQL + " RETURNING version", params)
+        late = previous is not None and utils.stricter(decision.enforcement_type, previous[0])
+        tx.execute(_INSERT_TIER_SQL, (interaction_id, version, tier, late))
+        if late:
+            leg_ready_metrics.late_findings_total.inc()
 
     return write
 

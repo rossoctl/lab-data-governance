@@ -98,7 +98,13 @@ flowchart TB
    row, that decision is reused. Otherwise `risk/engine/utils.py` builds the
    OPA input and `risk/engine/opa.py` POSTs it to
    `RISK_OPA_BASE_URL + RISK_OPA_DECISION_PATH`, and the new decision is
-   cached.
+   cached. With `RISK_INHERITED_LABELS=on` the policy is also asked per tier
+   of evidence (`docs/verdict-service.md`): only the full evidence's decision
+   is cached, so a lower tier whose input differs from it is asked again on
+   every computation, a cache hit included. With OPA unreachable a cached full block still stands;
+   a cached full decision is written from the cache when no lower tier needs asking (nothing
+   inherited, or every lower tier's input equal to the full one); any other is deferred (the
+   stream holds), since a lower tier it could not ask could be stricter.
    The digest covers payload identity, classification details, raw anchor
    facts and the full OPA input, including detected and inherited entities.
    Whitelist changes that alter derived categories, trust levels or event

@@ -39,6 +39,13 @@ This reads what the sidecar reports, no further. For a2a, mcp and inference the 
 is the parser's reduction (contract §5): what a parser leaves out of it no record
 judges, and no span fact says it was left out, so such an exchange answers ``decided``.
 
+**The tier.** An answer with a record carries ``tier``, the tier of evidence that
+decided it (0 classification, 1 the labels known inside the conversation, 2 the
+crossed labels; ``interaction_risk_tiers``), left out for a version written before
+migration 0033. The record is written once its leg is ready, so the tier is that of a
+decision on all the evidence leg-ready waits for; no answer is given earlier at a
+lower tier.
+
 **What was caught.** An answer with a record carries ``rules``, the record's
 ``triggered_rule_ids``, and ``labels``, the sorted distinct categories of the request
 payload's own findings (a finding's entity type when its category is empty). A
@@ -90,7 +97,7 @@ order (:mod:`data_governance.processors.leg_ready.priority_decision`). ``VERDICT
 does neither: the wait is the cursor path's alone.
 
 One structured log line per request (``verdict {...}``): trace, exchange,
-interaction id, status, state, verdict, waited_ms, whether this process
+interaction id, status, state, verdict, tier, reason, waited_ms, error, whether this process
 classified the request payload, and the classification ms.
 """
 
@@ -304,6 +311,8 @@ def _read_states(keys: list[_Key], notify_undecided: bool = False) -> dict[str, 
             r = risk[iid]
             record = {"state": "decided", "verdict": r.enforcement_type, "exchange_id": exchange_of[iid],
                       "version": r.version, "rules": r.triggered_rule_ids, "labels": []}
+            if r.tier is not None:
+                record["tier"] = r.tier
             if request.unread_body is not None:
                 record.update(state="unjudged", reason=request.unread_body)
         states[iid] = _State(record, request.payload_hash, request.payload_stored, request.classified)
@@ -559,7 +568,7 @@ class VerdictService:
 
 def _answer(status: int, body: dict[str, Any], fields: dict[str, Any]) -> Response:
     log.info("verdict %s", json.dumps({**fields, "status": status, **{
-        k: body.get(k) for k in ("state", "verdict", "reason", "waited_ms", "error") if k in body
+        k: body.get(k) for k in ("state", "verdict", "tier", "reason", "waited_ms", "error") if k in body
     }}, separators=(",", ":")))
     return JSONResponse(body, status_code=status)
 

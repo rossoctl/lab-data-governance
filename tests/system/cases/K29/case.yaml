@@ -32,10 +32,6 @@ expect:
   - s1 1>4
   - s2 1>4
   - s3 1>4
-  pending:
-    reason: the verdict tiers are not on this branch; held, not run
-    held:
-    - tiers
 classifier:
   must_see:
     '1':
@@ -61,5 +57,10 @@ classifier:
     - s3
   must_miss: {}
   authored: false
-notes: 'C2: the classifier labels the three on the flagged leg. The decision is block at tier 0, before any lineage is asked,
-  in every mode.'
+notes: 'C2: the classifier labels the three on the flagged leg, so tier 0 (classification alone) blocks. The history, every
+  version, predicted from the mechanism before the run: one version in every mode (both legs of the flagged exchange are on
+  the wire when leg-ready delivers its request; the response computes the same record). The policy is asked per tier on that
+  snapshot (off: tier 0 only; conv: 0 and 1, the chain''s labels reaching leg 5; cross: 0, 1 and 2, tier 2''s input equal
+  to tier 1''s), every tier blocks, and a block is decided at the first tier that blocks: [block tier 0] in every mode. That
+  the answer comes before any lineage is asked is timing, which this harness does not show: the record says the classifier
+  alone decided it.'

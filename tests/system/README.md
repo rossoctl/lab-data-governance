@@ -68,8 +68,9 @@ The keys of a case across conversations (`cases.py` shows each; R1–R10 are the
   must be stated.
 - **`steps`**: `send: 17-32` (legs, a range in its own direction: `32-1` is reversed), `drain` (every
   drain on from where it stopped), `derive: 2` (the conversation queued again through the production
-  correction queue, `dg_queue_label_trace`), `reclassify: {7: [s1]}`, `cross: 'on'`. By default: send
-  every leg in line order, then drain.
+  correction queue, `dg_queue_label_trace`), `reclassify: {7: [s1]}`, `cross: 'on'` (the cross-conversation
+  switch for the drains after it, as a restart would set it, in the off and cross runs; the conv run is the
+  switch off and keeps it off). By default: send every leg in line order, then drain.
 - **`scopes`** (`{V2: call}`): a memory scope declared per party, applied through the production
   declaration: `LABEL_MEMORY_SCOPES` (a JSON object, `{"<natural_key>": "<scope>"}`), set for the label-lineage processor's
   `driver.configured()`, each party named by the natural key the derivation gives it
@@ -86,15 +87,20 @@ The keys of a case across conversations (`cases.py` shows each; R1–R10 are the
   the model labels, and the premise as it stands is checked on the rows before each such step (red if it
   does not hold); the final rows are judged with the reclassified cells unlabelled.
 - **`expect.verdict`** per mode, or a decision history per mode: the decisions of every record that
-  evidences the flagged leg, in version order, repeats included (`[allow, block]`: a correction reached
-  the decision, once); a single verdict needs every version to agree. With tiers,
-  `[allow tier 1, block tier 2]` (held until the tiers are built).
+  evidences the flagged leg, in version order, repeats included (`[allow, block late]`: a correction reached
+  the decision, once); a single verdict needs every version to agree. Read from each version's
+  `interaction_risk_tiers` row (a version without one is red, in every mode): in a history, every version
+  that is a late finding (stricter than the latest earlier version that evidenced the same legs) says `late`,
+  so a late finding is always stated (a single verdict cannot hide one: a late version differs from the one
+  before it); a case that names a tier anywhere states it on every version of every history
+  (`[allow tier 1, block tier 2 late]`, `[block tier 0]`), the tier that decided the version. A case that
+  states a plain verdict compares the decision only.
 
-A case that needs a production path this branch lacks (the tiers: `engine.NOT_ON_BRANCH`, one row each
-naming the path and where the engine applies it) is **held**: not run, and PENDING only when
-`expect.pending.held` names exactly those paths; here that is K29 and K30. The change that builds a path
-removes its row and the case runs from then on. `engine.switches` sets the cross-conversation switch per
-run (on in `off` and `cross`, off in `conv`), and a `cross` step switches it inside a run.
+A case that needs a production path this branch lacks (`engine.NOT_ON_BRANCH`, one row each naming the path
+and where the engine applies it; empty now) is **held**: not run, and PENDING only when
+`expect.pending.held` names exactly those paths. The change that builds a path removes its row and the
+case runs from then on. `engine.switches` sets the cross-conversation switch per run (on in `off` and
+`cross`, off in `conv`), and a `cross` step switches it inside a run.
 
 ## Run
 

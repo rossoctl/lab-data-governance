@@ -543,7 +543,7 @@ def across_cases() -> None:
               must_see=sent_premise(0, THREE), must_miss=returned_premise(16, THREE), authored=True)
     case("K24", "conversation 1 arrives after conversation 2 was processed", k1_line,
          steps=[{"send": "17-32"}, "drain", {"send": "1-16"}, "drain"],
-         **{**k1, "verdict": v("allow", "allow", ["allow", "block"])},
+         **{**k1, "verdict": v("allow", "allow", ["allow", "block late"])},
          notes="K1 with conversation 2 sent and drained before conversation 1 is sent: conversation 1 is classified "
                "and derived after conversation 2 was matched (the readiness cursor derives a leg only once it is "
                "classified, so a late classification is a late leg). Conversation 1's occurrences at V2 queue "
@@ -552,9 +552,10 @@ def across_cases() -> None:
                "run: a version is written only when the computed record differs. At the first drain both legs of "
                "the flagged exchange are on the wire when leg-ready delivers its request, so one record evidences "
                "both (v1 allow; the response leg computes the same record, no version). At the second drain the "
-               "correction changes the flagged leg's labels and queues its recompute: v2 block. The cross run's "
-               "history is [allow, block]. That conversation 2 is derived exactly once more is the driver test's "
-               "(test_a_late_conversation_corrects_the_one_derived_before_it_once).")
+               "correction changes the flagged leg's labels and queues its recompute: v2 block, stricter than v1, "
+               "which evidenced the same legs: a late finding. The cross run's "
+               "history is [allow, block late]. That conversation 2 is derived exactly once more is the driver "
+               "test's (test_a_late_conversation_corrects_the_one_derived_before_it_once).")
     k25_edges = sent_edges(0, ["s2", "s3"])
     case("K25", "the identifier's label removed from conversation 1", f"{sends(THREE)} ~10min> {returns(['s1'])}",
          cell="across/order", steps=[{"send": "1-32"}, "drain", {"reclassify": {i: ["s1"] for i in range(7, 12)}},
@@ -592,19 +593,34 @@ def across_cases() -> None:
          cell="across/tiers", verdict=v(["block tier 0"], ["block tier 0"], ["block tier 0"]),
          edges=chain([1, 2, 3, 4, 5]) + held_earlier(1, 4),
          must_see={1: all4, 2: THREE, 3: THREE, 4: THREE, 5: THREE}, must_miss={},
-         pending={"reason": "the verdict tiers are not on this branch; held, not run",
-                  "held": ["tiers"]},
-         notes="C2: the classifier labels the three on the flagged leg. The decision is block at tier 0, before any "
-               "lineage is asked, in every mode.")
-    case("K30", "the cross tier answers late", f"{sends(THREE)} ~10min> {returns(['s1'])}", cell="across/tiers",
-         verdict=v(["allow tier 0"], ["allow tier 1"], ["allow tier 1", "block tier 2"]),
+         notes="C2: the classifier labels the three on the flagged leg, so tier 0 (classification alone) blocks. "
+               "The history, every version, predicted from the mechanism before the run: one version in every mode "
+               "(both legs of the flagged exchange are on the wire when leg-ready delivers its request; the response "
+               "computes the same record). The policy is asked per tier on that snapshot (off: tier 0 only; conv: "
+               "0 and 1, the chain's labels reaching leg 5; cross: 0, 1 and 2, tier 2's input equal to tier 1's), "
+               "every tier blocks, and a block is decided at the first tier that blocks: [block tier 0] in every "
+               "mode. That the answer comes before any lineage is asked is timing, which this harness does not "
+               "show: the record says the classifier alone decided it.")
+    case("K30", "the cross tier comes after the answer", f"{sends(THREE)} ~10min> {returns(['s1'])}",
+         cell="across/tiers", steps=[{"cross": "off"}, {"send": "1-32"}, "drain", {"cross": "on"}, {"derive": 1},
+                                     {"derive": 2}, "drain"],
+         verdict=v(["allow tier 0"], ["allow tier 1"], ["allow tier 1", "block tier 2 late"]),
          edges=sent_edges(0, THREE), cross=crossing(11, 22, ["s1"], "vo") + carried(16, ["s1"]),
+         evidence={**received(11, ["s1"]), **every(range(22, 28), ["s1"], "crossed vo")},
          must_see=sent_premise(0, THREE), must_miss=returned_premise(16, ["s1"]), authored=True,
-         pending={"reason": "the verdict tiers and the gate's time limit are not on this branch; "
-                            "held, not run", "held": ["tiers"]},
-         notes="K2 with the cross-conversation tier answering after the gate's time limit. Tiers 0 and 1 complete and "
-               "allow: the gate answers allow, tier 1 reached. Then tier 2 blocks: a new decision version, one late "
-               "finding; it does not reach back. Making tier 2 late needs a seam the verdict tiers provide.")
+         notes="K2 with tier 2 (the crossed labels) absent at the first decision because the cross-conversation "
+               "switch was off, not because it was slow: the timing of a gate's limit is a live run's, which "
+               "this harness cannot show. Both conversations are sent and drained with the switch off; it is turned "
+               "on (as a restart would) and both are derived again: switching on does not look back (R6), so "
+               "conversation 1 registers its occurrences only when derived again, and conversation 2, derived while "
+               "the switch was off, wrote no send rows a correction could find, so it is queued too. The crossing "
+               "is drawn and the flagged decision recomputed. The "
+               "history, every version, predicted from the mechanism before the run. cross: v1 allow at tier 1 "
+               "(tiers 0 and 1 were on, nothing in conversation 2 is labelled), v2 block at tier 2 (the crossed SSN), "
+               "stricter than v1: a late finding; v1 stands, the finding does not reach back. conv: the switch stays "
+               "off whatever a step says, so tiers 0 and 1 only: one version, [allow tier 1]. off: inherited labels "
+               "off, tier 0 only; the crossing is drawn (the switch governs label lineage) but reaches no decision: "
+               "one version, [allow tier 0].")
 
 
 if __name__ == "__main__":

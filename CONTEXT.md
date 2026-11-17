@@ -1058,6 +1058,34 @@ per-record field) *before* reducing to the current version — a superseded,
 more-severe old version would then leak into a result the current version
 would not have matched.
 
+**Tier** (of evidence):
+One of the three kinds of evidence the risk engine asks the policy about, in
+order: classification (0), the labels known inside the conversation (1, with
+`RISK_INHERITED_LABELS=on`), the **Crossed label**s (2, with
+`LABEL_CROSS_CONVERSATION=on` too; a crossing between two calls of one
+conversation is tier 2). Each computation asks the policy per tier on one
+snapshot of the evidence and keeps the strictest decision (`utils.strictest`,
+on `ENFORCEMENT_ORDER`): a later tier never relaxes an earlier one, and a block is
+decided at the first tier that blocks. Every **Interaction risk record** version
+has one `interaction_risk_tiers` row naming the tier that decided it (on a
+non-block, the highest tier asked, even when a lower tier's equally strict or
+stricter decision is the one kept), and the verdict service answers it as `tier`;
+`tier` is absent for a version with no row (one written before migration 0033, or
+by a leg-ready pod still on an older image during a rollout).
+_Avoid_: reading strictest-so-far across versions — a new snapshot asks every
+tier again, so a correction of the evidence (a label taken away) may relax the
+decision; and reading `tier` as how far the evidence had arrived — the record is
+written once its leg is ready, with all the evidence leg-ready waits for.
+
+**Late finding**:
+An **Interaction risk record** version stricter than the latest earlier version
+that evidenced the same legs: a decision the same evidence could have been answered
+with before it. A version that adds a leg (the response after the request) decides
+new evidence and is not one. An interaction with no request leg (a response-only
+exchange) is judged on its own legs the same way. `interaction_risk_tiers.late`,
+counted by leg-ready's `late_findings_total`. It does not reach back: the earlier
+version stands.
+
 **Forest** (trace risk detail):
 The per-**Trace** read that nests every **Interaction** in the trace, each
 with its **Interaction leg**s and its **current-version** risk record, under

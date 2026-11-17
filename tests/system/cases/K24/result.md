@@ -40,7 +40,7 @@ SSN     s1    ·      ·      ·      ·      ·      ━━━━━━○━�
 MRN     s2    ·      ·      ·      ·      ·      ━━━━━━○━━━━━━○━━━━━━○━━━━━━○━━━━━━○━━━━━━○·      ·      ·      ·      ·      
 DOB     s3    ·      ·      ·      ·      ·      ━━━━━━○━━━━━━○━━━━━━○━━━━━━○━━━━━━○━━━━━━○·      ·      ·      ·      ·      
 DIS     s4    ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      
-verdict at 27: expected off=allow / conv=allow / cross=[allow, block], observed off=allow / conv=allow / cross=[allow, block]
+verdict at 27: expected off=allow / conv=allow / cross=[allow, block late], observed off=allow / conv=allow / cross=[allow, block late]
 ```
 
 **Rows (cross run).**
@@ -81,5 +81,5 @@ verdict at 27: expected off=allow / conv=allow / cross=[allow, block], observed 
 
 Risk observer calls: 38
 
-**Notes.** K1 with conversation 2 sent and drained before conversation 1 is sent: conversation 1 is classified and derived after conversation 2 was matched (the readiness cursor derives a leg only once it is classified, so a late classification is a late leg). Conversation 1's occurrences at V2 queue conversation 2, whose V2 answer lies inside their interval, and it is derived again: the same final edges as in order. The decision history, every version, predicted from the mechanism before the run: a version is written only when the computed record differs. At the first drain both legs of the flagged exchange are on the wire when leg-ready delivers its request, so one record evidences both (v1 allow; the response leg computes the same record, no version). At the second drain the correction changes the flagged leg's labels and queues its recompute: v2 block. The cross run's history is [allow, block]. That conversation 2 is derived exactly once more is the driver test's (test_a_late_conversation_corrects_the_one_derived_before_it_once).
+**Notes.** K1 with conversation 2 sent and drained before conversation 1 is sent: conversation 1 is classified and derived after conversation 2 was matched (the readiness cursor derives a leg only once it is classified, so a late classification is a late leg). Conversation 1's occurrences at V2 queue conversation 2, whose V2 answer lies inside their interval, and it is derived again: the same final edges as in order. The decision history, every version, predicted from the mechanism before the run: a version is written only when the computed record differs. At the first drain both legs of the flagged exchange are on the wire when leg-ready delivers its request, so one record evidences both (v1 allow; the response leg computes the same record, no version). At the second drain the correction changes the flagged leg's labels and queues its recompute: v2 block, stricter than v1, which evidenced the same legs: a late finding. The cross run's history is [allow, block late]. That conversation 2 is derived exactly once more is the driver test's (test_a_late_conversation_corrects_the_one_derived_before_it_once).
 
