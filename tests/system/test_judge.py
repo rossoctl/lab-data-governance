@@ -207,9 +207,9 @@ def test_a_crossed_label_at_a_cell_the_case_does_not_state_is_red_and_named():
 
 
 def test_a_stated_mark_and_an_unstated_one_are_both_compared():
-    case = _case(marks={3: frozenset({"common 4"})})
-    assert _judge(case, marks={3: frozenset({"common 4"})}).status == "GREEN"
-    assert _judge(case, marks={3: frozenset({"common 6"})}).reasons == ["marks at 3: want [common 4], got [common 6]"]
+    case = _case(marks={3: frozenset({"capped 4"})})
+    assert _judge(case, marks={3: frozenset({"capped 4"})}).status == "GREEN"
+    assert _judge(case, marks={3: frozenset({"capped 6"})}).reasons == ["marks at 3: want [capped 4], got [capped 6]"]
     out = _judge(_case(), marks={2: frozenset({"incomplete payload_bytes"})})
     assert out.status == "RED" and out.reasons == ["marks at 2: want [], got [incomplete payload_bytes]"]
 
@@ -235,10 +235,10 @@ def test_a_pending_case_that_passes_is_red():
 
 
 def test_pending_evidence_and_marks_are_exact_too():
-    case = _case(evidence={3: {"s1": frozenset({"crossed vo"})}}, marks={3: frozenset({"common 4"})},
+    case = _case(evidence={3: {"s1": frozenset({"crossed vo"})}}, marks={3: frozenset({"capped 4"})},
                  pending=Pending("waits", evidence=frozenset({3}), marks=frozenset({3})))
     assert _judge(case).status == "PENDING"
-    assert _judge(case, marks={3: frozenset({"common 4"})}).status == "RED"    # the marks are right after all
+    assert _judge(case, marks={3: frozenset({"capped 4"})}).status == "RED"    # the marks are right after all
 
 
 def test_a_problem_reading_the_rows_is_red_even_for_a_pending_case():
@@ -247,14 +247,20 @@ def test_a_problem_reading_the_rows_is_red_even_for_a_pending_case():
     assert out.status == "RED" and out.reasons[0] == "cross: edge s1 1>None (MRN) has an end on no line leg"
 
 
-def test_a_held_case_is_pending_only_for_exactly_what_this_branch_lacks():
+TIERED = {"off": ("allow tier 1",), "conv": ("allow tier 1",), "cross": ("allow tier 1", "block tier 2")}
+
+
+def test_a_held_case_is_pending_only_for_exactly_what_this_branch_lacks(monkeypatch):
+    from . import engine
     from .report import judge_held
-    held = _case(config={"payload_bytes": 1}, pending=Pending("waits", held=frozenset({"config"})))
+    # every path is on the branch now: the machinery is shown on the last one built, as if it were not
+    monkeypatch.setitem(engine.NOT_ON_BRANCH, "tiers", "the verdict tiers: read by verdict_at")
+    held = _case(verdict=TIERED, pending=Pending("waits", held=frozenset({"tiers"})))
     out = judge_held(held)
-    assert out.status == "PENDING" and out.runs == {} and out.reasons[1].startswith("held, not run: needs the limits")
-    assert judge_held(_case(scopes={"V1": "call"}, config={"payload_bytes": 1},
-                            pending=Pending("waits", held=frozenset({"scopes", "config"})))).status == "RED"
-    assert judge_held(_case(config={"payload_bytes": 1})).status == "RED"      # no pending block at all
+    assert out.status == "PENDING" and out.runs == {} and out.reasons[1].startswith("held, not run: needs the verdict")
+    assert judge_held(_case(scopes={"V1": "call"}, verdict=TIERED,
+                            pending=Pending("waits", held=frozenset({"scopes", "tiers"})))).status == "RED"
+    assert judge_held(_case(verdict=TIERED)).status == "RED"      # no pending block at all
     ran = _judge(_case(scopes={"V1": "call"}, pending=Pending("waits", held=frozenset({"scopes"}))))   # the branch has it
     assert ran.status == "RED" and ran.reasons[0].startswith("held for ['scopes'], which this branch has")
     unused = _judge(_case(pending=Pending("waits", held=frozenset({"switch"}))))   # lacked or not, the case uses none
@@ -435,20 +441,65 @@ def test_two_origins_of_one_value_are_two_rows_by_right_and_one_origin_twice_is_
     assert problems == ["edge s1 1>2 (MRN) drawn by 2 rows"]
 
 
-def _record(version, legs, enforcement):
-    return {"version": version, "legs": legs, "enforcement_type": enforcement}
+def _record(version, legs, enforcement, tier=0, late=False):
+    return {"version": version, "legs": legs, "enforcement_type": enforcement, "tier": tier, "late": late}
 
 
 @pytest.mark.parametrize("records, role, verdict, problem", [
     ([_record(1, ["request"], "block")], "request", "block", None),
     ([_record(1, ["request"], "allow"), _record(2, ["request", "response"], "allow")], "request", "allow", None),
     ([_record(1, ["response"], "block")], "request", None, "no risk record evidences the flagged request leg"),
-    ([_record(1, ["request"], "allow"), _record(2, ["request", "response"], "block")], "request", None,
-     "risk records disagree at the flagged leg: v1 allow, v2 block"),
+    ([_record(1, ["request"], "allow"), _record(2, ["request", "response"], "block")], "request",
+     ("allow", "block"), None),
+    ([_record(1, ["request"], "allow"), _record(2, ["request"], "allow"), _record(3, ["request"], "block"),
+      _record(4, ["response"], "allow")], "request", ("allow", "allow", "block"), None),
 ])
-def test_the_verdict_is_the_record_that_evidences_the_flagged_leg(records, role, verdict, problem):
-    record, got = verdict_at(records, role)
-    assert (record["enforcement_type"] if record else None, got) == (verdict, problem)
+def test_the_verdict_is_the_decision_history_of_the_records_that_evidence_the_flagged_leg(records, role, verdict,
+                                                                                          problem):
+    _, got, why = verdict_at(records, role)
+    assert (got, why) == (verdict, problem)
+
+
+def test_a_stated_history_shows_every_late_finding_and_a_named_tier_on_every_version():
+    records = [_record(1, ["request"], "allow", 1), _record(2, ["request"], "block", 2, True)]
+    assert verdict_at(records, "request", listed=True)[1] == ("allow", "block late")
+    assert verdict_at(records, "request", listed=True, tiers=True)[1] == ("allow tier 1", "block tier 2 late")
+    assert verdict_at(records[:1], "request", listed=True, tiers=True)[1] == ("allow tier 1",)   # one version
+    assert verdict_at(records[:1], "request")[1] == "allow"          # a single verdict states no tier
+
+
+def test_a_late_finding_the_history_does_not_state_is_red():
+    case = _case(verdict={"off": "allow", "conv": "allow", "cross": ("allow", "block")})
+    out = _judge(case, verdicts={"off": "allow", "conv": "allow", "cross": ("allow", "block late")})
+    assert out.status == "RED" and "verdict cross: want ('allow', 'block'), got ('allow', 'block late')" in out.reasons
+
+
+def test_a_single_verdict_stated_against_a_changed_decision_is_red():
+    out = _judge(_case(), verdicts={"cross": ("allow", "block")})
+    assert out.status == "RED" and "verdict cross: want block, got ('allow', 'block')" in out.reasons
+
+
+def test_a_decision_history_without_tiers_is_not_held():
+    case = _case(verdict={"off": "allow", "conv": "allow", "cross": ("allow", "block")})
+    assert "tiers" not in case.uses
+    runs = {"off": "allow", "conv": "allow"}
+    assert _judge(case, verdicts={**runs, "cross": ("allow", "block")}).status == "GREEN"
+    assert _judge(case, verdicts={**runs, "cross": ("allow", "block", "allow")}).status == "RED"
+
+
+def test_a_stated_history_is_every_version_repeats_included():
+    case = _case(verdict={"off": "allow", "conv": "allow", "cross": ("block", "allow")})
+    _, got, _ = verdict_at([_record(1, ["request"], "block"), _record(2, ["request"], "allow"),
+                            _record(3, ["request"], "allow")], "request")
+    out = _judge(case, verdicts={"off": "allow", "conv": "allow", "cross": got})
+    assert out.status == "RED" and "verdict cross: want ('block', 'allow'), got ('block', 'allow', 'allow')" in out.reasons
+
+
+def test_reclassify_takes_a_unit_only_where_the_premise_labels_it(tmp_path: Path):
+    body = ("steps: [{send: '1-6'}, drain, {reclassify: {%s: [s1]}}, drain]\nexpect:\n  edges: []\n"
+            "classifier:\n  must_see: {1: [s1]}\n  must_miss: {2: [s1], 3: [s1]}\n")
+    with pytest.raises(ValueError, match="reclassify takes a unit only from a leg the premise"):
+        load_case(_yaml(tmp_path, body % 2, line="U>A[s1 -], A>T1[s1 -], T1>V1[s1 -], V1>T1[-], T1>A[-], A>U[-]"))
 
 
 # --- the case states everything; the renderer refuses an ambiguous line ------------------------------------------
@@ -538,8 +589,8 @@ def test_the_case_record_carries_no_timing():
 def test_the_case_record_shows_the_observed_marks():
     from .report import case_markdown
     runs = _runs(EDGES)
-    runs["cross"].marks = {3: frozenset({"common 4"})}
-    assert "Marks (cross run): leg 3 [common 4]" in case_markdown(judge(_case(), runs))
+    runs["cross"].marks = {3: frozenset({"capped 4"})}
+    assert "Marks (cross run): leg 3 [capped 4]" in case_markdown(judge(_case(), runs))
 
 
 # --- every remaining refusal ----------------------------------------------------------------------------------
@@ -781,11 +832,11 @@ def test_the_line_refuses_a_record_it_cannot_read(line, error):
     ("  edges: []\n  evidence: {3: {s1: [inherited]}}\n", "classified there exactly when classifier.must_see says so"),
     ("  edges: []\n  evidence: {4: {s1: []}}\n", "expect.evidence at leg 4: s1 is not on that leg"),
     ("  edges: []\n  evidence: {9: {s1: []}}\n", "names leg 9, which the line lacks"),
-    ("  edges: []\n  marks: {3: [common 0]}\n", "expect.marks at leg 3"),
+    ("  edges: []\n  marks: {3: [capped none]}\n", "expect.marks at leg 3"),
     ("  edges: []\n  marks: {3: [incomplete time]}\n", "expect.marks at leg 3"),
-    ("  edges: []\n  marks: {9: [common 4]}\n", "expect.marks at leg 9"),
-    ("  edges: []\n  marks: {3: [common 4], '3': [common 4]}\n", "expect.marks names leg 3 twice"),
-    ("  edges: []\n  marks: {3: [common 4, common 4]}\n", "expect.marks lists a mark twice at leg 3"),
+    ("  edges: []\n  marks: {9: [capped 4]}\n", "expect.marks at leg 9"),
+    ("  edges: []\n  marks: {3: [capped 4], '3': [capped 4]}\n", "expect.marks names leg 3 twice"),
+    ("  edges: []\n  marks: {3: [capped 4, capped 4]}\n", "expect.marks lists a mark twice at leg 3"),
 ])
 def test_the_loader_refuses_a_level_evidence_or_mark_it_cannot_read(tmp_path: Path, expect, error):
     with pytest.raises(ValueError, match=re.escape(error)):
@@ -819,10 +870,10 @@ def test_the_loader_reads_a_level_evidence_marks_and_a_history(tmp_path: Path):
     case = load_case(_yaml(tmp_path, "expect:\n  verdict: {'off': [allow tier 0], conv: allow, cross: "
                                      "[allow tier 1, block tier 2]}\n  edges: [s1 1>2]\n  cross: [s1 1>3 co]\n"
                                      "  evidence: {3: {s1: [classified MRN, crossed co ambiguous]}}\n"
-                                     "  marks: {3: [common 4, incomplete payload_bytes]}\n" + SEE_ALL))
+                                     "  marks: {3: [capped 4, incomplete payload_bytes]}\n" + SEE_ALL))
     assert case.cross == {("s1", 1, 3, "co")} and case.edges == {("s1", 1, 2, None)}
     assert case.evidence == {3: {"s1": frozenset({"classified MRN", "crossed co ambiguous"})}}
-    assert case.marks == {3: frozenset({"common 4", "incomplete payload_bytes"})}
+    assert case.marks == {3: frozenset({"capped 4", "incomplete payload_bytes"})}
     assert case.verdict["cross"] == ("allow tier 1", "block tier 2") and case.uses == {"tiers"}
 
 
@@ -830,6 +881,9 @@ def test_the_loader_reads_a_level_evidence_marks_and_a_history(tmp_path: Path):
     ("{'off': [], conv: allow, cross: allow}", "a decision history lists"),
     ("{'off': [allow at 1], conv: allow, cross: allow}", "a decision history lists"),
     ("{'off': [allow tier 3], conv: allow, cross: allow}", "a decision history lists"),
+    ("{'off': [late], conv: allow, cross: allow}", "a decision history lists"),          # late is no decision
+    ("{'off': [allow tier 1, block late], conv: allow, cross: allow}", "states it on every version"),
+    ("{'off': [allow tier 0], conv: [allow], cross: allow}", "states it on every version"),
 ])
 def test_a_decision_history_names_each_tier(tmp_path: Path, verdict, error):
     with pytest.raises(ValueError, match=re.escape(error)):
@@ -951,10 +1005,23 @@ def test_every_shipped_case_agrees_with_its_calibration():
     for case in all_cases():
         found = recorded_findings(case, render(case.id, case.units, case.line))
         legs = {i: _at(i, *f) for i, f in found.items()}
-        wrong += [f"{case.id}: {n}" for n in premise(case, _obs("cross", set(), None, legs))]
+        wrong += [f"{case.id}: {n}" for n in premise(case, _obs("cross", set(), None, legs),
+                                                      (case.must_see, case.must_miss))]
         for i, cells in case.evidence.items():
             for unit, kinds in cells.items():
                 got = {f"classified {t}" for t, text in found[i] if text == case.values[unit]}
                 if got != {k for k in kinds if k.startswith("classified")}:
                     wrong.append(f"{case.id}: leg {i} {unit} states {sorted(kinds)}, the model gave {sorted(got)}")
     assert wrong == []
+
+
+def test_a_reclassified_cell_must_end_unlabelled_and_the_calibration_keeps_the_first_premise():
+    from .report import premise
+    case = _case(must_see={1: ["s1"]}, steps=(("send", (1,)), ("drain",), ("reclassify", ((1, ("s1",)),)),
+                                               ("drain",)))
+    value = case.values["s1"]
+    assert case.final_premise == ({}, {1: ["s1"]})
+    labelled, unlabelled = (_obs("cross", set(), None, {1: _at(1, *f)}) for f in ([("MRN", value)], []))
+    assert premise(case, unlabelled) == []
+    assert premise(case, labelled) == ["leg 1: the model DID label s1 (MRN); the case assumed it would not"]
+    assert premise(case, labelled, (case.must_see, case.must_miss)) == []

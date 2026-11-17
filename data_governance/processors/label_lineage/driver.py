@@ -39,7 +39,20 @@ they send) and writes what its persistent receivers received, replacing the
 trace's rows. The switch alone governs it, whatever the risk flag says (as the rest
 of this processor runs); the risk engine hands crossed labels to the policy only while
 leg-ready has both ``RISK_INHERITED_LABELS`` and this switch on. With it off nothing
-crosses and nothing is stored.
+crosses and nothing is stored; a derivation that deletes occurrences written while it
+was on still queues what rested on them (the correction).
+
+**The correction.** A derivation that adds, removes or changes an occurrence queues,
+in its own transaction, every other conversation with a leg the entity sent inside the
+occurrence's interval (:func:`.store.affected`, queued by :func:`.store.queue` in
+sorted order; the cursor arm queues once, at the end of its transaction); the dirty arm derives them again, looping
+until the queue is empty or a batch is spent. So the rows do not depend on which
+conversation was derived first. It ends because a match reads only occurrences
+strictly earlier in event time (R1): a re-derivation that changes no occurrence queues
+nothing, and each round settles the earliest leg still wrong. It needs one worker at a
+time (two would let a derivation read the occurrences before another commits its
+change): the entry point holds the session lock ``consumer:label_lineage``, checked
+before every drain.
 
 When a re-derivation changes a leg's inherited summary — including a leg that
 gains its first edges — the leg's interaction is written to
@@ -53,11 +66,10 @@ correction requests are processed in either mode without losing pending labels.
 from __future__ import annotations
 
 import dataclasses
-import datetime as dt
 import logging
 import os
 import threading
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 
 from data_governance import db
 from data_governance.label_lineage import cross, find, fold
@@ -154,25 +166,30 @@ def load_trace(tx: db.Transaction, trace_id: str, config: Config | None = None) 
             "SELECT content_hash, findings FROM payload_classifications WHERE content_hash = ANY(%s)",
             (hashes,))
     }
-    priors = load_priors(tx, trace_id, legs, entities, payloads, config) if config and config.crossing else ()
+    crossing = config.crossing if config else None
+    held = held_elsewhere(tx, trace_id, legs, entities, config) if crossing and crossing.holdings_limit else {}
+    # a leg over the holdings limit is searched for nothing, so nothing is loaded for it: the count is its cost
+    over = {key for key, n in held.items() if n > crossing.holdings_limit} if held else set()
+    priors = load_priors(tx, trace_id, [leg for leg in legs if (leg.interaction_id, leg.leg_type) not in over],
+                         entities, payloads, config) if crossing else ()
     return fold.TraceInput(trace_id=trace_id, legs=legs, entities=entities, payloads=payloads,
-                           findings=findings, priors=priors)
+                           findings=findings, priors=priors, held_elsewhere=held)
 
 
 # K: the most words among the occurrences the load below could return for these sends (the same window), so a
 # long value that expired, or one held only in this conversation, does not raise the cost of every later send.
 _LONGEST_SQL = """
 SELECT max(word_count) FROM label_occurrences
- WHERE entity_id = %s AND trace_id <> %s AND valid_from < %s AND valid_to > %s
+ WHERE holder_entity_id = %s AND trace_id <> %s AND valid_from < %s AND valid_to > %s
 """
 
 _PRIORS_SQL = """
-SELECT entity_id, trace_id, interaction_id, leg_type::text, payload_hash, value_text, span_start, span_end,
+SELECT holder_entity_id, trace_id, interaction_id, leg_type::text, payload_hash, value_text, span_start, span_end,
        record_start, record_end, origin_trace_id, origin_interaction_id, origin_leg_type::text,
        origin_payload_hash, unit_start, unit_end, unit_text, unit_value, entity_type, regulatory_tags,
-       sensitivity_level, category, held_from, held_to, evidence, level, valid_from, valid_to
+       sensitivity_level, category, held_from, held_to, label_basis, level, valid_from, valid_to
   FROM label_occurrences
- WHERE entity_id = %s AND core_hash = ANY(%s) AND trace_id <> %s
+ WHERE holder_entity_id = %s AND core_hash = ANY(%s) AND trace_id <> %s
    AND valid_from < %s AND valid_to > %s
 """
 
@@ -203,31 +220,73 @@ def load_priors(tx: db.Transaction, trace_id: str, legs: list[fold.WireLeg], ent
     return tuple(_holding(r) for r in rows)
 
 
+_HELD_SQL = """
+SELECT count(*) FROM (
+    SELECT 1 FROM label_occurrences
+     WHERE holder_entity_id = %s AND trace_id <> %s AND valid_to > %s AND valid_from < %s
+     LIMIT %s) held
+"""
+
+
+def held_elsewhere(tx: db.Transaction, trace_id: str, legs: list[fold.WireLeg], entities: Mapping[str, Entity],
+                   config: Config) -> dict[tuple[str, str], int]:
+    """Per leg a persistent entity sends, how many occurrences other conversations hold
+    with it valid at the leg's time, counted no further than one past the holdings
+    limit (all the limit needs to know)."""
+    limit = config.crossing.holdings_limit + 1
+    out = {}
+    for leg in legs:
+        sender = fold.ends(leg)[0]
+        if leg.occurred_at is not None and leg.payload_hash is not None and fold.is_persistent(
+                entities, sender, config.scopes):
+            t = leg.occurred_at
+            out[(leg.interaction_id, leg.leg_type)] = tx.fetch_one(_HELD_SQL, (sender, trace_id, t, t, limit))[0]
+    return out
+
+
 def _holding(r: tuple) -> cross.Holding:
-    (entity_id, trace_id, ix, leg_type, payload_hash, value_text, span_start, span_end, record_start, record_end,
+    (holder_entity_id, trace_id, ix, leg_type, payload_hash, value_text, span_start, span_end, record_start, record_end,
      o_trace, o_ix, o_leg, o_hash, unit_start, unit_end, unit_text, unit_value, entity_type, tags, level_s,
-     category, held_from, held_to, evidence, level, valid_from, valid_to) = r
+     category, held_from, held_to, label_basis, level, valid_from, valid_to) = r
     unit = Unit(entity_type=entity_type, regulatory_tags=tuple(tags or ()), sensitivity_level=level_s,
                 category=category, text=unit_text, value=Value(unit_value, unit_start, unit_end),
                 origin=Site(o_trace, o_ix, o_leg, o_hash))
     occ = Occurrence(unit=unit, at=Site(trace_id, ix, leg_type, payload_hash), span=(span_start, span_end),
                      held_from=held_from, held_to=held_to, matched_text=value_text)
     record = None if record_start is None else (record_start, record_end)
-    return cross.Holding(entity_id, occ, record, valid_from, valid_to, evidence, level)
+    return cross.Holding(holder_entity_id, occ, record, valid_from, valid_to, label_basis, level)
 
 
-def derive_and_persist(tx: db.Transaction, trace_id: str, config: Config) -> set[str]:
+def derive_and_persist(tx: db.Transaction, trace_id: str, config: Config,
+                       corrections: set[str] | None = None) -> set[str]:
     """Re-derive *trace_id* and write it within *tx*. Returns the interactions whose
-    inherited summary changed, and queues their recompute in the same transaction."""
+    inherited summary changed, and queues their recompute in the same transaction; with
+    crossing on, also the conversations a changed occurrence bears on
+    (:func:`.store.affected`): queued now, or added to *corrections* for the caller to
+    queue at the end of its transaction. The correction runs whatever the switch says: a
+    derivation with it off deletes the trace's occurrences, and what rested on them is
+    queued too. With the switch always off that is a read of an empty table and a delete
+    per derivation."""
+
+    def correct(before: set[tuple]) -> None:
+        traces = store.affected(tx, trace_id, before)
+        if corrections is None:
+            store.queue(tx, traces)
+        else:
+            corrections.update(traces)
+
     lock_trace(tx, trace_id)
+    before = store.occurrences(tx, trace_id)
     trace = load_trace(tx, trace_id, config)
     if not trace.legs:
         for table in ("payload_label_edges", "leg_inherited_labels", "label_lineage_trace_status",
-                      "label_occurrences", "label_crossings", "label_crossed_edges"):
+                      "label_occurrences", "label_crossings", "label_crossed_edges", "label_sends"):
             tx.execute(f"DELETE FROM {table} WHERE trace_id = %s", (trace_id,))
+        correct(before)
         tx.execute("SELECT pg_notify(%s, '')", (NOTIFY_CHANNEL,))
         return set()
     changed = store.write(tx, fold.derive(trace, config.finder, config.scopes, config.crossing), config.matcher)
+    correct(before)
     # The rows just written are what leg-ready's readiness waits for with the risk
     # flag on: wake it at commit instead of leaving it to its poll backstop.
     tx.execute("SELECT pg_notify(%s, '')", (NOTIFY_CHANNEL,))
@@ -265,23 +324,17 @@ def _drain_ready(spec: _driver.StreamSpec[ReadyLeg], cursor: int, config: Config
                 "SELECT trace_id, generation FROM label_lineage_dirty_traces WHERE trace_id = ANY(%s)",
                 (traces,),
             )
-            # Derived in event-time order, so a conversation's crossings see what an earlier
-            # conversation of the same run registered (a later run is the correction's to match again).
-            for trace_id in _in_event_order(tx, traces):
-                derive_and_persist(tx, trace_id, config)
+            # In any order: a conversation derived before another of the run registered what it
+            # depends on is queued by that derivation and derived again (the correction).
+            corrections: set[str] = set()
+            for trace_id in traces:
+                derive_and_persist(tx, trace_id, config, corrections)
+            store.queue(tx, corrections)     # sorted, at the end: queue rows in one order
             _driver.advance_cursor(tx, spec.processor_name, result.cursor)
         _ack_dirty(queued)
         cursor = result.cursor
         if len(result.delivered) < len(batch) or len(batch) < spec.batch_size:
             return cursor
-
-
-def _in_event_order(tx: db.Transaction, traces: list[str]) -> list[str]:
-    """*traces* by the wire time of their first leg (a trace with none last), then by id."""
-    first = dict(tx.fetch_all(
-        "SELECT i.trace_id, min(l.occurred_at) FROM interaction_legs l JOIN interactions i ON i.id = l.interaction_id "
-        "WHERE i.trace_id = ANY(%s) GROUP BY i.trace_id", (traces,)))
-    return sorted(traces, key=lambda t: (first.get(t) is None, first.get(t) or dt.datetime.min, t))
 
 
 _STALE_SQL = """
@@ -330,18 +383,26 @@ def _ack_dirty(queued: list[tuple]) -> None:
 
 
 def _redrive_dirty(config: Config, limit: int = _DRAIN_BATCH) -> int:
-    with db.transaction() as tx:
-        queued = tx.fetch_all(
-            "SELECT trace_id, generation FROM label_lineage_dirty_traces ORDER BY generation LIMIT %s",
-            (limit,),
-        )
-    for trace_id, generation in queued:
+    """The correction arm: derive every queued trace again, oldest generation first,
+    reading the queue again until it is empty or *limit* derivations are spent (a
+    derivation here may queue another; the rest waits for the next wake)."""
+    done = 0
+    while done < limit:
         with db.transaction() as tx:
-            derive_and_persist(tx, trace_id, config)
-        _ack_dirty([(trace_id, generation)])
-    if queued:
-        log.info("label-lineage re-derived %d corrected trace(s)", len(queued))
-    return len(queued)
+            queued = tx.fetch_all(
+                "SELECT trace_id, generation FROM label_lineage_dirty_traces ORDER BY generation LIMIT %s",
+                (limit - done,),
+            )
+        if not queued:
+            break
+        for trace_id, generation in queued:
+            with db.transaction() as tx:
+                derive_and_persist(tx, trace_id, config)
+            _ack_dirty([(trace_id, generation)])
+        done += len(queued)
+    if done:
+        log.info("label-lineage re-derived %d corrected trace(s)", done)
+    return done
 
 
 def _spec() -> _driver.StreamSpec[ReadyLeg]:
@@ -372,7 +433,15 @@ def drain(cursor: int, config: Config | None = None) -> int:
     return cursor
 
 
-def run(stop_event: threading.Event, dsn: str, config: Config | None = None) -> None:
-    """Wake-driven drain over ``interaction_legs`` until *stop_event* is set."""
+def run(stop_event: threading.Event, dsn: str, config: Config | None = None,
+        guard: Callable[[], None] | None = None) -> None:
+    """Wake-driven drain over ``interaction_legs`` until *stop_event* is set; *guard*,
+    when given, runs before every drain (the entry point's sole-consumer lock check)."""
     config = config or configured()
-    _driver.run(_spec(), stop_event, dsn, drain_fn=lambda spec, cursor: drain(cursor, config))
+
+    def drain_once(spec: _driver.StreamSpec[ReadyLeg], cursor: int) -> int:
+        if guard is not None:
+            guard()
+        return drain(cursor, config)
+
+    _driver.run(_spec(), stop_event, dsn, drain_fn=drain_once)

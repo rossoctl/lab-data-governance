@@ -65,6 +65,7 @@ from __future__ import annotations
 import datetime as dt
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
+import dataclasses
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -126,6 +127,10 @@ class InteractionRiskView:
     classification_summary: dict[str, Any] | None
     opa_policy_versions_used: list[str]
     overall_confidence: float | None
+    #: The tier of evidence that decided this version (``interaction_risk_tiers``):
+    #: read by :func:`get_request_risk` only; ``None`` elsewhere and for a version
+    #: written before migration 0033.
+    tier: int | None = None
 
 
 @dataclass(frozen=True)
@@ -184,6 +189,7 @@ _COLUMNS = (
     "overall_confidence",
 )
 _SELECT_COLS = ", ".join(_COLUMNS)
+_RR_SELECT_COLS = ", ".join(f"rr.{c}" for c in _COLUMNS)
 
 
 def _row_to_view(row: tuple[Any, ...]) -> InteractionRiskView:
@@ -539,21 +545,25 @@ def get_request_risk(interaction_ids: Sequence[str]) -> dict[str, InteractionRis
     call) would otherwise never be answered.
 
     Unlike "latest, then filter" (AC-DAS-016) this picks among the versions that saw
-    the request: a held request is answered by a record that judged it."""
+    the request: a held request is answered by a record that judged it. Each view
+    carries the tier of evidence that decided it (``None`` when the version has no
+    ``interaction_risk_tiers`` row)."""
     if not interaction_ids:
         return {}
     with db.transaction() as tx:
         rows = tx.fetch_all(
-            f"SELECT DISTINCT ON (interaction_id) {_SELECT_COLS} "
+            f"SELECT DISTINCT ON (rr.interaction_id) {_RR_SELECT_COLS}, t.tier "
             "FROM interaction_risk_records rr "
-            "WHERE interaction_id = ANY(%s) "
+            "LEFT JOIN interaction_risk_tiers t ON t.interaction_id = rr.interaction_id AND t.version = rr.version "
+            "WHERE rr.interaction_id = ANY(%s) "
             "AND ('request' = ANY(rr.legs_evidenced) "
             "     OR NOT EXISTS (SELECT 1 FROM interaction_legs x "
             "                     WHERE x.interaction_id = rr.interaction_id AND x.leg_type = 'request')) "
-            "ORDER BY interaction_id, version DESC",
+            "ORDER BY rr.interaction_id, rr.version DESC",
             (list(interaction_ids),),
         )
-    return {view.interaction_id: view for view in map(_row_to_view, rows)}
+    views = [dataclasses.replace(_row_to_view(row[:-1]), tier=row[-1]) for row in rows]
+    return {view.interaction_id: view for view in views}
 
 
 # ---------------------------------------------------------------------------

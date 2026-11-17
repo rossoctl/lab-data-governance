@@ -7,7 +7,8 @@ triggers reaching the change hub:
 - decided: a record that evidences the request leg answers at once; one written
   during the wait answers promptly; a record that does not evidence an existing
   request leg is no answer; when the interaction has no request leg at all, its
-  latest record is the answer; ``require_approval`` is returned as decided;
+  latest record is the answer; ``require_approval`` is returned as decided; the tier that
+  decided the record is answered when it has one;
 - unjudged: a record whose request body was not captured or was cut says so, at once,
   with the record's verdict; a body-size fact of 0 or a payload is what makes it decided;
 - what was caught: rules, labels and, on a block, the payload with each finding replaced;
@@ -181,6 +182,25 @@ def test_existing_record_answers_at_once(serve, configured_db) -> None:
     assert body["version"] == 1
     assert body["rules"] == ["DG-001"]
     assert sorted(body) == ["exchange_id", "labels", "rules", "state", "verdict", "version", "waited_ms"]
+
+
+def test_the_answer_names_the_tier_that_decided_the_record(serve, configured_db, caplog) -> None:
+    """Additive: a record with its interaction_risk_tiers row answers ``tier`` beside the fields above, and the
+    log line says it; a record without one (written before migration 0033) answers as before."""
+    _seed(configured_db)
+    _write_record(configured_db)
+    with psycopg.connect(configured_db) as conn:
+        conn.execute("INSERT INTO interaction_risk_tiers (interaction_id, version, tier, late) VALUES (%s, 1, 2, true)",
+                     (_IID,))
+        conn.commit()
+    caplog.set_level(logging.INFO, logger=verdict_routes.log.name)
+    with serve() as (base, _app):
+        body = _get(base, 0).json()
+    assert body["tier"] == 2 and body["verdict"] == "block" and body["version"] == 1
+    assert sorted(body) == ["exchange_id", "labels", "rules", "state", "tier", "verdict", "version", "waited_ms"]
+    (line,) = [json.loads(r.getMessage()[len("verdict "):]) for r in caplog.records
+               if r.name == verdict_routes.log.name and r.getMessage().startswith("verdict {")]
+    assert line["tier"] == 2
 
 
 def test_no_record_waits_then_pending(serve) -> None:

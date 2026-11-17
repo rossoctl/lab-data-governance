@@ -20,7 +20,9 @@ expect:
   verdict:
     'off': allow
     conv: allow
-    cross: block
+    cross:
+    - allow
+    - block late
   edges:
   - s1 7>8
   - s1 8>9
@@ -112,40 +114,6 @@ expect:
       - crossed co
       s3:
       - crossed co
-  pending:
-    reason: 'conversation 2 is matched before conversation 1 has arrived, and nothing matches it again: the correction queues
-      the leaving leg to be matched again when conversation 1 registers'
-    missing:
-    - s1 11>22 co
-    - s2 11>22 co
-    - s3 11>22 co
-    - s1 22>23
-    - s1 23>24
-    - s1 24>25
-    - s1 25>26
-    - s1 26>27
-    - s2 22>23
-    - s2 23>24
-    - s2 24>25
-    - s2 25>26
-    - s2 26>27
-    - s3 22>23
-    - s3 23>24
-    - s3 24>25
-    - s3 25>26
-    - s3 26>27
-    - s1 23>26
-    - s2 23>26
-    - s3 23>26
-    verdict:
-    - cross
-    evidence:
-    - 22
-    - 23
-    - 24
-    - 25
-    - 26
-    - 27
 classifier:
   must_see:
     '7':
@@ -196,5 +164,10 @@ classifier:
   authored: true
 notes: 'K1 with conversation 2 sent and drained before conversation 1 is sent: conversation 1 is classified and derived after
   conversation 2 was matched (the readiness cursor derives a leg only once it is classified, so a late classification is a
-  late leg). The same final edges as in order: the late leg queues V2''s later leaving leg to be matched again. That it is
-  matched again exactly once is not stated by the notation: an open question for the correction.'
+  late leg). Conversation 1''s occurrences at V2 queue conversation 2, whose V2 answer lies inside their interval, and it
+  is derived again: the same final edges as in order. The decision history, every version, predicted from the mechanism before
+  the run: a version is written only when the computed record differs. At the first drain both legs of the flagged exchange
+  are on the wire when leg-ready delivers its request, so one record evidences both (v1 allow; the response leg computes the
+  same record, no version). At the second drain the correction changes the flagged leg''s labels and queues its recompute:
+  v2 block, stricter than v1, which evidenced the same legs: a late finding. The cross run''s history is [allow, block late].
+  That conversation 2 is derived exactly once more is the driver test''s (test_a_late_conversation_corrects_the_one_derived_before_it_once).'

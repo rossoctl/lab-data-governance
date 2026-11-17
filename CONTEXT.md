@@ -921,8 +921,11 @@ that holding's origin unit, at a level (`value_only` for an anchoring
 identifier alone, `corroborated` for an identifier with another value of the same
 record). A `payload_label_edges` row; its level is a `label_crossings` row.
 Behind `LABEL_CROSS_CONVERSATION` alone in label lineage; the risk engine hands a
-crossed label to the policy only while `RISK_INHERITED_LABELS` is on too. A value held from more than M other conversations is a *common value*:
-no crossing, only its count.
+crossed label to the policy only while `RISK_INHERITED_LABELS` is on too. No value is
+dropped for being held from many conversations; one value draws at most a fixed
+number of crossings at one payload (`LABEL_CROSS_EDGES_PER_VALUE`, default 30), those
+of the surest and then the newest holdings, and a value cut this way has a `label_crossings` row that
+says so.
 
 **Crossed label**:
 A label that reached a leg resting on a **Crossing**, there or on its way: the
@@ -938,14 +941,29 @@ _Avoid_: reading the level of a crossing edge (`label_crossings`, the rule
 table's word at that crossing) as the label's level at the leg.
 
 **Holding** (label lineage):
-One labelled value a **persistent** entity received at one leg: the record that
-held it, its label and how the leg knew it (classified, inherited, crossed), and
-the interval in event time it is valid for. A `label_occurrences` row
+One labelled value a **persistent** entity (`holder_entity_id`) received at one leg:
+the record that held it, its label and how the leg knew it (`label_basis`:
+classified, inherited, crossed), and the interval in event time it is valid for. A `label_occurrences` row
 (`label_lineage.cross.Holding`), written with the derivation of its conversation
 and replaced, or deleted, only when that is derived again (no expiry job).
 _Avoid_: reading it as a node of the lineage — it is an index of what an entity
 can send again; and confusing it with `units.Occurrence`, any unit at any
 payload (every edge end).
+
+**Correction** (label lineage):
+A conversation queued to be derived again because another conversation's
+derivation added, removed or changed a **Holding** whose interval holds a leg it
+sent: queued at the end of that derivation's transaction, sorted
+(`label_lineage_dirty_traces`, read through `label_sends`), so the rows do not
+depend on which conversation was derived first. A derivation that changes no
+holding queues nothing. One worker at a time (a session lock), so no correction is
+missed by two deriving at once.
+
+**Cut** (label lineage):
+A leaving leg whose match a limit cut (holdings per entity, payload bytes,
+candidates per payload): a `label_crossings` row naming the limit. Over the
+holdings or candidates limit nothing is asserted there; it is marked, never
+silently partial, and a decision does not read it yet.
 
 **P-data-lineage**:
 The processor that derives **Data lineage**. A Layer-2 processor, sibling of
@@ -1042,6 +1060,34 @@ _Avoid_: filtering a list of risk records by `risk_level` (or any other
 per-record field) *before* reducing to the current version — a superseded,
 more-severe old version would then leak into a result the current version
 would not have matched.
+
+**Tier** (of evidence):
+One of the three kinds of evidence the risk engine asks the policy about, in
+order: classification (0), the labels known inside the conversation (1, with
+`RISK_INHERITED_LABELS=on`), the **Crossed label**s (2, with
+`LABEL_CROSS_CONVERSATION=on` too; a crossing between two calls of one
+conversation is tier 2). Each computation asks the policy per tier on one
+snapshot of the evidence and keeps the strictest decision (`utils.strictest`,
+on `ENFORCEMENT_ORDER`): a later tier never relaxes an earlier one, and a block is
+decided at the first tier that blocks. Every **Interaction risk record** version
+has one `interaction_risk_tiers` row naming the tier that decided it (on a
+non-block, the highest tier asked, even when a lower tier's equally strict or
+stricter decision is the one kept), and the verdict service answers it as `tier`;
+`tier` is absent for a version with no row (one written before migration 0033, or
+by a leg-ready pod still on an older image during a rollout).
+_Avoid_: reading strictest-so-far across versions — a new snapshot asks every
+tier again, so a correction of the evidence (a label taken away) may relax the
+decision; and reading `tier` as how far the evidence had arrived — the record is
+written once its leg is ready, with all the evidence leg-ready waits for.
+
+**Late finding**:
+An **Interaction risk record** version stricter than the latest earlier version
+that evidenced the same legs: a decision the same evidence could have been answered
+with before it. A version that adds a leg (the response after the request) decides
+new evidence and is not one. An interaction with no request leg (a response-only
+exchange) is judged on its own legs the same way. `interaction_risk_tiers.late`,
+counted by leg-ready's `late_findings_total`. It does not reach back: the earlier
+version stands.
 
 **Forest** (trace risk detail):
 The per-**Trace** read that nests every **Interaction** in the trace, each

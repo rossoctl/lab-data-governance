@@ -40,6 +40,8 @@ __all__ = [
     "PENDING",
     "NO_PAYLOAD",
     "severity_max",
+    "stricter",
+    "strictest",
     "legs_evidenced",
     "classification_summary",
     "quantize_confidence",
@@ -128,6 +130,35 @@ def severity_max(a: Any, b: Any, *, order: tuple[str, ...]) -> Any:
     rank_a = ranks.get(a, len(order))
     rank_b = ranks.get(b, len(order))
     return a if rank_a <= rank_b else b
+
+
+_ENFORCEMENT_RANK: Final[dict[str, int]] = {value: rank for rank, value in enumerate(ENFORCEMENT_ORDER)}
+
+
+def _enforcement_rank(enforcement_type: str | None) -> int:
+    """Lower is stricter; an unranked value (or ``None``) ranks last, as the catalog ranks it."""
+    return _ENFORCEMENT_RANK.get(enforcement_type, len(ENFORCEMENT_ORDER))
+
+
+def stricter(a: str | None, b: str | None) -> bool:
+    """Whether enforcement *a* is strictly stricter than *b* on :data:`ENFORCEMENT_ORDER`."""
+    return _enforcement_rank(a) < _enforcement_rank(b)
+
+
+def strictest(decisions: list[PolicyDecision]) -> tuple[PolicyDecision, int]:
+    """The decision one evidence snapshot gets when the policy is asked tier by tier
+    (``decisions[k]`` is tier *k*'s: classification, in-conversation labels,
+    cross-conversation labels), and the tier that decided it. The one place the
+    strictest decision so far is kept: a later tier never relaxes an earlier one.
+
+    The strictest on :data:`ENFORCEMENT_ORDER` wins; among equally strict decisions
+    the highest tier's, so the record carries the full evidence's rules whenever no
+    lower tier was stricter. A block is decided at the first tier that blocks; any
+    other decision at the highest tier asked."""
+    best = min(range(len(decisions)), key=lambda k: (_enforcement_rank(decisions[k].enforcement_type), -k))
+    if decisions[best].enforcement_type == "block":
+        return decisions[best], next(k for k, d in enumerate(decisions) if d.enforcement_type == "block")
+    return decisions[best], len(decisions) - 1
 
 
 def legs_evidenced(legs: list[LegEvidence]) -> list[str]:

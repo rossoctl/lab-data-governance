@@ -122,7 +122,7 @@ def test_a_crossing_is_an_edge_row_with_its_level_beside_it(configured_db: str) 
         store.write(tx, second, "exact")
     rows = _rows(configured_db,
                  "SELECT e.entity_type, e.from_trace_id, e.origin_trace_id, c.level, c.conversations, "
-                 "o.trace_id, o.evidence FROM payload_label_edges e JOIN label_crossings c ON c.edge_id = e.edge_id "
+                 "o.trace_id, o.label_basis FROM payload_label_edges e JOIN label_crossings c ON c.edge_id = e.edge_id "
                  "JOIN label_occurrences o ON o.occurrence_id = c.occurrence_id ORDER BY 1")
     assert rows == [("DOB", "T1", "T1", "corroborated", 1, "T1", "classified"),
                     ("SSN", "T1", "T1", "corroborated", 1, "T1", "classified")]
@@ -158,14 +158,16 @@ def test_deriving_again_replaces_the_rows_and_without_the_switch_stores_nothing(
                                 "(SELECT count(*) FROM label_occurrences)") == [(0, 0)]
 
 
-def test_a_common_value_is_a_crossing_row_without_an_edge(configured_db: str) -> None:
+def test_a_capped_value_is_a_crossing_row_without_an_edge_beside_the_edges_drawn(configured_db: str) -> None:
     held = [h for i in range(4) for h in _holdings(f"P{i}", {"ssn": SSN}, ("SSN", SSN),
                                                     at=T0 + dt.timedelta(seconds=i))]
-    d = fold.derive(_second(held), find.exact, crossing=cross.Crossing())
+    d = fold.derive(_second(held), find.exact, crossing=cross.Crossing(edges_per_value=2))
     with db.transaction() as tx:
         store.write(tx, d, "exact")
-    assert _rows(configured_db, "SELECT leg_type::text, conversations, edge_id, level FROM label_crossings") == [
-        ("response", 4, None, None)]
+    assert _rows(configured_db, "SELECT leg_type::text, conversations, level FROM label_crossings "
+                                "WHERE edge_id IS NULL") == [("response", 4, None)]
+    assert _rows(configured_db, "SELECT e.from_trace_id, c.conversations FROM label_crossings c "
+                                "JOIN payload_label_edges e USING (edge_id) ORDER BY 1") == [("P2", 4), ("P3", 4)]
 
 
 def test_every_edge_that_rests_on_a_crossing_has_its_carried_row(configured_db: str) -> None:
@@ -190,7 +192,7 @@ def test_a_changed_level_alone_is_a_change(configured_db: str) -> None:
     """The same edges and summaries, the level they were carried with changed: the decisions on those legs read
     the level, so their interactions are recomputed."""
     first, second = _crossing()
-    weaker = [dataclasses.replace(h, evidence="crossed", level=cross.VALUE_ONLY) for h in first.holdings]
+    weaker = [dataclasses.replace(h, label_basis="crossed", level=cross.VALUE_ONLY) for h in first.holdings]
     again = fold.derive(_second(weaker), find.exact, crossing=cross.Crossing())
     assert {store.edge_id(e) for e in again.edges} == {store.edge_id(e) for e in second.edges}
     assert again.legs == second.legs
@@ -199,3 +201,83 @@ def test_a_changed_level_alone_is_a_change(configured_db: str) -> None:
     with db.transaction() as tx:
         assert store.write(tx, second, "exact") == set()
         assert store.write(tx, again, "exact") == {"2", "3"}
+
+
+# --- the correction and the limits ------------------------------------------------------------------
+
+def _write_and_correct(d: fold.Derivation) -> list[str]:
+    with db.transaction() as tx:
+        before = store.occurrences(tx, d.trace_id)
+        store.write(tx, d, "exact")
+        return store.correct(tx, d.trace_id, before)
+
+
+def _queued(dsn: str) -> list[str]:
+    return [r[0] for r in _rows(dsn, "SELECT trace_id FROM label_lineage_dirty_traces ORDER BY 1")]
+
+
+def test_what_a_persistent_entity_sends_is_recorded_and_replaced(configured_db: str) -> None:
+    first, second = _crossing()
+    for _ in range(2):
+        with db.transaction() as tx:
+            store.write(tx, first, "exact")
+            store.write(tx, second, "exact")
+    assert _rows(configured_db, "SELECT trace_id, interaction_id, leg_type::text, entity_id FROM label_sends "
+                                "ORDER BY 1") == [("T1", "1", "response", "v"), ("T2", "2", "response", "v")]
+    with db.transaction() as tx:
+        store.write(tx, fold.derive(_second(), find.exact), "exact")
+    assert _rows(configured_db, "SELECT trace_id FROM label_sends") == [("T1",)]
+
+
+def test_an_added_occurrence_queues_the_conversation_its_entity_sends_in_inside_the_interval(configured_db) -> None:
+    first, second = _crossing()
+    late = fold.derive(dataclasses.replace(_second(), trace_id="T3", legs=[
+        dataclasses.replace(x, interaction_id=f"late-{x.interaction_id}",
+                            occurred_at=x.occurred_at + cross.Crossing().retention) for x in _second().legs]),
+        find.exact, crossing=cross.Crossing())
+    _write_and_correct(fold.derive(_second(), find.exact, crossing=cross.Crossing()))   # derived before T1 arrived
+    _write_and_correct(late)                                                        # after T1's interval
+    assert _write_and_correct(first) == ["T2"]          # T1's own send inside the interval is not queued: own
+    assert _queued(configured_db) == ["T2"]
+
+
+def test_a_send_is_corrected_until_the_last_instant_of_the_interval_and_not_at_its_end(configured_db) -> None:
+    first, _ = _crossing()
+    retention = cross.Crossing().retention
+
+    def sent_at(trace_id: str, t: dt.datetime) -> fold.Derivation:
+        return fold.derive(dataclasses.replace(_second(), trace_id=trace_id, legs=[
+            dataclasses.replace(x, interaction_id=f"{trace_id}-{x.interaction_id}", occurred_at=t)
+            for x in _second().legs]), find.exact, crossing=cross.Crossing())
+
+    _write_and_correct(sent_at("T5", T0 + retention - dt.timedelta(seconds=1)))
+    _write_and_correct(sent_at("T6", T0 + retention))
+    assert _write_and_correct(first) == ["T5"]
+
+
+def test_an_unchanged_derivation_queues_nothing_and_a_removed_or_changed_occurrence_queues_again(
+        configured_db: str) -> None:
+    first, second = _crossing()
+    _write_and_correct(second)
+    _write_and_correct(first)
+    with psycopg.connect(configured_db) as conn:
+        conn.execute("DELETE FROM label_lineage_dirty_traces")
+    assert _write_and_correct(first) == []
+    weaker = dataclasses.replace(first, holdings=tuple(
+        dataclasses.replace(h, label_basis="crossed", level=cross.VALUE_ONLY) for h in first.holdings))
+    assert _write_and_correct(weaker) == ["T2"]
+    assert _write_and_correct(fold.derive(_first(), find.exact)) == ["T2"]      # without the switch: removed
+    assert _write_and_correct(fold.derive(_first(), find.exact)) == []
+
+
+def test_a_cut_is_a_crossing_row_naming_its_limit_and_is_replaced(configured_db: str) -> None:
+    first, _ = _crossing()
+    t = dataclasses.replace(_second(first.holdings), held_elsewhere={("2", "response"): 2})
+    cut = fold.derive(t, find.exact, crossing=cross.Crossing(holdings_limit=1))
+    with db.transaction() as tx:
+        store.write(tx, cut, "exact")
+    assert _rows(configured_db, "SELECT interaction_id, leg_type::text, cut, value_hash, edge_id "
+                                "FROM label_crossings") == [("2", "response", "holdings_per_entity", None, None)]
+    with db.transaction() as tx:
+        store.write(tx, fold.derive(_second(first.holdings), find.exact, crossing=cross.Crossing()), "exact")
+    assert _rows(configured_db, "SELECT count(*) FROM label_crossings WHERE cut IS NOT NULL") == [(0,)]

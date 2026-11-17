@@ -9,8 +9,8 @@
 # `dg_interaction_leg_ready` with the poll as the correctness backstop. Each
 # delivered run re-derives each of its traces, once, and writes migration 0024's tables
 # (`payload_label_edges`, `leg_inherited_labels`, `label_lineage_trace_status`,
-# `risk_recompute_requests`), and with LABEL_CROSS_CONVERSATION=on migration
-# 0031's (label lineage across conversations, docs/label-lineage.md), in the
+# `risk_recompute_requests`), and with LABEL_CROSS_CONVERSATION=on migrations
+# 0031's and 0032's (label lineage across conversations, docs/label-lineage.md), in the
 # transaction that advances its own `label_lineage` cursor in `processor_state`.
 # It reads no risk configuration: a changed inherited summary is always
 # written to `risk_recompute_requests`; leg-ready alone decides
@@ -18,17 +18,17 @@
 #
 # Same slim image as the receiver (deployments differ only by `command:`), the
 # migrate init container like every sibling (ADR-0002), single replica with no
-# surge for the same single-cursor reason as 90-data-lineage.yaml. With
-# LABEL_CROSS_CONVERSATION off a brief involuntary overlap is wasted work, not
-# corruption, because a derivation is a deterministic function of committed state
-# written in one transaction. With it on a derivation also reads what other
-# conversations registered when it ran, so an overlap, like a run whose
-# conversations interleave in time, can leave a crossing undrawn until the
-# conversation is derived again.
+# surge for the same single-cursor reason as 90-data-lineage.yaml. maxSurge: 0
+# does not stop an evicted pod overlapping its replacement, so the processor holds
+# a session lock (consumer:label_lineage) and a second pod waits for it rather than
+# deriving beside it (exit 5 if the lock's session is lost). With
+# LABEL_CROSS_CONVERSATION on that is what keeps a correction from being missed: a
+# derivation reads what other conversations registered and queues the ones a change
+# bears on, which assumes no other worker derives meanwhile.
 #
 # Recovery (also after re-classifying payloads, ADR-0024's runbook, which this
-# processor's stale arm does not see): truncate the four tables and migration
-# 0031's, reset the
+# processor's stale arm does not see): truncate the four tables and those of
+# migrations 0031 and 0032, reset the
 # `label_lineage` cursor row to 0, restart. The replay writes a recompute request for every interaction with
 # an edge again, and with leg-ready's RISK_INHERITED_LABELS=on it holds risk at
 # every leg the replay has not reached yet: run it with the flag off, or expect
@@ -45,9 +45,9 @@ spec:
   replicas: 1
   strategy:
     # Single-cursor drainer: don't create a second pod during a rollout (see the
-    # header note — involuntary eviction can still briefly overlap; that window
-    # is made safe by the derivation being deterministic and wholly contained in
-    # one transaction, not by this strategy). maxSurge:0 + maxUnavailable:1 tears
+    # header note — involuntary eviction can still briefly overlap; in that
+    # window the replacement waits on the session lock, which this strategy does
+    # not replace). maxSurge:0 + maxUnavailable:1 tears
     # down the old pod before the replacement starts, the opposite of the
     # receiver's surge-first rollout.
     type: RollingUpdate
@@ -164,13 +164,19 @@ spec:
             # entities receive and draws crossings when they send it again. Off
             # by default; it must equal LABEL_CROSS_CONVERSATION on
             # 85-leg-ready.yaml, which hands crossed labels to the policy only
-            # while its RISK_INHERITED_LABELS is on. LABEL_CROSS_COMMON_LIMIT (M, default 3),
+            # while its RISK_INHERITED_LABELS is on. LABEL_CROSS_EDGES_PER_VALUE (default 30),
             # LABEL_CROSS_RETENTION_SECONDS (default 900) and LABEL_CROSS_ANCHORS
             # (a comma list of the classifier's label types, the TAG column of
             # its tag table; default the person identifiers) tune it. Anything
             # invalid, an unknown label type or a retention past the last date
-            # included, exits 2, whether the switch is on or off. Switching on
-            # does not look back.
+            # included, exits 2, whether the switch is on or off. Three limits,
+            # each unset = no limit (no number can be reasoned to without
+            # traffic): LABEL_CROSS_HOLDINGS_PER_ENTITY, LABEL_CROSS_PAYLOAD_BYTES,
+            # LABEL_CROSS_CANDIDATES_PER_PAYLOAD; a leg a limit cuts is marked
+            # (label_crossings.cut). Switching on does not look back. A changed
+            # occurrence queues the conversations it bears on (the correction); a
+            # second worker waits on the processor's session lock
+            # (consumer:label_lineage).
             - name: LABEL_CROSS_CONVERSATION
               value: "off"
           # No ports, no Service, no probes, no metrics surface — the

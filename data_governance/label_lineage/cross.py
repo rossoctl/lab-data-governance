@@ -7,9 +7,22 @@ values it sends again (rules R1-R9).
 - :class:`Memory` — the holdings of the entities one derivation reads, indexed by
   entity and value text; :meth:`Memory.found` searches one payload at its start
   boundaries, one lookup per distinct held length.
-- :func:`leaving` — the match at a payload a persistent entity sends: by text, the
-  common values dropped, the rest asserted by origin under the rule table.
+- :func:`leaving` — the match at a payload a persistent entity sends: by text,
+  asserted by origin under the rule table, at most a fixed number of edges per value.
 - :func:`records` — where a value's record is in a structured payload (R4).
+
+The limits, each unset by default and each applied at the leaving leg:
+holdings per entity (more occurrences valid at the payload's time than the limit: nothing
+is searched), payload bytes (only the first bytes of the projected payload are searched; what
+is found there is asserted, at a level the whole text could raise; with the candidates
+limit also set, the candidates counted are the prefix's, so the prefix can assert what
+the whole text, over that limit, would not), candidates per payload (more candidates
+than the limit: nothing is asserted). A leg
+a limit cut is marked with the limit's name (:data:`LIMITS`); a cut result is never
+silently partial. No limit has a default number, because none can be reasoned to
+without traffic: the producer already caps a payload (``max_payload_bytes``, 4096 by
+default), the cap on edges per value bounds what one value draws, and how many values an entity
+holds at once is its arrival rate times the retention, which nothing here knows.
 
 The rule table: in one record of the in-leg, no anchoring identifier among the
 matched values draws nothing; one anchoring identifier alone is *value-only*; an
@@ -55,14 +68,24 @@ DEFAULT_ANCHORS: frozenset[str] = frozenset({
     "BAN", "IBAN", "LMAN", "PCN", "CCA",
     "IMEI", "MAC", "LPN",
 })
-DEFAULT_COMMON_LIMIT = 3                        # M (R9)
+DEFAULT_EDGES_PER_VALUE = 30                    # edges one value draws at one payload (R2)
 DEFAULT_RETENTION = dt.timedelta(minutes=15)    # time-based entities (R9)
 
 SWITCH_ENV_VAR = "LABEL_CROSS_CONVERSATION"
-COMMON_LIMIT_ENV_VAR = "LABEL_CROSS_COMMON_LIMIT"
+EDGES_PER_VALUE_ENV_VAR = "LABEL_CROSS_EDGES_PER_VALUE"
+REMOVED_COMMON_LIMIT_ENV_VAR = "LABEL_CROSS_COMMON_LIMIT"   # the setting of the rule this replaced: refused, not ignored
 RETENTION_ENV_VAR = "LABEL_CROSS_RETENTION_SECONDS"
 ANCHORS_ENV_VAR = "LABEL_CROSS_ANCHORS"
 _TAG_TABLE = "data_governance/processors/classification/_config_data/EntityTypesForTokenClassification_with_tags.csv"
+HOLDINGS_LIMIT_ENV_VAR = "LABEL_CROSS_HOLDINGS_PER_ENTITY"
+PAYLOAD_BYTES_ENV_VAR = "LABEL_CROSS_PAYLOAD_BYTES"
+CANDIDATES_LIMIT_ENV_VAR = "LABEL_CROSS_CANDIDATES_PER_PAYLOAD"
+
+#: The limits a leaving leg can be cut by, as its mark names them.
+HOLDINGS_PER_ENTITY = "holdings_per_entity"
+PAYLOAD_BYTES = "payload_bytes"
+CANDIDATES_PER_PAYLOAD = "candidates_per_payload"
+LIMITS = (HOLDINGS_PER_ENTITY, PAYLOAD_BYTES, CANDIDATES_PER_PAYLOAD)
 
 
 class InvalidCrossing(ValueError):
@@ -71,12 +94,16 @@ class InvalidCrossing(ValueError):
 
 @dataclasses.dataclass(frozen=True)
 class Crossing:
-    """What a cross-conversation derivation runs with: the anchoring label types, M
-    (a value held from more than M other conversations is common) and the retention."""
+    """What a cross-conversation derivation runs with: the anchoring label types, the
+    most edges one value draws at one payload (the surest, then the newest, first), the
+    retention, and the limits (``None``: no limit)."""
 
     anchors: frozenset[str] = DEFAULT_ANCHORS
-    common_limit: int = DEFAULT_COMMON_LIMIT
+    edges_per_value: int = DEFAULT_EDGES_PER_VALUE
     retention: dt.timedelta = DEFAULT_RETENTION
+    holdings_limit: int | None = None
+    payload_bytes: int | None = None
+    candidates_limit: int | None = None
 
 
 def weakest(*levels: str) -> str:
@@ -102,10 +129,17 @@ def configured(env: Mapping[str, str] = os.environ) -> Crossing | None:
     invalid one stops the processor at startup either way: anything but on/off, a
     limit that is not a positive integer, a retention the calendar cannot hold, an
     empty anchor list or an anchor that is no label type of the classifier raises;
-    nothing falls back."""
+    nothing falls back. A limit left unset is no limit."""
     on = switch_on(env)
-    crossing = Crossing(anchors=_anchors(env), common_limit=_positive(env, COMMON_LIMIT_ENV_VAR, DEFAULT_COMMON_LIMIT),
-                        retention=_retention(env))
+    if (env.get(REMOVED_COMMON_LIMIT_ENV_VAR) or "").strip():
+        raise InvalidCrossing(f"{REMOVED_COMMON_LIMIT_ENV_VAR} is gone: no value is dropped for being held from many "
+                              f"conversations. Unset it; {EDGES_PER_VALUE_ENV_VAR} caps the edges one value draws")
+    crossing = Crossing(anchors=_anchors(env),
+                        edges_per_value=_positive(env, EDGES_PER_VALUE_ENV_VAR, DEFAULT_EDGES_PER_VALUE),
+                        retention=_retention(env),
+                        holdings_limit=_positive(env, HOLDINGS_LIMIT_ENV_VAR, None),
+                        payload_bytes=_positive(env, PAYLOAD_BYTES_ENV_VAR, None),
+                        candidates_limit=_positive(env, CANDIDATES_LIMIT_ENV_VAR, None))
     return crossing if on else None
 
 
@@ -139,7 +173,7 @@ def _retention(env: Mapping[str, str]) -> dt.timedelta:
     return retention
 
 
-def _positive(env: Mapping[str, str], name: str, default: int) -> int:
+def _positive(env: Mapping[str, str], name: str, default: int | None) -> int | None:
     raw = env.get(name)
     if raw is None or not raw.strip():
         return default
@@ -157,15 +191,15 @@ class Holding:
     """One labelled value a persistent entity received. ``occurrence`` is the value at
     the received leg (its unit is the origin); ``record`` the extent of the object that
     held it there, ``None`` when it had none; valid strictly inside
-    ``(valid_from, valid_to)`` (R1). ``evidence`` is how the leg knew the label:
+    ``(valid_from, valid_to)`` (R1). ``label_basis`` is how the leg knew the label:
     ``classified``, ``inherited`` or ``crossed`` (with ``level``)."""
 
-    entity_id: str
+    holder_entity_id: str
     occurrence: Occurrence
     record: tuple[int, int] | None
     valid_from: dt.datetime
     valid_to: dt.datetime
-    evidence: str
+    label_basis: str
     level: str | None = None
 
     @property
@@ -201,9 +235,10 @@ class Carried:
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
-class Common:
-    """A value at a leaving leg held from more than M other conversations: no edge,
-    the count (R2)."""
+class Capped:
+    """A value at a leaving leg that would draw more edges than the cap: only the
+    surest and then the newest are drawn, and this says so, with how many other conversations the value
+    was held from (R2)."""
 
     leg: LegKey
     value: str
@@ -260,23 +295,26 @@ class Memory:
             self.add(h)
 
     def add(self, holding: Holding) -> None:
-        self._values[holding.entity_id][holding.value].append(holding)
-        self._lengths[holding.entity_id].add(len(holding.value))
+        self._values[holding.holder_entity_id][holding.value].append(holding)
+        self._lengths[holding.holder_entity_id].add(len(holding.value))
 
-    def found(self, entity_id: str, text: str) -> list[tuple[tuple[int, int], Holding]]:
+    def found(self, entity_id: str, text: str, within: int | None = None) -> list[tuple[tuple[int, int], Holding]]:
         """Every holding of *entity_id* whose value is in *text* bounded and whole, by
-        the exact finder's rules, with the span it is found at."""
+        the exact finder's rules, with the span it is found at; with *within*, only a
+        value that ends inside the first *within* characters (the boundaries are still
+        read from the whole text)."""
         values = self._values.get(entity_id)
         if not values:
             return []
         lengths = sorted(self._lengths[entity_id])
+        end = len(text) if within is None else min(within, len(text))
         hits = []
-        for i in range(len(text)):
+        for i in range(end):
             if i and text[i - 1].isalnum():
                 continue
             for n in lengths:
                 j = i + n
-                if j > len(text):
+                if j > end:
                     break
                 if j < len(text) and text[j].isalnum():
                     continue
@@ -287,38 +325,55 @@ class Memory:
 
 
 def leaving(memory: Memory, crossing: Crossing, entity_id: str, output: ProjectedPayload, t: dt.datetime,
-            routed: Iterable[LegKey]) -> tuple[list[tuple[Occurrence, Crossed]], list[Common]]:
-    """The crossings at *output*, a payload *entity_id* sends at *t*.
+            routed: Iterable[LegKey], held: int = 0
+            ) -> tuple[list[tuple[Occurrence, Crossed]], list[Capped], list[str]]:
+    """The crossings at *output*, a payload *entity_id* sends at *t*, the capped values,
+    and the limits that cut the result (:data:`LIMITS`).
 
+    0. The limits: when the entity holds more than its limit (*held*: its occurrences
+       valid at *t*, in every conversation), nothing is searched; only the payload's
+       first bytes are searched when it is longer than its limit.
     1. Match by text: the holdings found in the payload and valid at *t*. One of this
        conversation's own holdings whose leg the fold already routes here (*routed*)
        is that edge already, never drawn again (R7).
-    2. Drop common values: a value held from more than M other conversations valid
-       at *t* draws nothing; the count is returned (R2). This conversation's own
-       holdings never count.
-    3. Assert by origin: the holdings of the remaining values, grouped by the leg and
-       record they were received in, under the rule table. One occurrence per
-       holding and span, each remembering the holding's occurrence as its source.
+    2. Assert by origin: the holdings found, grouped by the leg and record they were
+       received in, under the rule table, unless they are more than the candidates
+       limit: then nothing is asserted. One occurrence per holding and span, each
+       remembering the holding's occurrence as its source.
+    3. Cap: no value is dropped for being held from many conversations; one value
+       draws at most ``edges_per_value`` edges here: the surest first (corroborated
+       before value-only, so the cap does not lower the level the value crosses at),
+       then those of the newest holdings. A value cut this way is returned with the
+       count of other conversations it was held from (R2; this conversation's own
+       holdings never count, so the count can be 0: one holding found many times in
+       a payload is capped too). The rule table reads every holding found; the cap
+       comes after it.
     """
+    if crossing.holdings_limit is not None and held > crossing.holdings_limit:
+        return [], [], [HOLDINGS_PER_ENTITY]
+    cuts, within = [], None
+    if crossing.payload_bytes is not None and len(output.text.encode()) > crossing.payload_bytes:
+        within = len(output.text.encode()[:crossing.payload_bytes].decode(errors="ignore"))
+        cuts.append(PAYLOAD_BYTES)
     trace_id = output.site.trace_id
     skip = set(routed)
-    hits = [(span, h) for span, h in memory.found(entity_id, output.text) if h.valid_at(t)
+    hits = [(span, h) for span, h in memory.found(entity_id, output.text, within) if h.valid_at(t)
             and not (h.trace_id == trace_id and h.occurrence.at.leg in skip)]
     held_from: dict[str, set[str]] = defaultdict(set)
     for _, h in hits:
         if h.trace_id != trace_id:
             held_from[h.value].add(h.trace_id)
     count = {v: len(traces) for v, traces in held_from.items()}
-    common = sorted(v for v, n in count.items() if n > crossing.common_limit)
+    candidates = hits
+    if crossing.candidates_limit is not None and len(candidates) > crossing.candidates_limit:
+        return [], [], cuts + [CANDIDATES_PER_PAYLOAD]
 
     def anchors(h: Holding) -> bool:
         return h.occurrence.unit.entity_type in crossing.anchors
 
     in_record: dict[tuple, list[tuple[tuple[int, int], Holding]]] = defaultdict(list)
     asserted = []
-    for span, h in hits:
-        if h.value in common:
-            continue
+    for span, h in candidates:
         if h.record is not None:
             in_record[(h.trace_id, h.occurrence.at.leg, h.record)].append((span, h))
         elif anchors(h):
@@ -330,13 +385,25 @@ def leaving(memory: Memory, crossing: Crossing, entity_id: str, output: Projecte
             asserted += [(span, h, CORROBORATED) for span, h in members]
         else:
             asserted += [(span, h, VALUE_ONLY) for span, h in members if anchors(h)]
+    by_value: dict[str, list] = defaultdict(list)
+    for a in asserted:
+        by_value[a[1].value].append(a)
+    asserted, capped = [], []
+    for value in sorted(by_value):
+        # the surest level first, then the newest holdings; the rest of the key only makes the choice the same
+        # on every derivation
+        newest = sorted(by_value[value], key=lambda a: (-_RANK[a[2]], -a[1].valid_from.timestamp(), a[1].trace_id,
+                                                        a[1].occurrence.at.leg, a[0]))
+        asserted += newest[:crossing.edges_per_value]
+        if len(newest) > crossing.edges_per_value:
+            capped.append(Capped(output.site.leg, value, count.get(value, 0)))
     out = []
     for span, h, level in asserted:
         o = h.occurrence
         occ = Occurrence(unit=o.unit, at=output.site, span=span, held_from=o.held_from, held_to=o.held_to,
                          matched_text=output.text[span[0]:span[1]], source=o)
         out.append((occ, Crossed(level, h, count.get(h.value, 0))))
-    return out, [Common(output.site.leg, v, count[v]) for v in common]
+    return out, capped, cuts
 
 
 def records(text: str) -> dict[tuple[int, int], tuple[int, int]]:

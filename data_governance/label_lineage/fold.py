@@ -58,7 +58,9 @@ class TraceInput:
     content; *findings* maps the hash of every CLASSIFIED payload to its findings (a
     hash absent there is unclassified). *priors* — what persistent entities received
     in other conversations (:class:`.cross.Holding`) — is how a later conversation
-    joins; it is read only by a cross-conversation derivation."""
+    joins; it is read only by a cross-conversation derivation. *held_elsewhere* —
+    per leg a persistent entity sends, how many occurrences other conversations hold
+    with it valid at the leg's time — is read only under the holdings limit."""
 
     trace_id: str
     legs: Sequence[WireLeg]
@@ -66,6 +68,7 @@ class TraceInput:
     payloads: Mapping[str, object]
     findings: Mapping[str, Sequence[Mapping]]
     priors: Sequence[cross.Holding] = ()
+    held_elsewhere: Mapping[LegKey, int] = dataclasses.field(default_factory=dict)
 
 
 def wire_order(legs: Sequence[WireLeg]) -> list[WireLeg]:
@@ -89,9 +92,9 @@ def derive(trace_input: TraceInput, finder: Finder,
     """Derive the label lineage of one trace; *declared* is the memory scope declared
     per entity natural key (:func:`.memory.parse_scopes`). With *crossing* (the
     cross-conversation switch on), at each leg in wire order a payload a persistent
-    entity sends is first matched against what it holds (:func:`.cross.leaving`), and
-    what a persistent entity receives is then registered with it; without, the fold
-    is the conversation's alone."""
+    entity sends is first matched against what it holds (:func:`.cross.leaving`, the
+    limits applied there), and what a persistent entity receives is then registered
+    with it; without, the fold is the conversation's alone."""
     if trace_input.priors and crossing is None:
         raise ValueError("priors from other conversations are read only with the cross-conversation switch on")
     ordered = wire_order(trace_input.legs)
@@ -105,8 +108,11 @@ def derive(trace_input: TraceInput, finder: Finder,
     known = cross.Memory(trace_input.priors) if crossing else None
     levels: dict[tuple, cross.Crossed] = {}
     level_of: dict[tuple, str] = {}
+    crossed_at: dict[tuple, dt.datetime] = {}     # occurrence key -> the latest crossing it rests on, in event time
     carried: dict[tuple, cross.Carried] = {}
-    commons: list[cross.Common] = []
+    capped: list[cross.Capped] = []
+    cuts: list[tuple[LegKey, str]] = []
+    sends: list[tuple[str, LegKey, dt.datetime]] = []
     holdings: list[cross.Holding] = []
 
     def persistent(entity_id: str) -> bool:
@@ -126,8 +132,13 @@ def derive(trace_input: TraceInput, finder: Finder,
         if known is not None and leg.occurred_at is None and (persistent(sender) or persistent(receiver)):
             log.debug("leg %s %s has no event time: not matched, not registered", *key)
         elif known is not None and persistent(sender):
-            found, common = cross.leaving(known, crossing, sender, output, leg.occurred_at, inbound.get(key, ()))
-            commons += common
+            held_now = trace_input.held_elsewhere.get(key, 0) + sum(
+                h.holder_entity_id == sender and h.valid_at(leg.occurred_at) for h in holdings)
+            found, cap, cut = cross.leaving(known, crossing, sender, output, leg.occurred_at,
+                                               inbound.get(key, ()), held_now)
+            capped += cap
+            cuts += [(key, limit) for limit in cut]
+            sends.append((sender, key, leg.occurred_at))
         crossed = {Edge(to=dataclasses.replace(o, source=None), came_from=o.source).key: c for o, c in found}
         # a crossed occurrence carried on claims no finding of a later leg either
         on = [level_of.get(c.source.key, cross.CERTAIN) != cross.CERTAIN for c in candidates]
@@ -136,8 +147,12 @@ def derive(trace_input: TraceInput, finder: Finder,
         levels.update((e.key, crossed[e.key]) for e in leg_edges if e.key in crossed)
         if known is not None:
             carried.update(carry(leg_edges, crossed, level_of))
+            for e in leg_edges:
+                at = leg.occurred_at if e.key in crossed else crossed_at.get(e.came_from.key)
+                if at is not None:
+                    crossed_at[e.to.key] = max(at, crossed_at.get(e.to.key, at))
         if known is not None and leg.occurred_at is not None and persistent(receiver):
-            here = _received(receiver, held[key], own, level_of, leg.occurred_at, crossing,
+            here = _received(receiver, held[key], own, level_of, crossed_at, leg.occurred_at, crossing,
                              records=cross.records(output.text) if _structured(trace_input.payloads.get(
                                  leg.payload_hash)) else {})
             for h in here:
@@ -148,7 +163,8 @@ def derive(trace_input: TraceInput, finder: Finder,
                                    edges=leg_edges, unanchored=sum(not u.anchored for u in own))
     return Derivation(trace_id=trace_input.trace_id, edges=tuple(edges), legs=summaries,
                       occurrences=held, status=status_of(summaries, len(edges)),
-                      levels=levels, carried=carried, commons=tuple(commons), holdings=tuple(holdings))
+                      levels=levels, carried=carried, capped=tuple(capped), holdings=tuple(holdings),
+                      cuts=tuple(cuts), sends=tuple(sends))
 
 
 def ends(leg: Leg) -> tuple[str, str]:
@@ -189,7 +205,7 @@ def carry(edges: Sequence[Edge], crossed: Mapping[tuple, cross.Crossed],
     for e in edges:
         if e.key in crossed:
             c = crossed[e.key]
-            step = cross.weakest(c.level, c.holding.level if c.holding.evidence == "crossed" else cross.CERTAIN)
+            step = cross.weakest(c.level, c.holding.level if c.holding.label_basis == "crossed" else cross.CERTAIN)
         else:
             step = level_of.get(e.came_from.key, cross.CERTAIN)
         level_of[e.to.key] = cross.strongest((level_of.get(e.to.key, step), step))
@@ -203,7 +219,7 @@ def carry(edges: Sequence[Edge], crossed: Mapping[tuple, cross.Crossed],
 
 
 def _received(entity_id: str, occurrences: Sequence[Occurrence], own: Sequence[Unit], level_of: Mapping[tuple, str],
-              t: dt.datetime, crossing: cross.Crossing,
+              crossed_at: Mapping[tuple, dt.datetime], t: dt.datetime, crossing: cross.Crossing,
               records: Mapping[tuple[int, int], tuple[int, int]]) -> list[cross.Holding]:
     """What a persistent *entity_id* holds after receiving these *occurrences* at *t*:
     every labelled value, with the record it sat in, valid for the retention, and how
@@ -211,20 +227,25 @@ def _received(entity_id: str, occurrences: Sequence[Occurrence], own: Sequence[U
     :func:`carry`; else classified, when a finding of this leg is the value, whether it
     originates here or was confirmed here; else inherited). A value with no run of
     letters or digits cannot be found by the exact finder's boundary rule, so it is not
-    held."""
+    held. A crossed value is valid from the later of *t* and the crossing it rests on
+    (*crossed_at*), so it never begins before what fed it, whatever the clocks say; a
+    value whose interval that leaves empty is not held."""
     out = []
     for occ in occurrences:
         if occ.span is None or cross.core(occ.held) is None:
             continue
         level: str | None = level_of.get(occ.key, cross.CERTAIN)
         if level != cross.CERTAIN:
-            evidence = "crossed"
+            label_basis = "crossed"
         elif any(u.anchored and _inside(u, occ) for u in own):
-            evidence, level = "classified", None
+            label_basis, level = "classified", None
         else:
-            evidence, level = "inherited", None
+            label_basis, level = "inherited", None
+        start = max(t, crossed_at.get(occ.key, t)) if label_basis == "crossed" else t
+        if start >= t + crossing.retention:
+            continue
         out.append(cross.Holding(entity_id, dataclasses.replace(occ, source=None), records.get(occ.span),
-                                 t, t + crossing.retention, evidence, level))
+                                 start, t + crossing.retention, label_basis, level))
     return out
 
 

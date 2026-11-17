@@ -161,11 +161,17 @@ See [ADR-0031](../../docs/adr/0031-non-reversible-namespace-lineage-activation.m
   `LABEL_MATCHER=exact` (the only finder; an unknown name exits 2).
   `LABEL_MEMORY_SCOPES` (unset by default) declares an entity's memory scope by
   its natural key; an invalid declaration exits 2 the same way.
-  `LABEL_CROSS_CONVERSATION` (default `off`): `on` also writes migration 0031's
-  tables and draws crossings from persistent entities, whatever the risk flag says
+  `LABEL_CROSS_CONVERSATION` (default `off`): `on` also writes the tables of
+  migrations 0031 and 0032 and draws crossings from persistent entities, whatever the risk flag says
   (it reads no risk configuration); set it to leg-ready's value, which hands
   crossed labels to the policy only with `RISK_INHERITED_LABELS=on` there
-  (`docs/label-lineage.md`).
+  (`docs/label-lineage.md`). With it on, a derivation that changes what a
+  persistent entity holds queues the other conversations it bears on, in its own
+  transaction; the processor holds a session lock (`consumer:label_lineage`), so a
+  second replica or an overlapping pod waits instead of missing a correction.
+  `LABEL_CROSS_HOLDINGS_PER_ENTITY`, `LABEL_CROSS_PAYLOAD_BYTES` and
+  `LABEL_CROSS_CANDIDATES_PER_PAYLOAD` are limits, unset = none; a cut leg is
+  marked on rows.
 - **Leg-ready consumer Deployment (the risk engine).** **Single replica**
   running `python -m data_governance.processors.leg_ready` on the shared
   image, `maxSurge:0`. Delivers each ready interaction leg and, per leg,

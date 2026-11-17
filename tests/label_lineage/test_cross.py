@@ -1,6 +1,6 @@
 """Label lineage across conversations (``label_lineage.cross`` and the fold with a
 crossing): the configuration, the record of a value (R4), the match by text, the
-interval (R1), the common value (R2), the rule table and R7 — each by one small case
+interval (R1), the cap on edges per value (R2), the rule table and R7 — each by one small case
 whose answer follows from the rule, never from a measurement."""
 
 from __future__ import annotations
@@ -36,12 +36,20 @@ def _holdings(trace: str, content: object, *marks: tuple[str, str], at: dt.datet
             for o in (at_origin(u) for u in units_of(_findings(text, *marks), text, site))]
 
 
-def _leaving(holdings, content: object, t: dt.datetime = T0 + dt.timedelta(minutes=5), *,
-             trace: str = "T9", routed=(), crossing: cross.Crossing = ON):
+def _cut(holdings, content: object, t: dt.datetime = T0 + dt.timedelta(minutes=5), *,
+         trace: str = "T9", routed=(), crossing: cross.Crossing = ON, held: int = 0):
+    """(crossings, capped values, the limits that cut the leg)."""
     output = ProjectedPayload(Site(trace, "ix-out", "response", "h-out"), project(content))
-    found, common = cross.leaving(cross.Memory(holdings), crossing, "v", output, t, routed)
+    found, capped, cuts = cross.leaving(cross.Memory(holdings), crossing, "v", output, t, routed, held)
     return sorted((o.matched_text, c.level, o.unit.origin.trace_id) for o, c in found), \
-        [(m.value, m.conversations) for m in common]
+        [(m.value, m.conversations) for m in capped], cuts
+
+
+def _leaving(holdings, content: object, t: dt.datetime = T0 + dt.timedelta(minutes=5), **kw):
+    """(crossings, capped values) of a leg no limit cut."""
+    found, capped, cuts = _cut(holdings, content, t, **kw)
+    assert cuts == []
+    return found, capped
 
 
 # --- configuration -------------------------------------------------------------------------------------------------
@@ -52,29 +60,41 @@ def test_the_switch_is_off_unless_it_says_on():
     assert cross.configured({cross.SWITCH_ENV_VAR: "on"}) == cross.Crossing()
 
 
-def test_the_defaults_are_m_3_and_15_minutes():
+def test_the_defaults_are_30_edges_per_value_and_15_minutes():
     c = cross.Crossing()
-    assert (c.common_limit, c.retention) == (3, dt.timedelta(minutes=15))
+    assert (c.edges_per_value, c.retention) == (30, dt.timedelta(minutes=15))
     assert {"SSN", "MRN", "IMEI", "MAC", "LPN", "CCA"} <= c.anchors
     assert not {"PN", "UN", "IP", "CN", "OPID", "DOB", "EMAIL", "PHONE"} & c.anchors
 
 
-def test_the_configuration_reads_m_retention_and_anchors():
-    c = cross.configured({cross.SWITCH_ENV_VAR: "ON", cross.COMMON_LIMIT_ENV_VAR: "5",
+def test_the_configuration_reads_the_cap_retention_and_anchors():
+    c = cross.configured({cross.SWITCH_ENV_VAR: "ON", cross.EDGES_PER_VALUE_ENV_VAR: "5",
                           cross.RETENTION_ENV_VAR: "60", cross.ANCHORS_ENV_VAR: "ssn, MRN"})
-    assert c == cross.Crossing(anchors=frozenset({"SSN", "MRN"}), common_limit=5, retention=dt.timedelta(seconds=60))
+    assert c == cross.Crossing(anchors=frozenset({"SSN", "MRN"}), edges_per_value=5, retention=dt.timedelta(seconds=60))
+
+
+def test_no_limit_unless_one_is_configured():
+    assert (ON.holdings_limit, ON.payload_bytes, ON.candidates_limit) == (None, None, None)
+    c = cross.configured({cross.SWITCH_ENV_VAR: "on", cross.HOLDINGS_LIMIT_ENV_VAR: "100",
+                          cross.PAYLOAD_BYTES_ENV_VAR: "4096", cross.CANDIDATES_LIMIT_ENV_VAR: " ",})
+    assert (c.holdings_limit, c.payload_bytes, c.candidates_limit) == (100, 4096, None)
 
 
 @pytest.mark.parametrize("env", [
     {cross.SWITCH_ENV_VAR: "yes"},
-    {cross.SWITCH_ENV_VAR: "on", cross.COMMON_LIMIT_ENV_VAR: "0"},
+    {cross.SWITCH_ENV_VAR: "on", cross.HOLDINGS_LIMIT_ENV_VAR: "0"},
+    {cross.SWITCH_ENV_VAR: "on", cross.PAYLOAD_BYTES_ENV_VAR: "4k"},
+    {cross.SWITCH_ENV_VAR: "on", cross.CANDIDATES_LIMIT_ENV_VAR: "-1"},
+    {cross.SWITCH_ENV_VAR: "on", cross.EDGES_PER_VALUE_ENV_VAR: "0"},
     {cross.SWITCH_ENV_VAR: "on", cross.RETENTION_ENV_VAR: "15m"},
     {cross.SWITCH_ENV_VAR: "on", cross.ANCHORS_ENV_VAR: " , "},
     {cross.SWITCH_ENV_VAR: "on", cross.ANCHORS_ENV_VAR: "SSN, SNN"},
     {cross.SWITCH_ENV_VAR: "on", cross.RETENTION_ENV_VAR: "300000000000"},     # past the last date
     {cross.SWITCH_ENV_VAR: "on", cross.RETENTION_ENV_VAR: "100000000000000"},  # past the largest interval
-    {cross.SWITCH_ENV_VAR: "off", cross.COMMON_LIMIT_ENV_VAR: "-1"},           # parsed with the switch off too
+    {cross.SWITCH_ENV_VAR: "on", cross.REMOVED_COMMON_LIMIT_ENV_VAR: "3"},      # the removed setting: refused, not ignored
+    {cross.SWITCH_ENV_VAR: "off", cross.EDGES_PER_VALUE_ENV_VAR: "-1"},        # parsed with the switch off too
     {cross.ANCHORS_ENV_VAR: "SNN"},
+    {cross.SWITCH_ENV_VAR: "off", cross.PAYLOAD_BYTES_ENV_VAR: "abc"},           # a limit, with the switch off too
 ])
 def test_an_invalid_configuration_raises(env):
     with pytest.raises(cross.InvalidCrossing):
@@ -206,29 +226,110 @@ def test_one_value_from_two_conversations_is_two_edges():
     assert _leaving(held, {"subject": SSN}) == ([(SSN, cross.VALUE_ONLY, "T1"), (SSN, cross.VALUE_ONLY, "T2")], [])
 
 
-def test_a_value_held_from_more_than_m_conversations_is_common_counted_by_conversation():
-    held = [h for i in range(4) for leg in (("a", "b", "c") if i == 0 else ("a",))
+def _many(conversations: int) -> list[cross.Holding]:
+    """The SSN held from *conversations* conversations, one second apart, three legs in the first."""
+    return [h for i in range(conversations) for leg in (("a", "b", "c") if i == 0 else ("a",))
             for h in _holdings(f"T{i}", {"ssn": SSN}, ("SSN", SSN), at=T0 + dt.timedelta(seconds=i), leg=leg)]
-    assert _leaving(held, {"subject": SSN}) == ([], [(SSN, 4)])
-    assert _leaving(held[:5], {"subject": SSN})[1] == []       # three conversations: M, still edges
 
 
-def test_a_common_value_does_not_corroborate():
+def test_a_value_held_from_many_conversations_still_crosses():
+    assert _leaving(_many(4), {"subject": SSN}) == (
+        [(SSN, cross.VALUE_ONLY, "T0")] * 3 + [(SSN, cross.VALUE_ONLY, f"T{i}") for i in (1, 2, 3)], [])
+
+
+def test_one_value_draws_at_most_the_cap_the_newest_holdings_first_and_says_so():
+    two = dataclasses.replace(ON, edges_per_value=2)
+    assert _leaving(_many(4), {"subject": SSN}, crossing=two) == (
+        [(SSN, cross.VALUE_ONLY, "T2"), (SSN, cross.VALUE_ONLY, "T3")], [(SSN, 4)])
+    six = dataclasses.replace(ON, edges_per_value=6)
+    assert _leaving(_many(4), {"subject": SSN}, crossing=six)[1] == []        # exactly the cap: nothing cut
+    assert _leaving(list(reversed(_many(4))), {"subject": SSN}, crossing=two) == _leaving(
+        _many(4), {"subject": SSN}, crossing=two)                              # whatever order they are loaded in
+
+
+def test_holdings_of_the_same_moment_are_cut_the_same_way_whatever_order_they_come_in():
+    held = [h for t in ("Tb", "Ta", "Tc") for h in _holdings(t, {"ssn": SSN}, ("SSN", SSN))]     # one received time
+    one = dataclasses.replace(ON, edges_per_value=1)
+    for order in (held, list(reversed(held)), held[1:] + held[:1]):
+        assert _leaving(order, {"subject": SSN}, crossing=one) == ([(SSN, cross.VALUE_ONLY, "Ta")], [(SSN, 3)])
+
+
+def test_the_cap_keeps_the_surest_edge_and_the_rule_table_reads_every_holding_first():
+    """The oldest of five holdings is the only one whose record comes back with it. The cap of one keeps that
+    corroborated edge, not the newest value-only one: the level is set on everything found, and the cap comes after."""
+    old = _holdings("T0", {"ssn": SSN, "dob": DOB}, ("SSN", SSN), ("DOB", DOB))
+    newer = [h for i in range(1, 5) for h in _holdings(f"T{i}", {"ssn": SSN}, ("SSN", SSN), at=T0 + dt.timedelta(seconds=i))]
+    one = dataclasses.replace(ON, edges_per_value=1)
+    assert _leaving(old + newer, {"subject": SSN, "since": DOB}, crossing=one) == (
+        [(SSN, cross.CORROBORATED, "T0"), (DOB, cross.CORROBORATED, "T0")], [(SSN, 5)])
+
+
+def test_the_cap_is_per_value():
+    held = _many(4) + _holdings("T1", {"mrn": "4471820"}, ("MRN", "4471820"), leg="m")
+    one = dataclasses.replace(ON, edges_per_value=1)
+    assert _leaving(held, {"subject": SSN, "ref": "4471820"}, crossing=one) == (
+        [(SSN, cross.VALUE_ONLY, "T3"), ("4471820", cross.VALUE_ONLY, "T1")], [(SSN, 4)])
+
+
+def test_a_value_held_from_many_conversations_corroborates_like_any_other():
     held = [h for i in range(4) for h in _holdings(f"T{i}", {"ssn": SSN, "dob": DOB}, ("SSN", SSN), ("DOB", DOB))]
     held = [h for h in held if h.value == DOB] + [h for h in held if h.trace_id == "T0" and h.value == SSN]
-    assert _leaving(held, {"subject": SSN, "since": DOB}) == ([(SSN, cross.VALUE_ONLY, "T0")], [(DOB, 4)])
+    assert _leaving(held, {"subject": SSN, "since": DOB}) == (
+        [(SSN, cross.CORROBORATED, "T0"), (DOB, cross.CORROBORATED, "T0")], [])
 
 
 def test_the_conversation_s_own_holdings_never_count():
     held = [h for i in range(3) for h in _holdings(f"T{i}", {"ssn": SSN}, ("SSN", SSN))]
     own = _holdings("T9", {"ssn": SSN}, ("SSN", SSN), leg="ix-own")
-    assert _leaving(held + own, {"subject": SSN})[1] == []
+    assert _leaving(held + own, {"subject": SSN}, crossing=dataclasses.replace(ON, edges_per_value=1))[1] == [(SSN, 3)]
 
 
 def test_an_own_holding_the_fold_already_routes_here_is_not_drawn_again():
     own = _holdings("T9", {"ssn": SSN}, ("SSN", SSN), leg="ix-own")
     assert _leaving(own, {"subject": SSN})[0] == [(SSN, cross.VALUE_ONLY, "T9")]
     assert _leaving(own, {"subject": SSN}, routed=[("ix-own", "request")]) == ([], [])
+
+
+# --- the limits ------------------------------------------------------------------------------------
+
+def test_over_the_holdings_limit_nothing_is_searched_and_the_leg_is_cut():
+    held = _holdings("T1", {"ssn": SSN, "dob": DOB}, ("SSN", SSN), ("DOB", DOB))
+    limited = dataclasses.replace(ON, holdings_limit=2)
+    assert _cut(held, {"subject": SSN, "since": DOB}, crossing=limited, held=2)[2] == []
+    assert _cut(held, {"subject": SSN, "since": DOB}, crossing=limited, held=3) == ([], [], ["holdings_per_entity"])
+
+
+def test_only_the_first_payload_bytes_are_searched():
+    held = _holdings("T1", {"ssn": SSN}, ("SSN", SSN))
+    content = {"subject": SSN}                  # '{"subject": "123-45-6789"}': the value ends at character 24
+    text = project(content)
+    end = text.index(SSN) + len(SSN)
+    at = dataclasses.replace(ON, payload_bytes=end)
+    assert _cut(held, content, crossing=at) == ([(SSN, cross.VALUE_ONLY, "T1")], [], ["payload_bytes"])
+    assert _cut(held, content, crossing=dataclasses.replace(ON, payload_bytes=end - 1)) == ([], [], ["payload_bytes"])
+    assert _cut(held, content, crossing=dataclasses.replace(ON, payload_bytes=len(text)))[2] == []
+
+
+def test_a_value_cut_at_the_byte_limit_keeps_the_whole_text_s_boundaries():
+    held = _holdings("T1", {"ssn": SSN}, ("SSN", SSN))
+    content = {"subject": f"{SSN}0"}            # a longer number: not the value, even if the limit ends after it
+    text = project(content)
+    limited = dataclasses.replace(ON, payload_bytes=text.index(SSN) + len(SSN))
+    assert _cut(held, content, crossing=limited) == ([], [], ["payload_bytes"])
+
+
+def test_over_the_candidates_limit_nothing_is_asserted():
+    held = (_holdings("T1", {"ssn": SSN}, ("SSN", SSN))
+            + _holdings("T2", {"ssn": SSN}, ("SSN", SSN), at=T0 + dt.timedelta(minutes=1)))
+    assert _cut(held, {"subject": SSN}, crossing=dataclasses.replace(ON, candidates_limit=2))[2] == []
+    assert _cut(held, {"subject": SSN}, crossing=dataclasses.replace(ON, candidates_limit=1)) == (
+        [], [], ["candidates_per_payload"])
+
+
+def test_the_candidates_limit_comes_before_the_cap():
+    held = [h for i in range(4) for h in _holdings(f"T{i}", {"ssn": SSN}, ("SSN", SSN))]
+    assert _cut(held, {"subject": SSN}, crossing=dataclasses.replace(ON, candidates_limit=1, edges_per_value=1)) == (
+        [], [], ["candidates_per_payload"])
 
 
 def test_the_search_finds_the_same_whatever_else_is_held():
@@ -274,7 +375,7 @@ def _second(priors=()):
 
 def test_what_a_persistent_entity_receives_is_registered_with_its_record_and_interval():
     d = fold.derive(_first(), find.exact, crossing=ON)
-    assert sorted((h.entity_id, h.value, h.evidence, h.record is not None) for h in d.holdings) == [
+    assert sorted((h.holder_entity_id, h.value, h.label_basis, h.record is not None) for h in d.holdings) == [
         ("v", SSN, "classified", True), ("v", DOB, "classified", True)]
     assert {(h.valid_from, h.valid_to) for h in d.holdings} == {(T0, T0 + ON.retention)}
 
@@ -308,7 +409,7 @@ def test_a_crossing_carries_the_earlier_origin_and_travels_on_as_an_ordinary_edg
 
 def test_without_the_switch_the_second_conversation_is_its_own():
     d = fold.derive(_second(), find.exact)
-    assert d.edges == () and d.levels == {} and d.commons == ()
+    assert d.edges == () and d.levels == {} and d.capped == ()
 
 
 def test_a_crossing_does_not_claim_a_finding_of_the_leg():
@@ -326,7 +427,7 @@ def test_a_crossing_does_not_claim_a_finding_of_the_leg():
 def test_a_crossed_value_a_persistent_entity_receives_is_registered_as_crossed():
     first = fold.derive(_first(), find.exact, crossing=ON).holdings
     d = fold.derive(_second(first), find.exact, {"agent:lab/a": "persistent"}, crossing=ON)
-    at = {(h.occurrence.at.leg, h.value, h.evidence, h.level) for h in d.holdings if h.entity_id == "a"}
+    at = {(h.occurrence.at.leg, h.value, h.label_basis, h.level) for h in d.holdings if h.holder_entity_id == "a"}
     assert ((("2", "response"), SSN, "crossed", cross.CORROBORATED) in at)
 
 
@@ -349,6 +450,26 @@ def test_a_leg_without_an_event_time_is_neither_matched_nor_registered():
                          x.payload_hash, occurred_at=None) for x in t.legs]
     t = fold.TraceInput(t.trace_id, legs, t.entities, t.payloads, t.findings)
     assert fold.derive(t, find.exact, crossing=ON).holdings == ()
+
+
+def test_every_leg_a_persistent_entity_sends_is_recorded_and_the_cut_legs_are_named():
+    first = fold.derive(_first(), find.exact, crossing=ON).holdings
+    d = fold.derive(_second(first), find.exact, crossing=ON)
+    t2 = T0 + dt.timedelta(minutes=5, seconds=2)
+    assert d.sends == (("v", ("2", "response"), t2),) and d.cuts == ()
+    held_two = dataclasses.replace(_second(first), held_elsewhere={("2", "response"): 2})   # the driver counts
+    limited = fold.derive(held_two, find.exact, crossing=dataclasses.replace(ON, holdings_limit=1))
+    assert limited.cuts == ((("2", "response"), "holdings_per_entity"),) and limited.levels == {}
+    assert fold.derive(_second(), find.exact).sends == ()
+
+
+def test_the_holdings_limit_counts_other_conversations_and_the_conversation_s_own():
+    t = _trace("T1", [("1", "request", "a", "v", RECORD, [("SSN", SSN), ("DOB", DOB)]),
+                      ("1", "response", "a", "v", {"ok": True}, [])], T0)
+    two = dataclasses.replace(ON, holdings_limit=2)
+    assert fold.derive(t, find.exact, crossing=two).cuts == ()           # v holds its own two
+    t = dataclasses.replace(t, held_elsewhere={("1", "response"): 1})
+    assert fold.derive(t, find.exact, crossing=two).cuts == ((("1", "response"), "holdings_per_entity"),)
 
 
 # --- the fold inside one conversation is unchanged -------------------------------------------------------------------
@@ -395,7 +516,7 @@ def test_a_crossed_label_keeps_crossed_and_its_level_on_every_later_leg():
     (cross.VALUE_ONLY, {"subject": SSN, "since": DOB}, cross.CORROBORATED, cross.VALUE_ONLY),  # vo, then co
 ])
 def test_along_one_path_the_weakest_level_holds(held_level, returned, rule, carried):
-    held = [dataclasses.replace(h, evidence="crossed", level=held_level)
+    held = [dataclasses.replace(h, label_basis="crossed", level=held_level)
             for h in fold.derive(_first(), find.exact, crossing=ON).holdings]
     t = _second(held)
     h = t.legs[1].payload_hash
@@ -454,7 +575,7 @@ def test_a_value_known_inside_the_conversation_too_is_certain_and_reads_inherite
 def test_a_later_leg_registers_a_crossed_value_as_crossed_with_its_level():
     first = fold.derive(_first(), find.exact, crossing=ON).holdings
     d = fold.derive(_second(first), find.exact, {"tool:lab/t": "persistent"}, crossing=ON)
-    at = {(h.value, h.evidence, h.level) for h in d.holdings if h.occurrence.at.leg == ("3", "request")}
+    at = {(h.value, h.label_basis, h.level) for h in d.holdings if h.occurrence.at.leg == ("3", "request")}
     assert at == {(SSN, "crossed", cross.CORROBORATED), (DOB, "crossed", cross.CORROBORATED)}
 
 
@@ -476,7 +597,7 @@ def test_a_value_classified_one_leg_after_its_crossing_keeps_its_own_origin():
     assert at_3 == {("T1", "SSN"), ("T1", "DOB"), ("T2", "SSN")}
     on = sorted((row[2], row[3], row[5]) for row in _carried(d) if row[1] == ("3", "response"))
     assert on == [("SSN", "T1", (cross.CORROBORATED, False)), ("SSN", "T2", None)]
-    held = {(h.value, h.occurrence.unit.origin.trace_id, h.evidence, h.level) for h in d.holdings
+    held = {(h.value, h.occurrence.unit.origin.trace_id, h.label_basis, h.level) for h in d.holdings
             if h.occurrence.at.leg == ("3", "request")}
     assert held == {(SSN, "T2", "classified", None), (SSN, "T1", "crossed", cross.CORROBORATED),
                     (DOB, "T1", "crossed", cross.CORROBORATED)}
@@ -488,3 +609,20 @@ def test_without_the_switch_a_carried_candidate_claims_as_before():
     for crossing in (None, ON):
         d = fold.derive(t, find.exact, crossing=crossing)
         assert {o.unit.origin.interaction_id for o in d.occurrences[("1", "request")]} == {"0"}
+
+
+def test_a_holding_fed_by_two_crossings_begins_at_the_later():
+    """V answers a twice in conversation A (clocked 25 s, then 20 s), each a crossing from what B gave it; a sends
+    the value on to V, clocked 10 s. The holding rests on both crossings and begins at the later one, which is not
+    the last one folded: it never begins before anything that fed it."""
+    s = lambda n: T0 + dt.timedelta(seconds=n)
+    t = _trace("A", [("a1", "request", "v", "a", {"subject": SSN}, []),
+                     ("a1b", "request", "v", "a", {"subject": SSN}, []),
+                     ("a2", "request", "a", "v", {"subject": SSN}, [])], T0)
+    at, parent = {"a1": s(25), "a1b": s(20), "a2": s(10)}, {"a1b": "a1", "a2": "a1b"}
+    legs = [dataclasses.replace(x, occurred_at=at[x.interaction_id], parent_interaction_id=parent.get(x.interaction_id))
+            for x in t.legs]
+    priors = _holdings("B", {"ssn": SSN}, ("SSN", SSN), at=T0)
+    d = fold.derive(dataclasses.replace(t, legs=legs, priors=tuple(priors)), find.exact, crossing=ON)
+    assert sorted(e.came_from.at.interaction_id for e in d.edges if e.to.at.interaction_id == "a2") == ["a1", "a1b"]
+    assert [(h.occurrence.at.interaction_id, h.valid_from) for h in d.holdings] == [("a2", s(25))]

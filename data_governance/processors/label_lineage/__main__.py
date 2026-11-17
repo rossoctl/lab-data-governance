@@ -46,7 +46,9 @@ def main() -> int:
              json.dumps(dict(config.scopes), sort_keys=True))
     c = config.crossing
     log.info("across conversations: %s", "off" if c is None else
-             f"on, M={c.common_limit}, retention {int(c.retention.total_seconds())} s, anchors {','.join(sorted(c.anchors))}")
+             f"on, at most {c.edges_per_value} edges per value, retention {int(c.retention.total_seconds())} s, anchors {','.join(sorted(c.anchors))}, "
+             f"limits: holdings per entity {c.holdings_limit or 'none'}, payload bytes {c.payload_bytes or 'none'}, "
+             f"candidates per payload {c.candidates_limit or 'none'}")
 
     db.configure(dsn)
     try:
@@ -71,8 +73,23 @@ def main() -> int:
     signal.signal(signal.SIGINT, _shutdown)
     signal.signal(signal.SIGTERM, _shutdown)
 
+    # Sole consumer, as leg-ready: the correction a derivation queues assumes no other
+    # worker derives meanwhile (one could read the occurrences before this one commits a
+    # change and miss its correction for good). maxSurge: 0 does not stop an evicted or
+    # still-exiting pod from overlapping its replacement; the replacement waits here
+    # until the old process's connection closes. The lock's session is checked before
+    # every drain: if it died, run() raises db.LockLost and the process exits 5.
+    log.info("waiting for the sole-consumer lock %r", driver.PROCESSOR_NAME)
     try:
-        driver.run(stop_event, dsn, config)
+        with db.session_lock(f"consumer:{driver.PROCESSOR_NAME}", dsn, stop=stop_event) as lock:
+            log.info("sole-consumer lock held")
+            driver.run(stop_event, dsn, config, guard=lock.check)
+    except db.LockWaitStopped:
+        log.info("stopped while waiting for the sole-consumer lock")
+    except db.LockLost as exc:
+        sys.stderr.write(f"sole-consumer lock lost (LockLost: {exc}); exiting\n")
+        log.error("sole-consumer lock lost: %s; exiting", exc)
+        return 5
     finally:
         db.close_pool()
     return 0

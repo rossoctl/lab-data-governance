@@ -55,10 +55,6 @@ expect:
   marks:
     '38':
     - incomplete candidates_per_payload
-  pending:
-    reason: the limits are not configuration on this branch; held, not run
-    held:
-    - config
 classifier:
   must_see:
     '7':
@@ -115,6 +111,6 @@ classifier:
     '43':
     - s1
   authored: true
-notes: 'K10 with one candidate per payload: the SSN at leg 38 has two origins, one more than the limit. The leg is marked
-  incomplete, naming the limit; the case states that a cut candidate set asserts nothing (no edge), which the rules do not
-  say: an open question for the limits.'
+notes: 'K10 with one candidate per payload. Predicted from the rule before the run: the SSN at leg 38 has two candidates (conversations
+  1 and 2 each sent it to V2), one more than the limit, so nothing is asserted there and the leg is marked; V2''s answers
+  at legs 12 and 28 and V3''s at 44 find no held value at all. No crossing, allow.'
