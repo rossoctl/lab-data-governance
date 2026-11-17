@@ -613,6 +613,34 @@ def across_cases() -> None:
                "every tier blocks, and a block is decided at the first tier that blocks: [block tier 0] in every "
                "mode. That the answer comes before any lineage is asked is timing, which this harness does not "
                "show: the record says the classifier alone decided it.")
+    case("K29b", "the classifier's block is released before label lineage",
+         legs({1: "s1 s2 s3 s4", 2: SEEN, 3: SEEN, 4: SEEN, 5: SEEN}, flag=5),
+         cell="across/tiers/early", steps=[{"send": "1-16"}, "ask", "drain"],
+         verdict=v(["block tier 0"], ["block tier 0", "block tier 0"], ["block tier 0", "block tier 0"]),
+         edges=chain([1, 2, 3, 4, 5]) + held_earlier(1, 4),
+         must_see={1: all4, 2: THREE, 3: THREE, 4: THREE, 5: THREE}, must_miss={},
+         notes="K29 with a gate asking while label lineage is held back (the ask step). A decision is released when "
+               "it is a block, or when the evidence is complete. Predicted from the mechanism before the run. conv and "
+               "cross: at the ask the flagged request is classified and label lineage has not derived it, so the "
+               "policy is asked on the classification alone; it blocks, and version 1 is written there, tier 0, with "
+               "nothing inherited in it. The drain then computes the full evidence: the chain's labels reach leg 5, "
+               "the record differs, version 2, a block again and so not a late finding. off: a classified leg is a "
+               "ready leg, the ask computes the full record and the drain writes nothing more: one version. Red when "
+               "the early question never fires (one version in conv and cross).")
+    k30b = f"{sends(THREE)} ~10min> {returns(['s1'])}"
+    case("K30b", "only the crossing blocks: nothing is released before label lineage", k30b,
+         cell="across/tiers/early", steps=[{"send": "1-16"}, "drain", {"send": "17-32"}, "ask", "drain"],
+         verdict=v(["allow tier 0"], ["allow tier 1"], ["block tier 2"]),
+         edges=sent_edges(0, THREE), cross=crossing(11, 22, ["s1"], "vo") + carried(16, ["s1"]),
+         evidence={**received(11, ["s1"]), **every(range(22, 28), ["s1"], "crossed vo")},
+         must_see=sent_premise(0, THREE), must_miss=returned_premise(16, ["s1"]), authored=True,
+         notes="K2 with a gate asking for the flagged exchange of conversation 2 while label lineage is held back "
+               "(the ask step). Predicted from the mechanism before the run. conv and cross: the flagged request is "
+               "classified and nothing in conversation 2 is labelled, so the early question does not block: nothing "
+               "is written and the gate is not answered. The drain then decides on the full evidence, once: cross, "
+               "block at tier 2 from the crossed SSN, the first version and so not late; conv, allow at tier 1. off: "
+               "a classified leg is a ready leg, the ask computes allow at tier 0. Red when the early question "
+               "writes what is not a block (cross would read [allow tier 0, block tier 2 late]).")
     case("K30", "the cross tier comes after the answer", f"{sends(THREE)} ~10min> {returns(['s1'])}",
          cell="across/tiers", steps=[{"cross": "off"}, {"send": "1-32"}, "drain", {"cross": "on"}, {"derive": 1},
                                      {"derive": 2}, "drain"],

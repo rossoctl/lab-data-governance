@@ -42,9 +42,10 @@ judges, and no span fact says it was left out, so such an exchange answers ``dec
 **The tier.** An answer with a record carries ``tier``, the tier of evidence that
 decided it (0 classification, 1 the labels known inside the conversation, 2 the
 crossed labels; ``interaction_risk_tiers``), left out for a version written before
-migration 0033. The record is written once its leg is ready, so the tier is that of a
-decision on all the evidence leg-ready waits for; no answer is given earlier at a
-lower tier.
+migration 0033. A record is written once its leg is ready with all the evidence
+leg-ready waits for, with one exception: a block on the classification alone is
+written, at tier 0, as soon as a waited request is classified (leg-ready's early
+block), so that answer comes before label lineage. No other answer is given early.
 
 **What was caught.** An answer with a record carries ``rules``, the record's
 ``triggered_rule_ids``, and ``labels``, the sorted distinct categories of the request

@@ -154,6 +154,13 @@ spec:
             # notify only costs latency (processors/leg_ready/priority_decision.py).
             - name: LEG_READY_PRIORITY_DECISION
               value: "on"
+            # Early block: a waited request that is classified, while label
+            # lineage has not derived it, is asked on the classification alone
+            # and a block is released at once; an allow still waits. Only
+            # reachable with RISK_INHERITED_LABELS=on. "off" waits for full
+            # readiness (docs/verdict-service.md).
+            - name: LEG_READY_EARLY_BLOCK
+              value: "on"
           # No ports / no Service (metrics on 9094 stay in-pod); no probes —
           # no HTTP serving surface, k8s restarts on process exit.
           resources:

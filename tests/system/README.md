@@ -68,7 +68,9 @@ The keys of a case across conversations (`cases.py` shows each; R1–R10 are the
   must be stated.
 - **`steps`**: `send: 17-32` (legs, a range in its own direction: `32-1` is reversed), `drain` (every
   drain on from where it stopped), `derive: 2` (the conversation queued again through the production
-  correction queue, `dg_queue_label_trace`), `reclassify: {7: [s1]}`, `cross: 'on'` (the cross-conversation
+  correction queue, `dg_queue_label_trace`), `reclassify: {7: [s1]}`, `ask` (a gate asks for the
+  flagged exchange's verdict while label lineage is held back: the drains up to the classification run, then
+  leg-ready's priority decision arm serves that interaction, early question included), `cross: 'on'` (the cross-conversation
   switch for the drains after it, as a restart would set it, in the off and cross runs; the conv run is the
   switch off and keeps it off). By default: send every leg in line order, then drain.
 - **`scopes`** (`{V2: call}`): a memory scope declared per party, applied through the production

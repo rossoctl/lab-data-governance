@@ -39,8 +39,9 @@ from data_governance.processors.data_lineage import memory
 from data_governance.processors.interactions import sidecar_driver as interactions
 from data_governance.processors.label_lineage import driver as label_lineage
 from data_governance.processors.leg_ready import driver as leg_ready
+from data_governance.processors.leg_ready import priority_decision
 from data_governance.risk import config as risk_config
-from data_governance.risk.engine.observer import make_risk_observer
+from data_governance.risk.engine.observer import make_early_block_observer, make_risk_observer
 from tools.load_trace import rows_to_request
 
 from . import classify
@@ -380,6 +381,27 @@ def run_case(case: Case, *, dsn: str, grpc_endpoint: str, opa_client, mode: str)
                         os.environ[cross.SWITCH_ENV_VAR] = step[1]     # restored by switches()
                         config = label_lineage.configured()
                         restarted()
+                elif step[0] == "ask":
+                    # A gate asks for the flagged exchange while label lineage is held back: everything up to
+                    # the classification runs, then leg-ready's priority decision arm serves that one
+                    # interaction, with the early question, as the verdict service's notify would make it.
+                    cursors["interactions"] = interactions.drain(cursors["interactions"])
+                    cursors["data_lineage"] = data_lineage.drain(cursors["data_lineage"])
+                    cursors["classification"] = classification.drain(
+                        cursors["classification"], detector=detector, model_version=detector.model_version)
+                    span = next(r.request_span_id for r in renderer.rendered if r.leg.index == case.line.sink.index)
+                    with psycopg.connect(dsn) as conn:
+                        row = conn.execute("SELECT interaction_id FROM interaction_spans WHERE role = 'anchor' "
+                                           "AND span_id = %s", (span,)).fetchone()
+                    if row is None:
+                        early.append(f"at step {n + 1} (ask): the flagged exchange has no interaction yet")
+                    else:
+                        arm = priority_decision.PriorityDecisionArm(
+                            counting(make_risk_observer(opa_client)),
+                            early=counting(make_early_block_observer(opa_client)))
+                        arm.want(row[0])
+                        arm.serve()
+                    lap("ask")
                 elif step[0] == "drain":
                     cursors["interactions"] = interactions.drain(cursors["interactions"])
                     lap("interactions")
