@@ -138,6 +138,11 @@ then costs one lookup per start boundary and distinct held length. An occurrence
 again: there is no expiry job, so `label_occurrences` keeps every value a persistent entity received
 (the index on `valid_to` keeps expired rows out of the load).
 
+`tools/bench_crossings.py` (run by hand, not part of the test suite; the command is in its docstring)
+shows both on a real Postgres: one identifier in 200 conversations (edges up to M, then a count; what is
+loaded bounded by the retention; time per derivation flat), and a 10 kB payload against 100 and 100,000
+holdings, for values with distinct first words and for values that all begin with one word.
+
 **The correction.** A derivation that adds, removes or changes an occurrence (a late conversation, a
 late classification, a re-derivation with a label gone) queues, in its own transaction and through
 `dg_queue_label_trace`, every other conversation with a leg the entity sent strictly inside that
