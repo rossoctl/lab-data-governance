@@ -978,3 +978,14 @@ def test_the_inherited_labels_flag_ships_off_on_leg_ready_only(
     (leg_ready,) = _by_kind(docs, "Deployment", "data-governance-leg-ready")
     assert parse_inherited_labels(_env(leg_ready)["RISK_INHERITED_LABELS"]) == "off"
     assert not [name for name in _env(label_lineage_deployment) if name.startswith("RISK_")]
+
+
+def test_the_cross_switch_ships_off_and_equal_on_label_lineage_and_leg_ready(
+    docs: list[dict], label_lineage_deployment: dict
+) -> None:
+    """Label lineage draws crossings with it, leg-ready hands them to the policy with it: one value on both."""
+    from data_governance.label_lineage import cross
+
+    (leg_ready,) = _by_kind(docs, "Deployment", "data-governance-leg-ready")
+    values = {_env(d)[cross.SWITCH_ENV_VAR] for d in (leg_ready, label_lineage_deployment)}
+    assert values == {"off"} and not cross.switch_on({cross.SWITCH_ENV_VAR: "off"})

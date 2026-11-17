@@ -133,11 +133,19 @@ spec:
             # labels whose origin is in the same trace are forwarded, a leg is
             # ready only once label lineage has derived it at its current
             # payload, and recompute requests are drained. "all" is rejected at
-            # startup (cross-conversation lineage is not built yet). Label
+            # startup (labels from other conversations: the next variable). Label
             # lineage (93-label-lineage.yaml) writes the requests whatever this
             # says; only this consumer decides whether to act on them. With "on"
             # a stopped label-lineage pod holds this stream (by design).
             - name: RISK_INHERITED_LABELS
+              value: "off"
+            # Must equal LABEL_CROSS_CONVERSATION on 93-label-lineage.yaml. "on" (with
+            # RISK_INHERITED_LABELS=on) also hands each flow the labels that reached it by
+            # a crossing, as one more item, their level in the flow's "crossed" field.
+            # With label lineage on and this off, a crossing inside one conversation
+            # still reaches the policy as an ordinary carried label, one from another
+            # conversation does not.
+            - name: LABEL_CROSS_CONVERSATION
               value: "off"
             # Priority decision: an interaction the verdict service names on
             # dg_priority_decision (a Sentry gate waits on it) is computed as soon

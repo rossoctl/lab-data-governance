@@ -36,9 +36,9 @@ unit, so the reader sees the value in the company it was born in.
 
 **A fact, not a decision.** Nothing here says whether a carried label reached a
 risk decision — that depends on ``RISK_INHERITED_LABELS``, which this pod does not
-read. The risk record's ``classification_summary.<leg>.inherited`` is the only
-place that says so. ``match_kind`` and ``origin_trace_id`` ride on every origin
-so a later finder's kinds and cross-trace origins can be told apart without a
+read. The risk record's ``classification_summary.<leg>.inherited`` (and
+``.crossed``, for a label that rests on a crossing) is the only place that says
+so. ``match_kind`` and ``origin_trace_id`` ride on every origin so a later finder's kinds and cross-trace origins can be told apart without a
 shape change.
 
 :func:`merge` pairs the two sources per ``(span, entity_type)``, pure and unit

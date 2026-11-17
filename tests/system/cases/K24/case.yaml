@@ -113,9 +113,8 @@ expect:
       s3:
       - crossed co
   pending:
-    reason: 'no crossing on this branch: the crossing core draws the crossing and the edges that rest on it; the level on
-      its way carries crossed and its level to every later leg and into the policy input, so the cross run blocks at the flagged
-      leg. The off and conv runs already match'
+    reason: 'conversation 2 is matched before conversation 1 has arrived, and nothing matches it again: the correction queues
+      the leaving leg to be matched again when conversation 1 registers'
     missing:
     - s1 11>22 co
     - s2 11>22 co

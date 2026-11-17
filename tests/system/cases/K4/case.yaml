@@ -74,5 +74,4 @@ classifier:
     - s3
   authored: true
 notes: 'K0 with V2 returning s3 in conversation 2. No anchoring identifier among the returned values: no crossing, allow.
-  Green on this branch only because nothing crosses at all here; the case means something once the crossing core exists, and
-  its deliberate break (the anchor rule off) must turn it red.'
+  Its deliberate break (the anchor rule off) turns it red.'

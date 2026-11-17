@@ -58,7 +58,10 @@ memory across conversations. The default comes from the kind
 :func:`scope` answers it. Inside one conversation the label fold asks
 :func:`mixes_calls`: what :func:`accumulates` says by kind, unless a declaration
 says ``call`` or ``conversation``; an entity declared ``persistent`` keeps what its
-kind does there. Nothing reads ``persistent`` yet. A declared key that matches no
+kind does there. With the cross-conversation switch on, the crossing
+(``label_lineage.cross``) reads ``persistent``: what such an entity received, in
+another conversation or an earlier call of this one, is linked to what it sends
+again. A declared key that matches no
 entity changes nothing and is not reported. Data lineage reads none of this.
 """
 

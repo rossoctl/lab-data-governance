@@ -59,7 +59,7 @@ verdict at 27: expected off=allow / conv=allow / cross=allow, observed off=allow
 | 7 | T1>A | RESTRICTED PN=Rosa Alvarez SSN=123-45-6789 | — | — |
 | 8 | A>L | RESTRICTED PN=Rosa Alvarez SSN=123-45-6789 | s5=Rosa Alvarez (PN, from 7), s1=123-45-6789 (SSN, from 7) | — |
 | 9 | L>A | RESTRICTED PN=Rosa Alvarez SSN=123-45-6789 | s5=Rosa Alvarez (PN, from 8), s1=123-45-6789 (SSN, from 8) | — |
-| 10 | A>T2 | RESTRICTED PN=Rosa Alvarez SSN=123-45-6789 | s5=Rosa Alvarez (PN, from 7), s1=123-45-6789 (SSN, from 7), s5=Rosa Alvarez (PN, from 9), s1=123-45-6789 (SSN, from 9) | — |
+| 10 | A>T2 | RESTRICTED PN=Rosa Alvarez SSN=123-45-6789 | s5=Rosa Alvarez (PN, from 7), s5=Rosa Alvarez (PN, from 9), s1=123-45-6789 (SSN, from 7), s1=123-45-6789 (SSN, from 9) | — |
 | 11 | T2>V2 | RESTRICTED PN=Rosa Alvarez SSN=123-45-6789 | s5=Rosa Alvarez (PN, from 10), s1=123-45-6789 (SSN, from 10) | — |
 | 12 | V2>T2 | PUBLIC  | — | — |
 | 13 | T2>A | PUBLIC  | — | — |
@@ -85,5 +85,5 @@ verdict at 27: expected off=allow / conv=allow / cross=allow, observed off=allow
 
 Risk observer calls: 33
 
-**Notes.** Conversation 1 sends the SSN and the patient's name; V2 returns the name alone. A person's name does not anchor: no crossing, allow. The name is PII, so a wrong crossing would block. Green on this branch only because nothing crosses at all here; the case means something once the crossing core exists, and its deliberate break (the anchor rule off) must turn it red.
+**Notes.** Conversation 1 sends the SSN and the patient's name; V2 returns the name alone. A person's name does not anchor: no crossing, allow. The name is PII, so a wrong crossing would block. Its deliberate break (the anchor rule off) turns it red.
 

@@ -1,9 +1,12 @@
 """Inherited labels as the risk engine sees them: the label-lineage edges into an
 interaction's legs, which of them reach OPA, and the shape they reach it in.
 
-One function decides what is forwarded (:func:`forwarded`); ``utils`` and
-``compute`` only call this module. With ``RISK_INHERITED_LABELS=off`` the evidence
-carries no :class:`Inherited` at all and nothing here runs.
+Two functions decide what is forwarded: :func:`forwarded` (known inside the
+conversation) and :func:`crossed` (resting on a crossing, with
+``LABEL_CROSS_CONVERSATION`` on); ``utils`` and ``compute`` only call this module.
+With ``RISK_INHERITED_LABELS=off`` the evidence carries no :class:`Inherited` at all
+and nothing here runs; with the cross switch off, :func:`crossed` forwards nothing
+and :func:`forwarded` ignores how surely an edge was carried.
 """
 
 from __future__ import annotations
@@ -18,7 +21,9 @@ from data_governance.label_lineage.summary import highest
 @dataclasses.dataclass(frozen=True)
 class InheritedEdge:
     """One ``payload_label_edges`` row into a leg: the origin unit's type and
-    labels, how and where it was found in this leg's payload."""
+    labels, how and where it was found in this leg's payload, and — when the value
+    rests on a crossing there (its ``label_crossed_edges`` row) — how surely it is
+    the label's (``crossed_level``) and whether of several origins (``ambiguous``)."""
 
     trace_id: str
     entity_type: str
@@ -30,26 +35,55 @@ class InheritedEdge:
     matched_end: int | None = None
     recombined: bool = False
     origin_trace_id: str | None = None
+    crossed_level: str | None = None
+    ambiguous: bool = False
 
 
 @dataclasses.dataclass(frozen=True)
 class Inherited:
-    """The edges into each leg of one interaction (keyed by leg type) and the mode
-    they were read under."""
+    """The edges into each leg of one interaction (keyed by leg type), the mode they
+    were read under and whether the cross-conversation switch is on."""
 
     mode: str
     by_leg: Mapping[str, Sequence[InheritedEdge]]
+    cross: bool = False
 
     def forwarded(self, leg_type: str) -> list[InheritedEdge]:
-        return [e for e in self.by_leg.get(leg_type, ()) if forwarded(e, self.mode)]
+        return [e for e in self.by_leg.get(leg_type, ()) if forwarded(e, self.mode, self.cross)]
+
+    def crossed(self, leg_type: str) -> list[InheritedEdge]:
+        return [e for e in self.by_leg.get(leg_type, ()) if crossed(e, self.mode, self.cross)]
 
 
-def forwarded(edge: InheritedEdge, mode: str) -> bool:
-    """Whether *edge* reaches the decision under *mode*: in one conversation, a
-    whole value whose origin is in the same trace."""
-    if mode != "on":
+def forwarded(edge: InheritedEdge, mode: str, cross: bool = False) -> bool:
+    """Whether *edge* reaches the decision under *mode* as known inside the
+    conversation: a whole value whose origin is in the same trace — with *cross*,
+    one that does not rest on a crossing (that one is :func:`crossed`)."""
+    if mode != "on" or (cross and edge.crossed_level is not None):
         return False
     return edge.match_kind == "whole" and edge.origin_trace_id in (None, edge.trace_id)
+
+
+def crossed(edge: InheritedEdge, mode: str, cross: bool) -> bool:
+    """Whether *edge* reaches the decision as a crossed label: a whole value resting
+    on a crossing, with inherited labels and the cross switch both on. Its origin may
+    be in this conversation too (a persistent entity's later call, R7)."""
+    return mode == "on" and cross and edge.match_kind == "whole" and edge.crossed_level is not None
+
+
+def crossed_summary(edges: Sequence[InheritedEdge]) -> dict[str, Any] | None:
+    """How surely the crossed labels of one flow are its values' — the flow's
+    ``crossed`` field and the record's: the levels, whether any is ambiguous, how many
+    edges, their tags and highest sensitivity. ``None`` when nothing crossed."""
+    if not edges:
+        return None
+    return {
+        "levels": sorted({e.crossed_level for e in edges}),
+        "ambiguous": any(e.ambiguous for e in edges),
+        "count": len(edges),
+        "regulatory_tags": sorted({t for e in edges for t in e.regulatory_tags}),
+        "max_level": highest([e.sensitivity_level for e in edges]),
+    }
 
 
 def summary(edges: Sequence[InheritedEdge]) -> dict[str, Any]:

@@ -1,0 +1,109 @@
+id: K11c
+title: one conversation across the expiry
+cell: across/rule/interval
+line: U>A[-], A>L[-], L>A[-], A>T1[-], ..V1.., T1>A[s1 s2 s3 -], A>L[s1 s2 s3 -], L>A[s1 s2 s3 -], A>T2[s1 s2 s3 -], T2>V2[s1
+  s2 s3 -], V2>T2[-], T2>A[-], A>L[-], L>A[-], A>U[-] ~874s> U>A[-], A>L[-], L>A[-], A>T2[-], T2>V2[-], V2>T2[s1@subject -],
+  T2>V2[-], V2>T2[-], T2>V2[-], V2>T2[s1@subject -], T2>A[s1@subject -], A>L[s1@subject -], L>A[s1@subject -], A>T3[s1@subject
+  -], T3>V3[s1@subject -]⚑, V3>T3[-], T3>A[-], A>L[-], L>A[-], A>U[-]
+units:
+  s1: SSN
+  s2: MRN
+  s3: DOB
+  s4: DIS
+expect:
+  verdict:
+    'off': allow
+    conv: allow
+    cross: block
+  edges:
+  - s1 7>8
+  - s1 8>9
+  - s1 9>10
+  - s1 10>11
+  - s2 7>8
+  - s2 8>9
+  - s2 9>10
+  - s2 10>11
+  - s3 7>8
+  - s3 8>9
+  - s3 9>10
+  - s3 10>11
+  - s1 7>10
+  - s2 7>10
+  - s3 7>10
+  cross:
+  - s1 11>22 vo
+  - s1 22>27
+  - s1 27>28
+  - s1 28>29
+  - s1 29>30
+  - s1 30>31
+  - s1 27>30
+  evidence:
+    '11':
+      s1:
+      - classified SSN
+      - inherited
+    '22':
+      s1:
+      - crossed vo
+    '26':
+      s1: []
+    '27':
+      s1:
+      - crossed vo
+    '28':
+      s1:
+      - crossed vo
+    '29':
+      s1:
+      - crossed vo
+    '30':
+      s1:
+      - crossed vo
+    '31':
+      s1:
+      - crossed vo
+classifier:
+  must_see:
+    '7':
+    - s1
+    - s2
+    - s3
+    '8':
+    - s1
+    - s2
+    - s3
+    '9':
+    - s1
+    - s2
+    - s3
+    '10':
+    - s1
+    - s2
+    - s3
+    '11':
+    - s1
+    - s2
+    - s3
+  must_miss:
+    '22':
+    - s1
+    '26':
+    - s1
+    '27':
+    - s1
+    '28':
+    - s1
+    '29':
+    - s1
+    '30':
+    - s1
+    '31':
+    - s1
+  authored: true
+notes: 'K2 with conversation 2 starting 874 s after conversation 1 and V2 answering twice: at 09:15:12.1, 3.9 s before the
+  occurrence of leg 11 expires (09:15:16, R1, R9), it returns the SSN and the crossing stands (22); at 09:15:20.1, 4.1 s after,
+  it returns it again and nothing crosses (26). The occurrence is loaded for conversation 2 (it is valid at leg 22), so only
+  the interval checked at each leg tells the two answers apart. Its deliberate break (the valid interval ignored at the leg)
+  turns it red.'

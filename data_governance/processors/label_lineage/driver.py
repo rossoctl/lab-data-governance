@@ -32,6 +32,15 @@ Every derivation notifies ``dg_interaction_leg_ready`` at commit: with the risk 
 on, the label row is what makes a leg ready for leg-ready, which listens there (this
 processor wakes once more and finds nothing new).
 
+Across conversations (``LABEL_CROSS_CONVERSATION=on``, default off): the derivation
+of a trace also loads what its persistent senders received in other conversations
+(``label_occurrences``, valid in the trace's time window, whose value is in a payload
+they send) and writes what its persistent receivers received, replacing the
+trace's rows. The switch alone governs it, whatever the risk flag says (as the rest
+of this processor runs); the risk engine hands crossed labels to the policy only while
+leg-ready has both ``RISK_INHERITED_LABELS`` and this switch on. With it off nothing
+crosses and nothing is stored.
+
 When a re-derivation changes a leg's inherited summary — including a leg that
 gains its first edges — the leg's interaction is written to
 ``risk_recompute_requests`` in the same transaction. That is a fact about the
@@ -44,13 +53,17 @@ correction requests are processed in either mode without losing pending labels.
 from __future__ import annotations
 
 import dataclasses
+import datetime as dt
 import logging
 import os
 import threading
 from collections.abc import Mapping
 
 from data_governance import db
-from data_governance.label_lineage import find, fold
+from data_governance.label_lineage import cross, find, fold
+from data_governance.label_lineage.units import Occurrence, Site, Unit
+from data_governance.label_lineage.value import Value
+from data_governance.processors.classification.projection import project
 from data_governance.processors import _driver
 from data_governance.processors import readiness_cursor as rc
 from data_governance.processors.data_lineage import memory
@@ -77,19 +90,22 @@ class ReadyLeg:
 
 @dataclasses.dataclass(frozen=True)
 class Config:
-    """What one run derives with: the finder and its name, and the memory scope
-    declared per entity natural key (``LABEL_MEMORY_SCOPES``)."""
+    """What one run derives with: the finder and its name, the memory scope declared
+    per entity natural key (``LABEL_MEMORY_SCOPES``), and the cross-conversation
+    configuration (``None``: nothing crosses)."""
 
     finder: find.Finder
     matcher: str
     scopes: Mapping[str, str] = dataclasses.field(default_factory=dict)
+    crossing: cross.Crossing | None = None
 
 
 def configured() -> Config:
-    """The configuration from the environment; raises on an unknown finder or an
-    invalid scope declaration."""
+    """The configuration from the environment; raises on an unknown finder, an
+    invalid scope declaration or an invalid cross-conversation configuration."""
     name = find.configured_name()
-    return Config(find.get_finder(name), name, memory.parse_scopes(os.environ.get(memory.SCOPES_ENV_VAR)))
+    return Config(find.get_finder(name), name, memory.parse_scopes(os.environ.get(memory.SCOPES_ENV_VAR)),
+                  cross.configured(os.environ))
 
 
 _FETCH_SQL = """
@@ -108,10 +124,12 @@ def _fetch_batch(tx: db.Transaction, cursor: int, limit: int) -> list[ReadyLeg]:
     return [ReadyLeg(r[0], int(r[1]), r[2], bool(r[3])) for r in tx.fetch_all(_FETCH_SQL, (cursor, limit))]
 
 
-def load_trace(tx: db.Transaction, trace_id: str) -> fold.TraceInput:
+def load_trace(tx: db.Transaction, trace_id: str, config: Config | None = None) -> fold.TraceInput:
     """Every leg of *trace_id* with its wire time and its parent's caller/callee,
     the entities they name, the payloads they carry and the findings of the
-    classified ones — one snapshot, in the caller's transaction."""
+    classified ones — one snapshot, in the caller's transaction. With crossing on,
+    also what the trace's persistent senders hold from other conversations
+    (:func:`load_priors`)."""
     rows = tx.fetch_all(
         "SELECT l.interaction_id, l.leg_type::text, l.seq, i.caller_entity_id, i.callee_entity_id, "
         "       l.payload_hash, l.occurred_at, i.parent_interaction_id "
@@ -136,22 +154,80 @@ def load_trace(tx: db.Transaction, trace_id: str) -> fold.TraceInput:
             "SELECT content_hash, findings FROM payload_classifications WHERE content_hash = ANY(%s)",
             (hashes,))
     }
+    priors = load_priors(tx, trace_id, legs, entities, payloads, config) if config and config.crossing else ()
     return fold.TraceInput(trace_id=trace_id, legs=legs, entities=entities, payloads=payloads,
-                           findings=findings)
+                           findings=findings, priors=priors)
+
+
+# K: the most words among the occurrences the load below could return for these sends (the same window), so a
+# long value that expired, or one held only in this conversation, does not raise the cost of every later send.
+_LONGEST_SQL = """
+SELECT max(word_count) FROM label_occurrences
+ WHERE entity_id = %s AND trace_id <> %s AND valid_from < %s AND valid_to > %s
+"""
+
+_PRIORS_SQL = """
+SELECT entity_id, trace_id, interaction_id, leg_type::text, payload_hash, value_text, span_start, span_end,
+       record_start, record_end, origin_trace_id, origin_interaction_id, origin_leg_type::text,
+       origin_payload_hash, unit_start, unit_end, unit_text, unit_value, entity_type, regulatory_tags,
+       sensitivity_level, category, held_from, held_to, evidence, level, valid_from, valid_to
+  FROM label_occurrences
+ WHERE entity_id = %s AND core_hash = ANY(%s) AND trace_id <> %s
+   AND valid_from < %s AND valid_to > %s
+"""
+
+
+def load_priors(tx: db.Transaction, trace_id: str, legs: list[fold.WireLeg], entities: Mapping[str, Entity],
+                payloads: Mapping[str, object], config: Config) -> tuple[cross.Holding, ...]:
+    """What the trace's persistent senders received in other conversations and send
+    again here: per sender, the occurrences valid somewhere in the window of the legs it
+    sends whose value is in one of those payloads. A value found there is a run of its
+    own number of consecutive words, so the payload's runs of 1..K words are hashed (K
+    the most words the sender holds) and the occurrences are loaded by those hashes:
+    exactly the held values present, whatever and however much the sender holds. K is
+    taken from the other conversations' occurrences valid in that window only, through
+    the index on (entity, valid_to). Cost per payload: its words times K hashes and
+    index probes; the index on (entity, core_hash, valid_to) keeps expired ones out."""
+    sent = [leg for leg in legs if leg.occurred_at is not None and leg.payload_hash is not None
+            and fold.is_persistent(entities, fold.ends(leg)[0], config.scopes)]
+    rows: list[tuple] = []
+    for sender in sorted({fold.ends(leg)[0] for leg in sent}):
+        mine = [leg for leg in sent if fold.ends(leg)[0] == sender]
+        times = [leg.occurred_at for leg in mine]
+        (longest,) = tx.fetch_one(_LONGEST_SQL, (sender, trace_id, max(times), min(times)))
+        if not longest:
+            continue
+        hashes = sorted(set().union(*(cross.window_hashes(project(payloads.get(leg.payload_hash, "")), longest)
+                                      for leg in mine)))
+        rows += tx.fetch_all(_PRIORS_SQL, (sender, hashes, trace_id, max(times), min(times)))
+    return tuple(_holding(r) for r in rows)
+
+
+def _holding(r: tuple) -> cross.Holding:
+    (entity_id, trace_id, ix, leg_type, payload_hash, value_text, span_start, span_end, record_start, record_end,
+     o_trace, o_ix, o_leg, o_hash, unit_start, unit_end, unit_text, unit_value, entity_type, tags, level_s,
+     category, held_from, held_to, evidence, level, valid_from, valid_to) = r
+    unit = Unit(entity_type=entity_type, regulatory_tags=tuple(tags or ()), sensitivity_level=level_s,
+                category=category, text=unit_text, value=Value(unit_value, unit_start, unit_end),
+                origin=Site(o_trace, o_ix, o_leg, o_hash))
+    occ = Occurrence(unit=unit, at=Site(trace_id, ix, leg_type, payload_hash), span=(span_start, span_end),
+                     held_from=held_from, held_to=held_to, matched_text=value_text)
+    record = None if record_start is None else (record_start, record_end)
+    return cross.Holding(entity_id, occ, record, valid_from, valid_to, evidence, level)
 
 
 def derive_and_persist(tx: db.Transaction, trace_id: str, config: Config) -> set[str]:
     """Re-derive *trace_id* and write it within *tx*. Returns the interactions whose
     inherited summary changed, and queues their recompute in the same transaction."""
     lock_trace(tx, trace_id)
-    trace = load_trace(tx, trace_id)
+    trace = load_trace(tx, trace_id, config)
     if not trace.legs:
-        tx.execute("DELETE FROM payload_label_edges WHERE trace_id = %s", (trace_id,))
-        tx.execute("DELETE FROM leg_inherited_labels WHERE trace_id = %s", (trace_id,))
-        tx.execute("DELETE FROM label_lineage_trace_status WHERE trace_id = %s", (trace_id,))
+        for table in ("payload_label_edges", "leg_inherited_labels", "label_lineage_trace_status",
+                      "label_occurrences", "label_crossings", "label_crossed_edges"):
+            tx.execute(f"DELETE FROM {table} WHERE trace_id = %s", (trace_id,))
         tx.execute("SELECT pg_notify(%s, '')", (NOTIFY_CHANNEL,))
         return set()
-    changed = store.write(tx, fold.derive(trace, config.finder, config.scopes), config.matcher)
+    changed = store.write(tx, fold.derive(trace, config.finder, config.scopes, config.crossing), config.matcher)
     # The rows just written are what leg-ready's readiness waits for with the risk
     # flag on: wake it at commit instead of leaving it to its poll backstop.
     tx.execute("SELECT pg_notify(%s, '')", (NOTIFY_CHANNEL,))
@@ -189,13 +265,23 @@ def _drain_ready(spec: _driver.StreamSpec[ReadyLeg], cursor: int, config: Config
                 "SELECT trace_id, generation FROM label_lineage_dirty_traces WHERE trace_id = ANY(%s)",
                 (traces,),
             )
-            for trace_id in traces:
+            # Derived in event-time order, so a conversation's crossings see what an earlier
+            # conversation of the same run registered (a later run is the correction's to match again).
+            for trace_id in _in_event_order(tx, traces):
                 derive_and_persist(tx, trace_id, config)
             _driver.advance_cursor(tx, spec.processor_name, result.cursor)
         _ack_dirty(queued)
         cursor = result.cursor
         if len(result.delivered) < len(batch) or len(batch) < spec.batch_size:
             return cursor
+
+
+def _in_event_order(tx: db.Transaction, traces: list[str]) -> list[str]:
+    """*traces* by the wire time of their first leg (a trace with none last), then by id."""
+    first = dict(tx.fetch_all(
+        "SELECT i.trace_id, min(l.occurred_at) FROM interaction_legs l JOIN interactions i ON i.id = l.interaction_id "
+        "WHERE i.trace_id = ANY(%s) GROUP BY i.trace_id", (traces,)))
+    return sorted(traces, key=lambda t: (first.get(t) is None, first.get(t) or dt.datetime.min, t))
 
 
 _STALE_SQL = """

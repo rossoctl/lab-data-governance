@@ -71,6 +71,7 @@ __all__ = [
     "INTERNAL_URL_WHITELIST_PATTERNS",
     "RULES_SOURCE",
     "inherited_labels_mode",
+    "cross_conversation",
 ]
 
 
@@ -276,8 +277,9 @@ INTERNAL_URL_WHITELIST_PATTERNS = _list_env("RISK_INTERNAL_URL_WHITELIST_PATTERN
 # OPA input, fingerprint and record are byte-identical to the engine without
 # label lineage. `on`: labels whose origin is in the same trace are forwarded,
 # leg readiness waits for the leg's label row, and the recompute requests label
-# lineage writes are drained. `all` would also forward origins found in other
-# conversations; it is rejected until cross-conversation label lineage exists.
+# lineage writes are drained. `all` is rejected: labels from other conversations
+# have their own switch, LABEL_CROSS_CONVERSATION (label lineage's, read here by
+# its parser, :func:`cross_conversation`), which the engine reads only while this is on.
 #
 # Read lazily (only leg-ready and the engine path consult it), so a typo stops
 # those, with this message, and nothing else that imports this module.
@@ -291,8 +293,8 @@ def parse_inherited_labels(raw: str | None) -> str:
     mode = (raw or "off").strip().lower()
     if mode == "all":
         raise ValueError(
-            "RISK_INHERITED_LABELS=all forwards labels from other conversations; it "
-            "arrives with cross-conversation label lineage (#273) — use off or on"
+            "RISK_INHERITED_LABELS=all is not a mode: cross-conversation labels are "
+            "switched by LABEL_CROSS_CONVERSATION=on beside RISK_INHERITED_LABELS=on — use off or on"
         )
     if mode not in INHERITED_LABELS_MODES:
         raise ValueError(f"RISK_INHERITED_LABELS must be off or on; got {raw!r}")
@@ -303,3 +305,13 @@ def parse_inherited_labels(raw: str | None) -> str:
 def inherited_labels_mode() -> str:
     """The configured mode, parsed once per process on first use."""
     return parse_inherited_labels(os.environ.get("RISK_INHERITED_LABELS"))
+
+
+@functools.cache
+def cross_conversation() -> bool:
+    """Whether ``LABEL_CROSS_CONVERSATION`` is on, parsed once per process by label
+    lineage's own parser (anything but on/off raises ``ValueError``). The engine reads
+    it only with inherited labels on."""
+    from data_governance.label_lineage.cross import switch_on
+
+    return switch_on(os.environ)

@@ -55,7 +55,7 @@ verdict at 27: expected off=allow / conv=allow / cross=allow, observed off=allow
 | 7 | T1>A | RESTRICTED DOB=1961-03-14 MRN=4471820 SSN=123-45-6789 | — | — |
 | 8 | A>L | RESTRICTED DOB=1961-03-14 MRN=4471820 SSN=123-45-6789 | s3=1961-03-14 (DOB, from 7), s2=4471820 (MRN, from 7), s1=123-45-6789 (SSN, from 7) | — |
 | 9 | L>A | RESTRICTED DOB=1961-03-14 MRN=4471820 SSN=123-45-6789 | s3=1961-03-14 (DOB, from 8), s2=4471820 (MRN, from 8), s1=123-45-6789 (SSN, from 8) | — |
-| 10 | A>T2 | RESTRICTED DOB=1961-03-14 MRN=4471820 SSN=123-45-6789 | s3=1961-03-14 (DOB, from 7), s2=4471820 (MRN, from 7), s1=123-45-6789 (SSN, from 7), s3=1961-03-14 (DOB, from 9), s2=4471820 (MRN, from 9), s1=123-45-6789 (SSN, from 9) | — |
+| 10 | A>T2 | RESTRICTED DOB=1961-03-14 MRN=4471820 SSN=123-45-6789 | s3=1961-03-14 (DOB, from 9), s3=1961-03-14 (DOB, from 7), s2=4471820 (MRN, from 9), s2=4471820 (MRN, from 7), s1=123-45-6789 (SSN, from 9), s1=123-45-6789 (SSN, from 7) | — |
 | 11 | T2>V2 | RESTRICTED DOB=1961-03-14 MRN=4471820 SSN=123-45-6789 | s3=1961-03-14 (DOB, from 10), s2=4471820 (MRN, from 10), s1=123-45-6789 (SSN, from 10) | — |
 | 12 | V2>T2 | PUBLIC  | — | — |
 | 13 | T2>A | PUBLIC  | — | — |
@@ -81,5 +81,5 @@ verdict at 27: expected off=allow / conv=allow / cross=allow, observed off=allow
 
 Risk observer calls: 33
 
-**Notes.** K1 with V2 declared call scope: it remembers nothing past one call, so nothing it returns in conversation 2 can cross. No crossing, allow. A declared key that is no derived entity makes the run red; that the declaration reaches the processor at all is K22c's check. Green on this branch only because nothing crosses at all here; the case means something once the crossing core exists, and its deliberate break (the declaration ignored, V2 back at its default, persistent) must turn it red.
+**Notes.** K1 with V2 declared call scope: it remembers nothing past one call, so nothing it returns in conversation 2 can cross. No crossing, allow. A declared key that is no derived entity makes the run red; that the declaration reaches the processor at all is K22c's check. Its deliberate break (the declaration ignored, V2 back at its default, persistent) turns it red.
 

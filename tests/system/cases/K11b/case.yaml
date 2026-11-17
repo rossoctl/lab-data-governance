@@ -74,6 +74,5 @@ classifier:
     '27':
     - s1
   authored: true
-notes: 'K2 with conversation 2 starting 896 s after conversation 1: V2 answers at 09:15:18.1, 2.1 s after the occurrence of
-  leg 11 expired (09:15:16, R1, R9): no crossing, allow. Green on this branch only because nothing crosses at all here; the
-  case means something once the crossing core exists, and its deliberate break (the valid interval ignored) must turn it red.'
+notes: 'K2 with conversation 2 starting 896 s after conversation 1: V2 answers at 09:15:34.1, 18.1 s after the occurrence
+  of leg 11 expired (09:15:16, R1, R9): no crossing, allow. Its deliberate break (the valid interval ignored) turns it red.'

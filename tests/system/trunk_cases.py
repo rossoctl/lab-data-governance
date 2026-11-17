@@ -25,12 +25,9 @@ MISS_KEY = {"s1": "s1@subject", "s2": "s2@account", "s3": "s3@ref", "s4": "s4@co
 TYPE = {"s1": "SSN", "s2": "MRN", "s3": "DOB", "s4": "DIS", "s5": "PN", "s6": "DOB"}
 
 # Why a case is pending: what delivers what it waits for.
-STEP3 = "the crossing core draws the crossing and the edges that rest on it"
-STEP4 = "the level on its way carries crossed and its level to every later leg and into the policy input"
-CROSS_PENDING = (f"no crossing on this branch: {STEP3}; {STEP4}, so the cross run blocks at the flagged leg. "
-                 "The off and conv runs already match")
-TRIVIAL = ("Green on this branch only because nothing crosses at all here; the case means something once the crossing "
-           "core exists, and its deliberate break ({}) must turn it red.")
+ORDER_PENDING = ("conversation 2 is matched before conversation 1 has arrived, and nothing matches it again: the "
+                 "correction queues the leaving leg to be matched again when conversation 1 registers")
+TRIVIAL = "Its deliberate break ({}) turns it red."
 
 
 def legs(spec: dict[int, str], flag: int | None = None) -> str:
@@ -228,7 +225,6 @@ def main() -> None:
         conv2_legs = range(22, 28)
         case(id_, title, line, verdict=crossed_block, cross=cross,
              evidence={**received(11, k), **every(conv2_legs, k, f"crossed {level}")},
-             pending={"reason": CROSS_PENDING, "missing": cross, "verdict": ["cross"], "evidence": list(conv2_legs)},
              **common,
              notes=f"K0 with V2 returning {' '.join(k)} in conversation 2. The classifier labels nothing in "
                    f"conversation 2, so only a crossing from conversation 1 can produce the alert at V3. V2 received "
@@ -285,9 +281,6 @@ def across_cases() -> None:
         evidence = {**received(11, back), 22: {u: [f"crossed {level}"] if u in crossed else [] for u in back},
                     **every(range(23, 28), crossed, f"crossed {level}")}
         kw.setdefault("verdict", crossed_block if crossed else aa)
-        if crossed and "pending" not in kw:
-            kw["pending"] = {"reason": CROSS_PENDING, "missing": cross, "verdict": ["cross"],
-                             "evidence": list(range(22, 28))}
         case(id_, title, line, cell=cell, units=units or UNITS, edges=sent_edges(0, sent), cross=cross,
              evidence=kw.pop("evidence", evidence), must_see=sent_premise(0, sent),
              must_miss=returned_premise(16, back), authored=True, notes=notes, **kw)
@@ -316,8 +309,6 @@ def across_cases() -> None:
                    **every(range(38, 44), ["s1"], "crossed vo ambiguous")},
          must_see={**sent_premise(0, THREE), **sent_premise(16, THREE)}, must_miss=returned_premise(32, ["s1"]),
          authored=True,
-         pending={"reason": CROSS_PENDING, "missing": k10_cross, "verdict": ["cross"],
-                  "evidence": list(range(38, 44))},
          notes="Conversations 1 and 2 each send V2 the SSN (with the MRN and the birthdate); conversation 3 gets the SSN "
                "alone back. Identity is the origin, never the text: two edges, each value-only, and the result is "
                "ambiguous. It blocks (R5): what is uncertain is which conversation it came from. "
@@ -328,13 +319,31 @@ def across_cases() -> None:
     # interval is open (R1): valid while 09:00:16 < t < 09:15:16.
     two("K11a", "back one step inside the retention", THREE, ["s1"], gap="~876s>", level="vo", crossed=["s1"],
         cell="across/rule/interval",
-        notes="K2 with conversation 2 starting 876 s after conversation 1: V2 answers at 09:14:58.1, 17.9 s before "
+        notes="K2 with conversation 2 starting 876 s after conversation 1: V2 answers at 09:15:14.1, 1.9 s before "
               "the occurrence of leg 11 expires (09:15:16, R1, R9). The crossing stands, value-only, and blocks.")
     two("K11b", "back one step after the retention", THREE, ["s1"], gap="~896s>",
         cell="across/rule/interval",
-        notes="K2 with conversation 2 starting 896 s after conversation 1: V2 answers at 09:15:18.1, 2.1 s after the "
+        notes="K2 with conversation 2 starting 896 s after conversation 1: V2 answers at 09:15:34.1, 18.1 s after the "
               "occurrence of leg 11 expired (09:15:16, R1, R9): no crossing, allow. "
               + TRIVIAL.format("the valid interval ignored"))
+
+    # K11c: one conversation 2 across the expiry. V2 answers T2's first call inside the retention and its third call,
+    # inside the same call of T2, after it. The occurrence is valid inside conversation 2's window, so it is loaded;
+    # only the interval at each leg keeps the later answer from crossing (R1).
+    k11c_back = ("U>A[-], A>L[-], L>A[-], A>T2[-], T2>V2[-], V2>T2[s1@subject -], T2>V2[-], V2>T2[-], T2>V2[-], "
+                 "V2>T2[s1@subject -], T2>A[s1@subject -], A>L[s1@subject -], L>A[s1@subject -], A>T3[s1@subject -], "
+                 "T3>V3[s1@subject -]⚑, V3>T3[-], T3>A[-], A>L[-], L>A[-], A>U[-]")
+    k11c_cross = crossing(11, 22, ["s1"], "vo") + chain([22, 27, 28, 29, 30, 31], ["s1"]) + held_earlier(27, 30, ["s1"])
+    case("K11c", "one conversation across the expiry", f"{sends(THREE)} ~874s> {k11c_back}", cell="across/rule/interval",
+         verdict=crossed_block, edges=sent_edges(0, THREE), cross=k11c_cross,
+         evidence={**received(11, ["s1"]), 22: {"s1": ["crossed vo"]}, 26: {"s1": []},
+                   **every(range(27, 32), ["s1"], "crossed vo")},
+         must_see=sent_premise(0, THREE), must_miss={i: ["s1"] for i in (22, 26, 27, 28, 29, 30, 31)}, authored=True,
+         notes="K2 with conversation 2 starting 874 s after conversation 1 and V2 answering twice: at 09:15:12.1, "
+               "3.9 s before the occurrence of leg 11 expires (09:15:16, R1, R9), it returns the SSN and the crossing "
+               "stands (22); at 09:15:20.1, 4.1 s after, it returns it again and nothing crosses (26). The occurrence "
+               "is loaded for conversation 2 (it is valid at leg 22), so only the interval checked at each leg tells "
+               "the two answers apart. " + TRIVIAL.format("the valid interval ignored at the leg"))
 
     two("K12", "the partner declared call scope", THREE, THREE, scopes={"V2": "call"},
         cell="across/rule/scope",
@@ -371,8 +380,6 @@ def across_cases() -> None:
          evidence={**received(11, four, k14_units), 22: {"s1": ["crossed vo"], "s6": []},
                    **every(range(23, 28), ["s1"], "crossed vo")},
          must_see=sent_premise(0, four), must_miss=returned_premise(16, ["s1", "s6"]), authored=True,
-         pending={"reason": CROSS_PENDING, "missing": k14_cross, "verdict": ["cross"],
-                  "evidence": list(range(22, 28))},
          notes="Conversation 1 sends V2 a listing of two patients, one record each: {SSN A, birthdate A} and "
                "{SSN B, birthdate B}. V2 returns A's SSN and B's birthdate. They left in different records, so they "
                "do not corroborate (R4): A's SSN crosses value-only, B's birthdate has no anchor in its record and "
@@ -401,8 +408,6 @@ def across_cases() -> None:
                    **{i: {"s1": ["crossed co ambiguous"], "s3": ["crossed co"]} for i in range(38, 44)}},
          must_see={**sent_premise(0, ["s1", "s3"]), **sent_premise(16, ["s1"])},
          must_miss=returned_premise(32, ["s1", "s3"]), authored=True,
-         pending={"reason": CROSS_PENDING, "missing": k16_cross, "verdict": ["cross"],
-                  "evidence": list(range(38, 44))},
          notes="Conversation 1 sends V2 the SSN with the birthdate, conversation 2 the SSN alone; conversation 3 gets "
                "both back. Origin 1 is corroborated, origin 2 value-only: the SSN carries the strongest, "
                "corroborated, and is ambiguous (R3); the birthdate has one origin.")
@@ -418,8 +423,6 @@ def across_cases() -> None:
                    **every(range(38, 44), ["s1"], "crossed vo")},
          must_see=sent_premise(0, THREE), must_miss={**returned_premise(16, THREE), **returned_premise(32, ["s1"])},
          authored=True,
-         pending={"reason": CROSS_PENDING, "missing": k17_cross, "verdict": ["cross"],
-                  "evidence": list(range(22, 28)) + list(range(38, 44))},
          notes="Conversation 1 to 2 by a corroborated crossing at V2 (as K1): V3 receives the three at leg 27 as "
                "crossed, corroborated, and holds them (what is registered includes a crossing's label). "
                "Conversation 3 gets the SSN alone back from V3: value-only. Along the path the weakest level "
@@ -430,14 +433,12 @@ def across_cases() -> None:
     case("K18", "classified and crossed", k18, cell="across/level/both",
          verdict=v("allow", "block", "block"), edges=sent_edges(0, THREE) + carried(16, THREE), cross=k18_cross,
          evidence={**received(11, THREE), 22: {u: [f"classified {TYPE[u]}", "crossed co"] for u in THREE},
-                   27: {u: ["inherited", "crossed co"] for u in THREE}},
+                   **every(range(23, 28), THREE, "inherited", "crossed co")},
          must_see={**sent_premise(0, THREE), 22: THREE}, must_miss={i: THREE for i in range(23, 28)},
          authored=True,
-         pending={"reason": f"no crossing on this branch: {STEP3}; {STEP4}. The verdicts and the conversation's own "
-                            "edges already match", "missing": k18_cross, "evidence": [22, 27]},
          notes="K1 with V2's answer under the keys the model recognises: the classifier labels the three at leg 22 "
-               "too. The leg shows both, classified and crossed, corroborated; neither changes the other. At "
-               "the flagged leg both reach it: inherited (the label classified at 22) and crossed. The "
+               "too. The leg shows both, classified and crossed, corroborated; neither changes the other. "
+               "On every later leg both reach it: inherited (the label classified at 22) and crossed. The "
                "conversation's own edges from 22 are drawn in every mode, so conv already blocks.")
 
     # --- the common value -------------------------------------------------------------------------------------
@@ -452,7 +453,6 @@ def across_cases() -> None:
                    **every(range(22, 26), ["s1"], "crossed vo ambiguous")},
          must_see={b + i: ["s1"] for b in (0, 6, 12) for i in (1, 2, 3)}, must_miss={i: ["s1"] for i in range(22, 26)},
          authored=True,
-         pending={"reason": CROSS_PENDING, "missing": k19_cross, "verdict": ["cross"], "evidence": list(range(22, 26))},
          notes="Three earlier conversations (M = 3, R9) each send V2 the user's SSN; the fourth gets it back. Held "
                "from exactly M conversations it is not a common value: three edges, value-only, ambiguous; it blocks.")
 
@@ -463,9 +463,6 @@ def across_cases() -> None:
          verdict=aa, edges=k20_edges, evidence={32: {"s1": []}}, marks={32: ["common 4"]},
          must_see={**{i: ["s1"] for i in (1, 2, 3, 5, 7)}, **{b + i: ["s1"] for b in (10, 16, 22) for i in (1, 2, 3)}},
          must_miss={i: ["s1"] for i in range(32, 36)}, authored=True,
-         pending={"reason": f"the common-value count is not on this branch: {STEP3}, with the count by distinct "
-                            "earlier conversation valid at the payload's time (R2) and its mark on the leg",
-                  "marks": [32]},
          notes="Four earlier conversations send V2 the SSN, the first of them three times (three calls in one call of "
                "T2); the fifth gets it back. Counted by distinct conversation the value is held from 4 > M = 3 "
                "conversations (R2): a common value, no edge, the count on the leg. Counted by leg it would be 6: the "
@@ -481,7 +478,6 @@ def across_cases() -> None:
          evidence={5: {"s1": ["classified SSN", "inherited"]}, 6: {"s1": ["inherited"]},
                    **every(range(10, 14), ["s1"], "crossed vo")},
          must_see={4: ["s1"], 5: ["s1"]}, must_miss={i: ["s1"] for i in (6, 10, 11, 12, 13)}, authored=True,
-         pending={"reason": CROSS_PENDING, "missing": k21_cross, "verdict": ["cross"], "evidence": [10, 11, 12, 13]},
          notes="One conversation. T2 gets the SSN from V1 and sends it to V2, which echoes it inside the same call (5>6, "
                "the conversation's own edge). In a later call, from T3, V2 returns it again. V2 is persistent: the "
                "same mechanism links the two calls (R7), one edge, value-only; inside one call the existing edge "
@@ -496,7 +492,6 @@ def across_cases() -> None:
          scopes={"T2": "persistent"}, verdict=crossed_block, edges=[], cross=k22_cross,
          evidence={4: {"s1": ["classified SSN"], "s2": ["classified MRN"]},
                    **every((7, 8, 9), ["s1", "s2"], "crossed co")}, **k22_premise,
-         pending={"reason": CROSS_PENDING, "missing": k22_cross, "verdict": ["cross"], "evidence": [7, 8, 9]},
          notes="T2 is declared persistent (a store). In its first call it fetches the SSN and the MRN from V1 (it "
                "received them); in a second call it returns them. One edge per anchoring unit, corroborated (two "
                "identifiers of one record), carried to V3, which blocks.")
@@ -542,11 +537,11 @@ def across_cases() -> None:
     k1_line = f"{sends(THREE)} ~10min> {returns(THREE)}"
     k1 = dict(cell="across/order", verdict=crossed_block, edges=sent_edges(0, THREE), cross=k1_cross,
               evidence={**received(11, THREE), **every(range(22, 28), THREE, "crossed co")},
-              must_see=sent_premise(0, THREE), must_miss=returned_premise(16, THREE), authored=True,
-              pending={"reason": CROSS_PENDING, "missing": k1_cross, "verdict": ["cross"],
-                       "evidence": list(range(22, 28))})
+              must_see=sent_premise(0, THREE), must_miss=returned_premise(16, THREE), authored=True)
     case("K24", "conversation 1 arrives after conversation 2 was processed", k1_line,
-         steps=[{"send": "17-32"}, "drain", {"send": "1-16"}, "drain"], **k1,
+         steps=[{"send": "17-32"}, "drain", {"send": "1-16"}, "drain"],
+         **{**k1, "pending": {"reason": ORDER_PENDING, "missing": k1_cross, "verdict": ["cross"],
+                              "evidence": list(range(22, 28))}},
          notes="K1 with conversation 2 sent and drained before conversation 1 is sent: conversation 1 is classified "
                "and derived after conversation 2 was matched (the readiness cursor derives a leg only once it is "
                "classified, so a late classification is a late leg). The same final edges as in order: the late leg "
@@ -576,8 +571,6 @@ def across_cases() -> None:
          steps=[{"cross": "off"}, {"send": "1-16"}, "drain", {"cross": "on"}, {"send": "17-32"}, "drain"],
          cell="across/switch", verdict=aa, edges=sent_edges(0, THREE), evidence=every([22, 27], THREE),
          must_see=sent_premise(0, THREE), must_miss=returned_premise(16, THREE), authored=True,
-         pending={"reason": "the cross-conversation switch is not on this branch; held, not run",
-                  "held": ["switch"]},
          notes="K1 with the cross-conversation switch off while conversation 1 runs and on for conversation 2. "
                "Nothing was registered while it was off, and switching on does not look back (R6): no crossing, "
                "allow. K28a (inherited labels off) and K28b (cross-conversation off) are not lines of their own: "

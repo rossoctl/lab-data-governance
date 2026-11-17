@@ -6,8 +6,9 @@ drain (replayed model output through the production seam) -> label-lineage drain
 
 A case runs its steps (by default: send every leg, then drain): ``send`` puts legs on
 the wire, ``drain`` runs every drain from where it stopped, ``derive`` queues a
-conversation for derivation again through the production correction queue. A run is
-in one of three modes, set through the production switches (:func:`switches`). A case's
+conversation for derivation again through the production correction queue, ``cross`` turns the
+cross-conversation switch on or off for the drains after it (label lineage and leg-ready, as a
+restart would). A run is in one of three modes, set through the production switches (:func:`switches`). A case's
 ``scopes:`` reach label lineage as the production declaration (:func:`declaration`).
 
 A drain may stop early by design (leg-ready holds its cursor while OPA is down) and
@@ -29,6 +30,7 @@ from typing import Any
 import psycopg
 
 from data_governance import db
+from data_governance.label_lineage import cross
 from data_governance.processors.classification import driver as classification
 from data_governance.processors.data_lineage import driver as data_lineage
 from data_governance.processors.data_lineage import memory
@@ -47,13 +49,15 @@ from .render import Renderer, Rendered, render
 # (``Case.uses``; its ``expect.pending.held`` names them). The change that builds a path removes its row here and
 # applies it in :func:`run_case`, where the comment of each row says.
 NOT_ON_BRANCH = {
-    "switch": "the cross-conversation switch: set by switches() per mode, and by a cross step",
     "config": "the limits as configuration: set in run_case before the first send",
     "reclassify": "a classification replaced and its conversation derived again: a reclassify step",
     "tiers": "the verdict tiers and decision versions: read by verdict_at",
 }
 
 _KEEP = {"alembic_version"}
+
+# A crossing's level as the rows write it, in the notation of the cases.
+_LEVELS = {cross.VALUE_ONLY: "vo", cross.CORROBORATED: "co"}
 
 
 def reset(dsn: str) -> None:
@@ -72,7 +76,7 @@ class LegRows:
     leg_type: str
     payload_hash: str | None
     classification: dict[str, Any] | None      # sensitivity, tags, findings [(tag, text)]
-    inherited: list[dict[str, Any]]            # edges INTO this leg: unit, value, from_leg, level
+    inherited: list[dict[str, Any]]            # edges INTO this leg: unit, value, from_leg, level, known
     risk: dict[str, Any] | None                # the risk record that evidences this leg (sink only)
 
 
@@ -169,14 +173,16 @@ def resolve_edges(case: Case, rows, leg_of_key: dict[tuple[str, str], int]):
     edge whose value is no unit's is kept as ``?value`` (an extra, so red). An edge with an end on no line leg,
     carrying a label that is not one of its unit's types, or whose evidence is not a whole match of the value's
     own bytes (the suite runs the exact finder), is a problem; so is an edge drawn by more than one row of one label
-    type, which the edge set would hide (two origins of one value under two types are two rows by right). A row's level is a crossing's (``None`` for an edge inside one conversation): the crossing
-    core writes it, and its row is read here beside the conversation's own."""
+    type and origin, which the edge set would hide (two origins of one value are two rows by right, under one type or
+    two). A row's level is a crossing's (``None`` for an edge inside one conversation), read from its crossing row; how
+    the value is known at the to leg (``known``) is ``inherited``, or ``crossed L [ambiguous]`` read from the edge's
+    carried row when it rests on a crossing."""
     value_unit = {v: u for u, v in case.values.items()}
     rows_of: Counter[tuple[Edge, str]] = Counter()
     raw: list[dict[str, Any]] = []
     inherited: dict[int, list[dict[str, Any]]] = defaultdict(list)
     problems: list[str] = []
-    for fi, flt, ti, tlt, etype, value, matched, kind, level in rows:
+    for fi, flt, ti, tlt, etype, value, matched, kind, level, origin, known in rows:
         f = leg_of_key.get((fi, flt))
         to = leg_of_key.get((ti, tlt))
         unit = value_unit.get(value, f"?{value}")
@@ -188,18 +194,19 @@ def resolve_edges(case: Case, rows, leg_of_key: dict[tuple[str, str], int]):
             problems.append(f"edge {unit} {f}>{to} carries {etype}, not one of {sorted(case.accepts[unit])}")
         if kind != "whole" or matched != value:
             problems.append(f"edge {unit} {f}>{to} matched {matched!r} as {kind!r}, not the whole value")
-        rows_of[((unit, f, to, level), etype)] += 1
-        inherited[to].append({"unit": unit, "label": etype, "value": value, "from": f, "level": level})
+        rows_of[((unit, f, to, level), etype, origin)] += 1
+        inherited[to].append({"unit": unit, "label": etype, "value": value, "from": f, "level": level,
+                              "known": known or "inherited"})
     problems += [f"edge {fmt_edges([e])} ({etype}) drawn by {n} rows"
-                 for (e, etype), n in sorted(rows_of.items(), key=str) if n > 1]
-    return {e for e, _ in rows_of}, raw, inherited, problems
+                 for (e, etype, _), n in sorted(rows_of.items(), key=str) if n > 1]
+    return {e for e, _, _ in rows_of}, raw, inherited, problems
 
 
 def evidence_at(case: Case, legs: dict[int, "LegRows"]) -> dict[int, dict[str, frozenset[str]]]:
     """leg -> unit -> how the unit is known there, read from the rows: ``classified TYPE`` for every type the model
-    gave the unit's own bytes at the leg, and one kind per edge row into it: ``inherited`` for an edge inside the
-    conversation, ``crossed L`` for a crossing. A crossed label carried on inside a conversation and
-    an ambiguous result are read from the rows that write them; until then they are never observed."""
+    gave the unit's own bytes at the leg, and one kind per edge row into it: ``inherited`` for an edge known inside
+    the conversation, ``crossed L [ambiguous]`` for one whose value rests on a crossing there (its carried row: the
+    crossing edge itself and every edge that carries the label on)."""
     out: dict[int, dict[str, frozenset[str]]] = {}
     for i, r in legs.items():
         cells: dict[str, set[str]] = defaultdict(set)
@@ -207,7 +214,7 @@ def evidence_at(case: Case, legs: dict[int, "LegRows"]) -> dict[int, dict[str, f
         for unit, value in case.values.items():
             cells[unit] |= {f"classified {t}" for t, text in findings if text == value}
         for e in r.inherited:
-            cells[e["unit"]].add(f"crossed {e['level']}" if e["level"] else "inherited")
+            cells[e["unit"]].add(e["known"])
         out[i] = {u: frozenset(k) for u, k in cells.items() if k}
     return out
 
@@ -276,20 +283,21 @@ def undeclared(declared: Mapping[str, str], derived: set[str]) -> list[str]:
 @contextlib.contextmanager
 def switches(mode: str):
     """The production switches of *mode*, through the environment the processors read: inherited labels off in
-    ``off``, on in ``conv`` and ``cross``. The cross-conversation switch arrives with the crossing core, which
-    sets it here: on in ``off`` (inherited labels off must stop it) and ``cross``, off in ``conv``. Until
-    then ``cross`` runs the branch as ``conv`` does."""
-    saved = os.environ.get("RISK_INHERITED_LABELS")
-    os.environ["RISK_INHERITED_LABELS"] = "off" if mode == "off" else "on"
+    ``off``, on in ``conv`` and ``cross``; the cross-conversation switch on in ``off`` and ``cross`` (label lineage
+    draws the crossings in both; with inherited labels off none may reach a verdict), off in ``conv``."""
+    with environment({"RISK_INHERITED_LABELS": "off" if mode == "off" else "on",
+                      cross.SWITCH_ENV_VAR: "off" if mode == "conv" else "on"}):
+        restarted()
+        try:
+            yield
+        finally:
+            restarted()
+
+
+def restarted() -> None:
+    """What a restart of leg-ready does to its configuration: both switches are read again."""
     risk_config.inherited_labels_mode.cache_clear()
-    try:
-        yield
-    finally:
-        if saved is None:
-            os.environ.pop("RISK_INHERITED_LABELS")
-        else:
-            os.environ["RISK_INHERITED_LABELS"] = saved
-        risk_config.inherited_labels_mode.cache_clear()
+    risk_config.cross_conversation.cache_clear()
 
 
 def run_case(case: Case, *, dsn: str, grpc_endpoint: str, opa_client, mode: str) -> Observation:
@@ -339,6 +347,10 @@ def run_case(case: Case, *, dsn: str, grpc_endpoint: str, opa_client, mode: str)
                 elif step[0] == "derive":
                     with psycopg.connect(dsn, autocommit=True) as conn:
                         conn.execute("SELECT dg_queue_label_trace(%s)", (renderer.trace_of(step[1]),))
+                elif step[0] == "cross":
+                    os.environ[cross.SWITCH_ENV_VAR] = step[1]     # restored by switches()
+                    config = label_lineage.configured()
+                    restarted()
                 elif step[0] == "drain":
                     cursors["interactions"] = interactions.drain(cursors["interactions"])
                     lap("interactions")
@@ -383,9 +395,22 @@ def _read(case: Case, rendered: list[Rendered], dsn: str, mode: str) -> Observat
             from data_governance.processors.classification import projection
             payload_text[h] = projection.project(content)
         edges = conn.execute(
-            "SELECT from_interaction_id, from_leg_type::text, to_interaction_id, to_leg_type::text, "
-            "entity_type, unit_value, matched_text, match_kind, NULL FROM payload_label_edges").fetchall()
-        # NULL: no crossing on this branch; the crossing core adds its rows and their level here
+            "SELECT e.from_interaction_id, e.from_leg_type::text, e.to_interaction_id, e.to_leg_type::text, "
+            "e.entity_type, e.unit_value, e.matched_text, e.match_kind, c.level, "
+            "concat_ws('/', coalesce(e.origin_trace_id, e.trace_id), e.origin_interaction_id, e.origin_leg_type, "
+            "          e.unit_start, e.unit_end), x.level, x.ambiguous "
+            "FROM payload_label_edges e LEFT JOIN label_crossings c ON c.edge_id = e.edge_id "
+            "LEFT JOIN label_crossed_edges x ON x.edge_id = e.edge_id "
+            "ORDER BY e.matched_start, e.entity_type, e.from_interaction_id, e.from_leg_type, e.edge_id").fetchall()
+        edges = [(*r[:8], _LEVELS[r[8]] if r[8] else None, r[9],
+                  f"crossed {_LEVELS[r[10]]}{' ambiguous' if r[11] else ''}" if r[10] else None) for r in edges]
+        commons = conn.execute("SELECT interaction_id, leg_type::text, conversations FROM label_crossings "
+                               "WHERE edge_id IS NULL").fetchall()
+        doubled = conn.execute(
+            "SELECT entity_id, interaction_id, leg_type::text, entity_type, value_text, count(*) "
+            "FROM label_occurrences GROUP BY entity_id, interaction_id, leg_type, origin_trace_id, "
+            "origin_interaction_id, origin_leg_type, unit_start, unit_end, entity_type, value_text, "
+            "span_start, span_end, held_from, held_to HAVING count(*) > 1").fetchall()
         risk_rows = conn.execute(
             "SELECT interaction_id, version, risk_level, enforcement_type, triggered_rule_ids, legs_evidenced, "
             "classification_summary FROM interaction_risk_records ORDER BY interaction_id, version").fetchall()
@@ -425,8 +450,18 @@ def _read(case: Case, rendered: list[Rendered], dsn: str, mode: str) -> Observat
 
     if sink:
         problems += flagged_response_problems(rendered, legs, sink.index)
-    # marks: the common-value count and the incomplete mark are read here from the
-    # rows that write them; this branch writes none, so a stated mark is never observed.
+    # marks: the common-value count, read from its crossing row; the incomplete mark is not written yet
+    marks: dict[int, set[str]] = defaultdict(set)
+    for iid, lt, n in commons:
+        if (iid, lt) in leg_of_key:
+            marks[leg_of_key[(iid, lt)]].add(f"common {n}")
+        else:
+            problems.append(f"a common-value mark sits on no line leg ({iid} {lt})")
+    # an occurrence is registered once per derivation of its conversation, never doubled (K21, K27)
+    value_unit = {v: u for u, v in case.values.items()}
+    problems += [f"occurrence of {value_unit.get(value, '?' + value)} ({etype}) at leg "
+                 f"{leg_of_key.get((iid, lt))} registered by {n} rows" for _, iid, lt, etype, value, n in doubled]
     return Observation(mode=mode, legs=legs, edges=resolved, raw_edges=raw, verdict=verdict, timings={},
-                       observer_calls=0, problems=problems, evidence=evidence_at(case, legs), marks={})
+                       observer_calls=0, problems=problems, evidence=evidence_at(case, legs),
+                       marks={leg: frozenset(m) for leg, m in marks.items()})
 

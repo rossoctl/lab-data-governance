@@ -32,7 +32,7 @@ verdict at 5: expected off=block / conv=block / cross=block, observed off=block 
 | 1 | U>A | RESTRICTED DIS=type 2 diabetes DOB=1961-03-14 MRN=4471820 SSN=123-45-6789 | — | — |
 | 2 | A>L | RESTRICTED DOB=1961-03-14 MRN=4471820 SSN=123-45-6789 | s3=1961-03-14 (DOB, from 1), s2=4471820 (MRN, from 1), s1=123-45-6789 (SSN, from 1) | — |
 | 3 | L>A | RESTRICTED DOB=1961-03-14 MRN=4471820 SSN=123-45-6789 | s3=1961-03-14 (DOB, from 2), s2=4471820 (MRN, from 2), s1=123-45-6789 (SSN, from 2) | — |
-| 4 | A>T1 | RESTRICTED DOB=1961-03-14 MRN=4471820 SSN=123-45-6789 | s3=1961-03-14 (DOB, from 1), s2=4471820 (MRN, from 1), s1=123-45-6789 (SSN, from 1), s3=1961-03-14 (DOB, from 3), s2=4471820 (MRN, from 3), s1=123-45-6789 (SSN, from 3) | — |
+| 4 | A>T1 | RESTRICTED DOB=1961-03-14 MRN=4471820 SSN=123-45-6789 | s3=1961-03-14 (DOB, from 3), s3=1961-03-14 (DOB, from 1), s2=4471820 (MRN, from 3), s2=4471820 (MRN, from 1), s1=123-45-6789 (SSN, from 3), s1=123-45-6789 (SSN, from 1) | — |
 | 5 | T1>V1⚑ | RESTRICTED DOB=1961-03-14 MRN=4471820 SSN=123-45-6789 | s3=1961-03-14 (DOB, from 4), s2=4471820 (MRN, from 4), s1=123-45-6789 (SSN, from 4) | critical block ['T-SENS'] v1 |
 | 6 | V1>T1 | PUBLIC  | — | — |
 | 7 | T1>A | PUBLIC  | — | — |
