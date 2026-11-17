@@ -52,14 +52,14 @@ DIS     s4    ·      ·      ·      ·             ·      ·      ·      · 
 conversation 3
               33     34     35     36     37     38     39     40     41     42     43     44     45     46     47     48     
               U>A    A>L    L>A    A>T2   T2>V2  V2>T2  T2>A   A>L    L>A    A>T3   T3>V3⚑ V3>T3  T3>A   A>L    L>A    A>U    
-SSN     s1    ·      ·      ·      ·      ·      ┈┈┈┈┈┈○┈┈┈┈┈┈○┈┈┈┈┈┈○┈┈┈┈┈┈○┈┈┈┈┈┈○┈┈┈┈┈┈○·      ·      ·      ·      ·      
+SSN     s1    ·      ·      ·      ·      ·      ━━━━━━○━━━━━━○━━━━━━○━━━━━━○━━━━━━○━━━━━━○·      ·      ·      ·      ·      
 MRN     s2    ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      
 DOB     s3    ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      
 DIS     s4    ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      
 verdict at 43: expected off=allow / conv=allow / cross=block, observed off=allow / conv=allow / cross=allow
 ```
 
-**Reasons.** pending: no crossing on this branch: the crossing core draws the crossing and the edges that rest on it; the level on its way carries crossed and its level to every later leg and into the policy input, so the cross run blocks at the flagged leg. The off and conv runs already match · verdict cross: want block, got allow · edges missing: s1 11>38 vo, s1 27>38 vo, s1 38>39, s1 39>40, s1 39>42, s1 40>41, s1 41>42, s1 42>43 · evidence at 38 s1: want [crossed vo ambiguous], got [] · evidence at 39 s1: want [crossed vo ambiguous], got [] · evidence at 40 s1: want [crossed vo ambiguous], got [] · evidence at 41 s1: want [crossed vo ambiguous], got [] · evidence at 42 s1: want [crossed vo ambiguous], got [] · evidence at 43 s1: want [crossed vo ambiguous], got []
+**Reasons.** pending: the crossing and the edges that rest on it are drawn; the level on its way carries crossed and its level to every later leg, marks the result ambiguous, and carries both into the policy input, which passes on no label from another conversation before it, so the cross run blocks at the flagged leg. The off and conv runs already match · verdict cross: want block, got allow · evidence at 38 s1: want [crossed vo ambiguous], got [crossed vo] · evidence at 39 s1: want [crossed vo ambiguous], got [inherited] · evidence at 40 s1: want [crossed vo ambiguous], got [inherited] · evidence at 41 s1: want [crossed vo ambiguous], got [inherited] · evidence at 42 s1: want [crossed vo ambiguous], got [inherited] · evidence at 43 s1: want [crossed vo ambiguous], got [inherited]
 
 **Rows (cross run).**
 
@@ -73,7 +73,7 @@ verdict at 43: expected off=allow / conv=allow / cross=block, observed off=allow
 | 7 | T1>A | RESTRICTED DOB=1961-03-14 MRN=4471820 SSN=123-45-6789 | — | — |
 | 8 | A>L | RESTRICTED DOB=1961-03-14 MRN=4471820 SSN=123-45-6789 | s3=1961-03-14 (DOB, from 7), s2=4471820 (MRN, from 7), s1=123-45-6789 (SSN, from 7) | — |
 | 9 | L>A | RESTRICTED DOB=1961-03-14 MRN=4471820 SSN=123-45-6789 | s3=1961-03-14 (DOB, from 8), s2=4471820 (MRN, from 8), s1=123-45-6789 (SSN, from 8) | — |
-| 10 | A>T2 | RESTRICTED DOB=1961-03-14 MRN=4471820 SSN=123-45-6789 | s3=1961-03-14 (DOB, from 7), s2=4471820 (MRN, from 7), s1=123-45-6789 (SSN, from 7), s3=1961-03-14 (DOB, from 9), s2=4471820 (MRN, from 9), s1=123-45-6789 (SSN, from 9) | — |
+| 10 | A>T2 | RESTRICTED DOB=1961-03-14 MRN=4471820 SSN=123-45-6789 | s3=1961-03-14 (DOB, from 7), s3=1961-03-14 (DOB, from 9), s2=4471820 (MRN, from 7), s2=4471820 (MRN, from 9), s1=123-45-6789 (SSN, from 7), s1=123-45-6789 (SSN, from 9) | — |
 | 11 | T2>V2 | RESTRICTED DOB=1961-03-14 MRN=4471820 SSN=123-45-6789 | s3=1961-03-14 (DOB, from 10), s2=4471820 (MRN, from 10), s1=123-45-6789 (SSN, from 10) | — |
 | 12 | V2>T2 | PUBLIC  | — | — |
 | 13 | T2>A | PUBLIC  | — | — |
@@ -88,7 +88,7 @@ verdict at 43: expected off=allow / conv=allow / cross=block, observed off=allow
 | 23 | T1>A | RESTRICTED DOB=1961-03-14 MRN=4471820 SSN=123-45-6789 | — | — |
 | 24 | A>L | RESTRICTED DOB=1961-03-14 MRN=4471820 SSN=123-45-6789 | s3=1961-03-14 (DOB, from 23), s2=4471820 (MRN, from 23), s1=123-45-6789 (SSN, from 23) | — |
 | 25 | L>A | RESTRICTED DOB=1961-03-14 MRN=4471820 SSN=123-45-6789 | s3=1961-03-14 (DOB, from 24), s2=4471820 (MRN, from 24), s1=123-45-6789 (SSN, from 24) | — |
-| 26 | A>T2 | RESTRICTED DOB=1961-03-14 MRN=4471820 SSN=123-45-6789 | s3=1961-03-14 (DOB, from 23), s2=4471820 (MRN, from 23), s1=123-45-6789 (SSN, from 23), s3=1961-03-14 (DOB, from 25), s2=4471820 (MRN, from 25), s1=123-45-6789 (SSN, from 25) | — |
+| 26 | A>T2 | RESTRICTED DOB=1961-03-14 MRN=4471820 SSN=123-45-6789 | s3=1961-03-14 (DOB, from 23), s3=1961-03-14 (DOB, from 25), s2=4471820 (MRN, from 23), s2=4471820 (MRN, from 25), s1=123-45-6789 (SSN, from 23), s1=123-45-6789 (SSN, from 25) | — |
 | 27 | T2>V2 | RESTRICTED DOB=1961-03-14 MRN=4471820 SSN=123-45-6789 | s3=1961-03-14 (DOB, from 26), s2=4471820 (MRN, from 26), s1=123-45-6789 (SSN, from 26) | — |
 | 28 | V2>T2 | PUBLIC  | — | — |
 | 29 | T2>A | PUBLIC  | — | — |
@@ -100,19 +100,19 @@ verdict at 43: expected off=allow / conv=allow / cross=block, observed off=allow
 | 35 | L>A | PUBLIC  | — | — |
 | 36 | A>T2 | PUBLIC  | — | — |
 | 37 | T2>V2 | PUBLIC  | — | — |
-| 38 | V2>T2 | PUBLIC  | — | — |
-| 39 | T2>A | PUBLIC  | — | — |
-| 40 | A>L | PUBLIC  | — | — |
-| 41 | L>A | PUBLIC  | — | — |
-| 42 | A>T3 | PUBLIC  | — | — |
-| 43 | T3>V3⚑ | PUBLIC  | — | none allow [] v1 |
+| 38 | V2>T2 | PUBLIC  | s1=123-45-6789 (SSN, from 27, vo), s1=123-45-6789 (SSN, from 11, vo) | — |
+| 39 | T2>A | PUBLIC  | s1=123-45-6789 (SSN, from 38), s1=123-45-6789 (SSN, from 38) | — |
+| 40 | A>L | PUBLIC  | s1=123-45-6789 (SSN, from 39), s1=123-45-6789 (SSN, from 39) | — |
+| 41 | L>A | PUBLIC  | s1=123-45-6789 (SSN, from 40), s1=123-45-6789 (SSN, from 40) | — |
+| 42 | A>T3 | PUBLIC  | s1=123-45-6789 (SSN, from 39), s1=123-45-6789 (SSN, from 39), s1=123-45-6789 (SSN, from 41), s1=123-45-6789 (SSN, from 41) | — |
+| 43 | T3>V3⚑ | PUBLIC  | s1=123-45-6789 (SSN, from 42), s1=123-45-6789 (SSN, from 42) | none allow [] v1 |
 | 44 | V3>T3 | PUBLIC  | — | — |
 | 45 | T3>A | PUBLIC  | — | — |
 | 46 | A>L | PUBLIC  | — | — |
 | 47 | L>A | PUBLIC  | — | — |
 | 48 | A>U | PUBLIC  | — | — |
 
-Risk observer calls: 50
+Risk observer calls: 55
 
 **Notes.** Conversations 1 and 2 each send V2 the SSN (with the MRN and the birthdate); conversation 3 gets the SSN alone back. Identity is the origin, never the text: two edges, each value-only, and the result is ambiguous. It blocks (R5): what is uncertain is which conversation it came from. The ambiguity is stated on every later leg too: the policy reads it at the flagged leg.
 

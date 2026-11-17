@@ -902,14 +902,37 @@ persistent), a declaration per entity natural key (`LABEL_MEMORY_SCOPES`, a
 JSON object) overrides it. An LLM is recognised by its kind, never by a hostname. Inside one
 trace the label fold pools an entity's calls as the **Accumulating entity**
 predicate says, unless the entity is declared `call` or `conversation`; an
-entity declared `persistent` keeps what its kind does there. Nothing reads
-`persistent` yet. A declared key that matches no entity changes nothing and is
+entity declared `persistent` keeps what its kind does there; with
+`LABEL_CROSS_CONVERSATION=on` the **Crossing** reads `persistent`: what such an
+entity received, in another conversation or an earlier call of the same one, is
+linked to what it sends again. A declared key that matches no entity changes nothing and is
 not reported. A changed declaration re-derives nothing by itself: until the
 replay, history is a mix of the old and the new declaration, conversation by
 conversation. Lives beside that predicate in `processors/data_lineage/memory.py`;
 data lineage reads none of it.
 _Avoid_: reading "persistent" as "accumulating" — a `service` is persistent and
 still keeps one memory per call inside a trace.
+
+**Crossing**:
+A label lineage edge drawn because a **persistent** entity sends a value it
+received earlier, in another conversation or an earlier call of this one: from
+the **Holding** where it received the value to the leg that sends it, carrying
+that holding's origin unit, at a level (`value_only` for an anchoring
+identifier alone, `corroborated` for an identifier with another value of the same
+record). A `payload_label_edges` row; its level is a `label_crossings` row.
+Behind `LABEL_CROSS_CONVERSATION`, which acts only while `RISK_INHERITED_LABELS`
+is on. A value held from more than M other conversations is a *common value*:
+no crossing, only its count.
+
+**Holding** (label lineage):
+One labelled value a **persistent** entity received at one leg: the record that
+held it, its label and how the leg knew it (classified, inherited, crossed), and
+the interval in event time it is valid for. A `label_occurrences` row
+(`label_lineage.cross.Holding`), written with the derivation of its conversation
+and replaced, or deleted, only when that is derived again (no expiry job).
+_Avoid_: reading it as a node of the lineage — it is an index of what an entity
+can send again; and confusing it with `units.Occurrence`, any unit at any
+payload (every edge end).
 
 **P-data-lineage**:
 The processor that derives **Data lineage**. A Layer-2 processor, sibling of

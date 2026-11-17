@@ -166,6 +166,9 @@ def case_markdown(o: Outcome) -> str:
                 risk = f"{r.risk['risk_level']} {r.risk['enforcement_type']} {r.risk['rules']} v{r.risk['version']}"
             lines.append(f"| {leg.index} | {leg.label()}{'⚑' if leg.sink else ''} | {cls} | {inh} | {risk} |")
         lines.append("")
+        if cross.marks:
+            marks = " · ".join(f"leg {leg} {_kinds(m)}" for leg, m in sorted(cross.marks.items()))
+            lines += [f"Marks (cross run): {marks}", ""]
         lines += [f"Risk observer calls: {cross.observer_calls}", ""]
     if c.notes:
         lines += ["**Notes.** " + c.notes.strip(), ""]

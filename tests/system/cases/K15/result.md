@@ -55,7 +55,7 @@ verdict at 27: expected off=allow / conv=allow / cross=allow, observed off=allow
 | 7 | T1>A | RESTRICTED DOB=1961-03-14 SSN=123-45-6789 | — | — |
 | 8 | A>L | RESTRICTED DOB=1961-03-14 SSN=123-45-6789 | s3=1961-03-14 (DOB, from 7), s1=123-45-6789 (SSN, from 7) | — |
 | 9 | L>A | RESTRICTED DOB=1961-03-14 SSN=123-45-6789 | s3=1961-03-14 (DOB, from 8), s1=123-45-6789 (SSN, from 8) | — |
-| 10 | A>T2 | RESTRICTED DOB=1961-03-14 SSN=123-45-6789 | s3=1961-03-14 (DOB, from 7), s1=123-45-6789 (SSN, from 7), s3=1961-03-14 (DOB, from 9), s1=123-45-6789 (SSN, from 9) | — |
+| 10 | A>T2 | RESTRICTED DOB=1961-03-14 SSN=123-45-6789 | s3=1961-03-14 (DOB, from 9), s3=1961-03-14 (DOB, from 7), s1=123-45-6789 (SSN, from 9), s1=123-45-6789 (SSN, from 7) | — |
 | 11 | T2>V2 | RESTRICTED DOB=1961-03-14 OPID=4471820 SSN=123-45-6789 | s3=1961-03-14 (DOB, from 10), s1=123-45-6789 (SSN, from 10) | — |
 | 12 | V2>T2 | PUBLIC  | — | — |
 | 13 | T2>A | PUBLIC  | — | — |
@@ -81,5 +81,5 @@ verdict at 27: expected off=allow / conv=allow / cross=allow, observed off=allow
 
 Risk observer calls: 33
 
-**Notes.** Conversation 1 sends the MRN under external_id; at leg 11, where V2 receives it, the model labels it an operational identifier (OPID), not a person identifier. Whether a value anchors follows the type it was received with (R8): no crossing, allow. The model's findings on the MRN at legs 7-10 are subtracted (authored): it reads it as OPID there too, except at leg 8 (DLN), which would give the value a second origin of another type. Green on this branch only because nothing crosses at all here; the case means something once the crossing core exists, and its deliberate break (the anchor rule off) must turn it red.
+**Notes.** Conversation 1 sends the MRN under external_id; at leg 11, where V2 receives it, the model labels it an operational identifier (OPID), not a person identifier. Whether a value anchors follows the type it was received with (R8): no crossing, allow. The model's findings on the MRN at legs 7-10 are subtracted (authored): it reads it as OPID there too, except at leg 8 (DLN), which would give the value a second origin of another type. Its deliberate break (the anchor rule off) turns it red.
 

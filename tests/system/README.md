@@ -134,8 +134,8 @@ controls on the memoryless rule of #348, P1–P3: a tool that calls two partners
 callers of one tool in flight, and the same with one value in both calls (`T1(A1)>V1` names the call a
 request belongs to). K8–K30 are the cases across conversations, most of them K0's
 conversations or more of them: the rule, the level on its way, the common value, scope, limits, order and
-correction, switches and tiers. Each case's `notes` says what it proves (and, for a case green only
-because nothing crosses yet, which deliberate break will make it mean something); the `cell` groups them.
+correction, switches and tiers. Each case's `notes` says what it proves and, for a case that draws no
+crossing, which deliberate break turns it red; the `cell` groups them.
 
 ## The grid
 

@@ -40,5 +40,5 @@ verdict at 9: expected off=allow / conv=allow / cross=allow, observed off=allow 
 
 Risk observer calls: 12
 
-**Notes.** K22a without the declaration: a tool is call scope by default and keeps nothing between its two calls. No edge, allow. Green on this branch only because nothing crosses at all here; the case means something once the crossing core exists, and its deliberate break (a tool persistent by default) must turn it red.
+**Notes.** K22a without the declaration: a tool is call scope by default and keeps nothing between its two calls. No edge, allow. Its deliberate break (a tool persistent by default) turns it red.
 

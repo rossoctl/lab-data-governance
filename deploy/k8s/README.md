@@ -160,8 +160,11 @@ See [ADR-0031](../../docs/adr/0031-non-reversible-namespace-lineage-activation.m
   advances its `label_lineage` cursor, then notifies the same channel.
   `LABEL_MATCHER=exact` (the only finder; an unknown name exits 2).
   `LABEL_MEMORY_SCOPES` (unset by default) declares an entity's memory scope by
-  its natural key; an invalid declaration exits 2 the same way. It reads no
-  risk configuration (`docs/label-lineage.md`).
+  its natural key; an invalid declaration exits 2 the same way.
+  `LABEL_CROSS_CONVERSATION` (default `off`): `on` also writes migration 0031's
+  tables and draws crossings from persistent entities; it has effect only with
+  `RISK_INHERITED_LABELS=on` on this Deployment too, the one risk setting it reads
+  (`docs/label-lineage.md`).
 - **Leg-ready consumer Deployment (the risk engine).** **Single replica**
   running `python -m data_governance.processors.leg_ready` on the shared
   image, `maxSurge:0`. Delivers each ready interaction leg and, per leg,

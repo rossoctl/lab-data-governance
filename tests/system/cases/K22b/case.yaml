@@ -33,5 +33,4 @@ classifier:
     - s2
   authored: true
 notes: 'K22a without the declaration: a tool is call scope by default and keeps nothing between its two calls. No edge, allow.
-  Green on this branch only because nothing crosses at all here; the case means something once the crossing core exists, and
-  its deliberate break (a tool persistent by default) must turn it red.'
+  Its deliberate break (a tool persistent by default) turns it red.'

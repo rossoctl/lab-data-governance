@@ -4,13 +4,15 @@ trace-scoped delete by set membership."""
 from __future__ import annotations
 
 import dataclasses
+import datetime as dt
 
 import psycopg
 
 from data_governance import db
-from data_governance.label_lineage import find, fold
+from data_governance.label_lineage import cross, find, fold
 from data_governance.processors.label_lineage import store
 from tests.label_lineage.fixtures import egress, legs_to, trace_input
+from tests.label_lineage.test_cross import SSN, T0, _first, _holdings, _second
 
 
 def _derive(row: str, **replace) -> fold.Derivation:
@@ -104,3 +106,63 @@ def test_write_reports_the_interactions_whose_summary_changed(configured_db: str
         changed = store.write(tx, _derive("R4", findings=without), "exact")
     assert egress("R4", t).interaction_id in changed
     assert store_read.interaction_id not in changed  # its own inherited summary did not move
+
+
+# --- across conversations: occurrences and crossings ---------------------------------------------------------------
+
+def _crossing() -> tuple[fold.Derivation, fold.Derivation]:
+    first = fold.derive(_first(), find.exact, crossing=cross.Crossing())
+    return first, fold.derive(_second(first.holdings), find.exact, crossing=cross.Crossing())
+
+
+def test_a_crossing_is_an_edge_row_with_its_level_beside_it(configured_db: str) -> None:
+    first, second = _crossing()
+    with db.transaction() as tx:
+        store.write(tx, first, "exact")
+        store.write(tx, second, "exact")
+    rows = _rows(configured_db,
+                 "SELECT e.entity_type, e.from_trace_id, e.origin_trace_id, c.level, c.conversations, "
+                 "o.trace_id, o.evidence FROM payload_label_edges e JOIN label_crossings c ON c.edge_id = e.edge_id "
+                 "JOIN label_occurrences o ON o.occurrence_id = c.occurrence_id ORDER BY 1")
+    assert rows == [("DOB", "T1", "T1", "corroborated", 1, "T1", "classified"),
+                    ("SSN", "T1", "T1", "corroborated", 1, "T1", "classified")]
+    assert _rows(configured_db, "SELECT count(*) FROM payload_label_edges WHERE trace_id = 'T2' "
+                                "AND origin_trace_id = 'T1' AND from_trace_id IS NULL") == [(2,)]
+
+
+def test_an_occurrence_row_carries_its_value_core_record_and_interval(configured_db: str) -> None:
+    import hashlib
+    first, _ = _crossing()
+    with db.transaction() as tx:
+        store.write(tx, first, "exact")
+    rows = _rows(configured_db, "SELECT value_text, core_hash, word_count, record_start IS NOT NULL, entity_type, "
+                                "valid_to - valid_from FROM label_occurrences ORDER BY 1")
+    sha = lambda s: hashlib.sha256(s.encode()).hexdigest()
+    assert [r[:5] for r in rows] == [("123-45-6789", sha("123-45-6789"), 3, True, "SSN"),
+                                     ("1961-03-14", sha("1961-03-14"), 3, True, "DOB")]
+    assert {r[5].total_seconds() for r in rows} == {900}
+
+
+def test_deriving_again_replaces_the_rows_and_without_the_switch_stores_nothing(configured_db: str) -> None:
+    first, second = _crossing()
+    for _ in range(2):
+        with db.transaction() as tx:
+            store.write(tx, first, "exact")
+            store.write(tx, second, "exact")
+    assert _rows(configured_db, "SELECT trace_id, count(*) FROM label_occurrences GROUP BY 1") == [("T1", 2)]
+    assert _rows(configured_db, "SELECT count(*) FROM label_crossings") == [(2,)]
+    with db.transaction() as tx:
+        store.write(tx, fold.derive(_second(), find.exact), "exact")
+        store.write(tx, fold.derive(_first(), find.exact), "exact")
+    assert _rows(configured_db, "SELECT (SELECT count(*) FROM label_crossings), "
+                                "(SELECT count(*) FROM label_occurrences)") == [(0, 0)]
+
+
+def test_a_common_value_is_a_crossing_row_without_an_edge(configured_db: str) -> None:
+    held = [h for i in range(4) for h in _holdings(f"P{i}", {"ssn": SSN}, ("SSN", SSN),
+                                                    at=T0 + dt.timedelta(seconds=i))]
+    d = fold.derive(_second(held), find.exact, crossing=cross.Crossing())
+    with db.transaction() as tx:
+        store.write(tx, d, "exact")
+    assert _rows(configured_db, "SELECT leg_type::text, conversations, edge_id, level FROM label_crossings") == [
+        ("response", 4, None, None)]

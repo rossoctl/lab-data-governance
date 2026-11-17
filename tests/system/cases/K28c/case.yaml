@@ -48,10 +48,6 @@ expect:
       s1: []
       s2: []
       s3: []
-  pending:
-    reason: the cross-conversation switch is not on this branch; held, not run
-    held:
-    - switch
 classifier:
   must_see:
     '7':

@@ -13,7 +13,7 @@ trap up EXIT                         # whatever happens below, the processors co
 for d in $P; do kubectl -n $NS scale deploy/$d --replicas=0 >/dev/null; done
 until [ "$(kubectl -n $NS get pods --no-headers | grep -c -E 'classification|data-lineage|label-lineage|interactions|leg-ready|risk-trace-trigger|risk-alerts')" = 0 ]; do sleep 2; done
 echo ">> processors down"
-"$HERE/dgq.sh" "TRUNCATE blocked_span_counts, rejected_spans, entity_spans, interactions, processor_state, spans, interaction_payloads, payload_classifications, interaction_spans, interaction_legs, lineage_metadata, lineage_trace_status, payload_label_edges, leg_inherited_labels, label_lineage_trace_status, risk_recompute_requests, alerts, interaction_policy_decisions, trace_risk_records, interaction_risk_records, entities RESTART IDENTITY CASCADE"
+"$HERE/dgq.sh" "TRUNCATE blocked_span_counts, rejected_spans, entity_spans, interactions, processor_state, spans, interaction_payloads, payload_classifications, interaction_spans, interaction_legs, lineage_metadata, lineage_trace_status, payload_label_edges, leg_inherited_labels, label_lineage_trace_status, label_occurrences, label_crossings, risk_recompute_requests, alerts, interaction_policy_decisions, trace_risk_records, interaction_risk_records, entities RESTART IDENTITY CASCADE"
 for d in $P; do kubectl -n $NS scale deploy/$d --replicas=1 >/dev/null; done; trap - EXIT
 for d in $P; do kubectl -n $NS rollout status deploy/$d --timeout=5m >/dev/null; done
 echo ">> processors up; rows left: $("$HERE/dgq.sh" "select coalesce(sum(n_live_tup),0) from pg_stat_user_tables where relname<>'alembic_version'")"

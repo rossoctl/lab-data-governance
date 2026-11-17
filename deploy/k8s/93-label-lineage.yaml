@@ -9,20 +9,26 @@
 # `dg_interaction_leg_ready` with the poll as the correctness backstop. Each
 # delivered run re-derives each of its traces, once, and writes migration 0024's tables
 # (`payload_label_edges`, `leg_inherited_labels`, `label_lineage_trace_status`,
-# `risk_recompute_requests`) in the transaction that advances its own
-# `label_lineage` cursor in `processor_state`.
+# `risk_recompute_requests`), and with LABEL_CROSS_CONVERSATION=on migration
+# 0031's (label lineage across conversations, docs/label-lineage.md), in the
+# transaction that advances its own `label_lineage` cursor in `processor_state`.
 # It reads no risk configuration: a changed inherited summary is always
 # written to `risk_recompute_requests`; leg-ready alone decides
 # (RISK_INHERITED_LABELS on 85-leg-ready.yaml) whether to act on it.
 #
 # Same slim image as the receiver (deployments differ only by `command:`), the
 # migrate init container like every sibling (ADR-0002), single replica with no
-# surge for the same single-cursor reason as 90-data-lineage.yaml: a brief
-# involuntary overlap is wasted work, not corruption, because a derivation is a
-# deterministic function of committed state written in one transaction.
+# surge for the same single-cursor reason as 90-data-lineage.yaml. With
+# LABEL_CROSS_CONVERSATION off a brief involuntary overlap is wasted work, not
+# corruption, because a derivation is a deterministic function of committed state
+# written in one transaction. With it on a derivation also reads what other
+# conversations registered when it ran, so an overlap, like a run whose
+# conversations interleave in time, can leave a crossing undrawn until the
+# conversation is derived again.
 #
 # Recovery (also after re-classifying payloads, ADR-0024's runbook, which this
-# processor's stale arm does not see): truncate the four tables, reset the
+# processor's stale arm does not see): truncate the four tables and migration
+# 0031's, reset the
 # `label_lineage` cursor row to 0, restart. The replay writes a recompute request for every interaction with
 # an edge again, and with leg-ready's RISK_INHERITED_LABELS=on it holds risk at
 # every leg the replay has not reached yet: run it with the flag off, or expect
@@ -142,15 +148,31 @@ spec:
             # memory scope by its natural key, overriding the default by kind
             # (processors/data_lineage/memory.py): a JSON object,
             # {"<natural_key>": "<scope>"}, scope one of call, conversation,
-            # persistent. Nothing reads persistent yet: inside one conversation
-            # an entity declared persistent keeps what its kind does. Not JSON
-            # this parser can read (nested too deeply or an integer too long
-            # included), not an object, an empty key, an unknown scope or a key
-            # given twice exits 2; a key that matches no
+            # persistent. Inside one conversation an entity declared persistent
+            # keeps what its kind does; with LABEL_CROSS_CONVERSATION=on (below)
+            # what it received, in another conversation or an earlier call, is
+            # linked to what it sends again. Not JSON this parser can read
+            # (nested too deeply or an integer too long included), not an
+            # object, an empty key, an unknown scope or a key given twice exits
+            # 2; a key that matches no
             # entity changes nothing and is not reported. A change re-derives
             # nothing by itself: it reaches a trace when that trace is derived
             # again, so until the replay above history is a mix of the old and
             # the new declaration, trace by trace.
+            # Label lineage across conversations (data_governance/label_lineage/
+            # cross.py): LABEL_CROSS_CONVERSATION=on registers what persistent
+            # entities receive and draws crossings when they send it again. Off
+            # by default; on has effect only while RISK_INHERITED_LABELS is on,
+            # so set it here to leg-ready's value (85-leg-ready.yaml) when the
+            # switch is on. LABEL_CROSS_COMMON_LIMIT (M, default 3),
+            # LABEL_CROSS_RETENTION_SECONDS (default 900) and LABEL_CROSS_ANCHORS
+            # (a comma list of the classifier's label types, the TAG column of
+            # its tag table; default the person identifiers) tune it. Anything
+            # invalid, an unknown label type or a retention past the last date
+            # included, exits 2, whether the switch is on or off. Switching on
+            # does not look back.
+            - name: LABEL_CROSS_CONVERSATION
+              value: "off"
           # No ports, no Service, no probes, no metrics surface — the
           # data-lineage processor's shape (90-data-lineage.yaml): k8s restarts
           # on process exit; the startup checks surface a wrong image or a

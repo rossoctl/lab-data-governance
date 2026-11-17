@@ -1,0 +1,366 @@
+"""Label lineage across conversations (``label_lineage.cross`` and the fold with a
+crossing): the configuration, the record of a value (R4), the match by text, the
+interval (R1), the common value (R2), the rule table and R7 — each by one small case
+whose answer follows from the rule, never from a measurement."""
+
+from __future__ import annotations
+
+import datetime as dt
+import json
+
+import pytest
+
+from data_governance.label_lineage import cross, find, fold
+from data_governance.label_lineage.units import ProjectedPayload, Site, at_origin, units_of
+from data_governance.processors.classification.projection import project
+from data_governance.processors.data_lineage.traversal import Entity
+
+SSN, DOB, MRN, OPID = "123-45-6789", "1961-03-14", "MRN-4471", "ext-99812"
+T0 = dt.datetime(2026, 11, 13, 9, 0, tzinfo=dt.timezone.utc)
+ON = cross.Crossing()
+
+
+def _findings(text: str, *marks: tuple[str, str]) -> list[dict]:
+    return [{"entity_type": t, "text": v, "start": text.index(v), "end": text.index(v) + len(v),
+             "regulatory_tags": ["PII"], "sensitivity_level": "RESTRICTED"} for t, v in marks]
+
+
+def _holdings(trace: str, content: object, *marks: tuple[str, str], at: dt.datetime = T0,
+              entity: str = "v", leg: str = "ix-in") -> list[cross.Holding]:
+    """What *entity* holds after receiving *content* classified with *marks* at *at*."""
+    text = project(content)
+    site = Site(trace, leg, "request", f"h-{trace}-{leg}")
+    recs = cross.records(text) if isinstance(content, dict) else {}
+    return [cross.Holding(entity, o, recs.get(o.span), at, at + ON.retention, "classified")
+            for o in (at_origin(u) for u in units_of(_findings(text, *marks), text, site))]
+
+
+def _leaving(holdings, content: object, t: dt.datetime = T0 + dt.timedelta(minutes=5), *,
+             trace: str = "T9", routed=(), crossing: cross.Crossing = ON):
+    output = ProjectedPayload(Site(trace, "ix-out", "response", "h-out"), project(content))
+    found, common = cross.leaving(cross.Memory(holdings), crossing, "v", output, t, routed)
+    return sorted((o.matched_text, c.level, o.unit.origin.trace_id) for o, c in found), \
+        [(m.value, m.conversations) for m in common]
+
+
+# --- configuration -------------------------------------------------------------------------------------------------
+
+def test_the_switch_is_off_unless_it_says_on():
+    assert cross.configured({}) is None
+    assert cross.configured({cross.SWITCH_ENV_VAR: "off"}) is None
+    assert cross.configured({cross.SWITCH_ENV_VAR: "on"}) == cross.Crossing()
+
+
+def test_the_defaults_are_m_3_and_15_minutes():
+    c = cross.Crossing()
+    assert (c.common_limit, c.retention) == (3, dt.timedelta(minutes=15))
+    assert {"SSN", "MRN", "IMEI", "MAC", "LPN", "CCA"} <= c.anchors
+    assert not {"PN", "UN", "IP", "CN", "OPID", "DOB", "EMAIL", "PHONE"} & c.anchors
+
+
+def test_the_configuration_reads_m_retention_and_anchors():
+    c = cross.configured({cross.SWITCH_ENV_VAR: "ON", cross.COMMON_LIMIT_ENV_VAR: "5",
+                          cross.RETENTION_ENV_VAR: "60", cross.ANCHORS_ENV_VAR: "ssn, MRN"})
+    assert c == cross.Crossing(anchors=frozenset({"SSN", "MRN"}), common_limit=5, retention=dt.timedelta(seconds=60))
+
+
+@pytest.mark.parametrize("env", [
+    {cross.SWITCH_ENV_VAR: "yes"},
+    {cross.SWITCH_ENV_VAR: "on", cross.COMMON_LIMIT_ENV_VAR: "0"},
+    {cross.SWITCH_ENV_VAR: "on", cross.RETENTION_ENV_VAR: "15m"},
+    {cross.SWITCH_ENV_VAR: "on", cross.ANCHORS_ENV_VAR: " , "},
+    {cross.SWITCH_ENV_VAR: "on", cross.ANCHORS_ENV_VAR: "SSN, SNN"},
+    {cross.SWITCH_ENV_VAR: "on", cross.RETENTION_ENV_VAR: "300000000000"},     # past the last date
+    {cross.SWITCH_ENV_VAR: "on", cross.RETENTION_ENV_VAR: "100000000000000"},  # past the largest interval
+    {cross.SWITCH_ENV_VAR: "off", cross.COMMON_LIMIT_ENV_VAR: "-1"},           # parsed with the switch off too
+    {cross.ANCHORS_ENV_VAR: "SNN"},
+])
+def test_an_invalid_configuration_raises(env):
+    with pytest.raises(cross.InvalidCrossing):
+        cross.configured(env)
+
+
+def test_an_unknown_anchor_is_named_with_where_the_label_types_are():
+    with pytest.raises(cross.InvalidCrossing, match=r"'SNN', which the classifier does not label; a label type is "
+                                                    r"one of the TAG column of .*EntityTypesForTokenClassification"):
+        cross.configured({cross.SWITCH_ENV_VAR: "on", cross.ANCHORS_ENV_VAR: "ssn,snn"})
+    with pytest.raises(cross.InvalidCrossing, match="leave it unset for the person identifiers"):
+        cross.configured({cross.ANCHORS_ENV_VAR: ","})
+
+
+def test_every_default_anchor_is_a_label_type_of_the_classifier():
+    from data_governance.processors.classification.config import load_entity_metadata
+    assert cross.DEFAULT_ANCHORS <= set(load_entity_metadata())
+
+
+# --- records (R4) and words ----------------------------------------------------------------------------------------
+
+def test_a_value_has_the_innermost_object_that_holds_it_as_a_member():
+    text = project({"records": [{"ssn": SSN, "dob": DOB}, {"ssn": "987-65-4321", "dob": "1978-11-02"}], "n": 2})
+    recs = cross.records(text)
+    first, second = (recs[(text.index(v), text.index(v) + len(v))] for v in (SSN, "987-65-4321"))
+    assert first != second
+    assert recs[(text.index(DOB), text.index(DOB) + len(DOB))] == first
+    assert text[first[0]] == "{" and text[first[1] - 1] == "}"
+
+
+def test_a_key_an_array_element_or_part_of_a_string_has_no_record():
+    inner = json.dumps({"ssn": SSN, "dob": DOB})
+    text = project({"ssn": ["x", SSN], "content": [{"type": "text", "text": inner}], "note": f"ssn {SSN} on file"})
+    recs = cross.records(text)
+    assert all(text[s:e] != SSN for s, e in recs)
+    assert all(text[s:e] != "ssn" for s, e in recs)
+
+
+def test_a_number_member_has_a_record():
+    text = project({"mrn": 4471, "x": "y"})
+    assert (text.index("4471"), text.index("4471") + 4) in cross.records(text)
+
+
+def test_the_core_runs_from_the_first_letter_or_digit_to_the_last_and_counts_its_words():
+    assert cross.core("+1 555-0100") == ("1 555-0100", 3)
+    assert cross.core('"Alice Moreno",') == ("Alice Moreno", 2)
+    assert cross.core("123-45-6789") == ("123-45-6789", 3)
+    assert cross.core("--") is None
+
+
+def test_a_value_found_bounded_has_its_core_among_the_payload_windows():
+    """A value the exact finder finds begins and ends at word boundaries of the payload, so its core is a run of
+    its own number of consecutive payload words: hashing every run of 1..K words finds exactly those cores."""
+    text = project({"phone": "+1 555-0100", "note": "Alice Moreno called; ssn 123-45-6789"})
+    windows = cross.window_hashes(text, 3)
+    for value in ("+1 555-0100", "Alice Moreno", "123-45-6789", "called; ssn"):
+        assert cross.core_hash(cross.core(value)[0]) in windows, value
+    for value in ("Alice", "555-0100", "123-45"):          # also windows: a held value is checked by found() after
+        assert cross.core_hash(cross.core(value)[0]) in windows, value
+    assert cross.core_hash("123-45-6789 x") not in windows
+    assert cross.core_hash(cross.core("Alice Moreno called; ssn")[0]) not in windows      # four words: K is 3
+    assert cross.core_hash("1961-03-14") not in windows
+    assert cross.window_hashes("--", 3) == set()
+
+
+# --- the match -----------------------------------------------------------------------------------------------------
+
+def test_an_identifier_and_another_value_of_its_record_are_corroborated():
+    held = _holdings("T1", {"ssn": SSN, "dob": DOB}, ("SSN", SSN), ("DOB", DOB))
+    assert _leaving(held, {"subject": SSN, "since": DOB}) == (
+        [(SSN, cross.CORROBORATED, "T1"), (DOB, cross.CORROBORATED, "T1")], [])
+
+
+def test_an_identifier_alone_is_value_only():
+    held = _holdings("T1", {"ssn": SSN, "dob": DOB}, ("SSN", SSN), ("DOB", DOB))
+    assert _leaving(held, {"subject": SSN}) == ([(SSN, cross.VALUE_ONLY, "T1")], [])
+
+
+def test_no_anchoring_identifier_draws_nothing():
+    held = _holdings("T1", {"ssn": SSN, "dob": DOB, "ext": OPID}, ("SSN", SSN), ("DOB", DOB), ("OPID", OPID))
+    assert _leaving(held, {"since": DOB, "ref": OPID}) == ([], [])
+
+
+def test_values_from_two_records_do_not_corroborate():
+    held = _holdings("T1", {"records": [{"ssn": SSN, "dob": DOB}, {"ssn": "987-65-4321", "dob": "1978-11-02"}]},
+                     ("SSN", SSN), ("DOB", DOB), ("SSN", "987-65-4321"), ("DOB", "1978-11-02"))
+    assert _leaving(held, {"subject": SSN, "since": "1978-11-02"}) == ([(SSN, cross.VALUE_ONLY, "T1")], [])
+
+
+def test_without_a_record_an_identifier_is_value_only_and_nothing_else_crosses():
+    held = _holdings("T1", f"patient {SSN} born {DOB}", ("SSN", SSN), ("DOB", DOB))
+    assert all(h.record is None for h in held)
+    assert _leaving(held, {"subject": SSN, "since": DOB}) == ([(SSN, cross.VALUE_ONLY, "T1")], [])
+
+
+def test_the_label_type_at_the_received_leg_decides_the_anchor():
+    held = _holdings("T1", {"external_id": MRN, "dob": DOB}, ("OPID", MRN), ("DOB", DOB))
+    assert _leaving(held, {"account": MRN, "since": DOB}) == ([], [])
+
+
+IBAN = "DE89370400440532013000"
+
+
+def test_the_match_is_the_whole_bounded_value():
+    held = _holdings("T1", {"ssn": SSN}, ("SSN", SSN))
+    assert _leaving(held, {"subject": f"7788-{SSN}"}) == ([], [])
+    assert _leaving(held, {"subject": f"x{SSN}"}) == ([], [])
+    assert _leaving(held, {"subject": f"{SSN}x"}) == ([], [])          # bounded on the right too
+
+
+def test_a_value_with_a_letter_or_digit_after_it_is_not_found():
+    held = _holdings("T1", {"iban": IBAN}, ("IBAN", IBAN))
+    assert _leaving(held, {"account": IBAN}) == ([(IBAN, cross.VALUE_ONLY, "T1")], [])
+    assert _leaving(held, {"account": f"{IBAN}9"}) == ([], [])
+    assert _leaving(held, {"account": f"{IBAN}x"}) == ([], [])
+
+
+@pytest.mark.parametrize("offset, crosses", [
+    (dt.timedelta(0), False), (dt.timedelta(seconds=1), True),
+    (ON.retention - dt.timedelta(seconds=1), True), (ON.retention, False), (-dt.timedelta(seconds=1), False)])
+def test_an_occurrence_is_valid_strictly_inside_its_interval(offset, crosses):
+    held = _holdings("T1", {"ssn": SSN}, ("SSN", SSN))
+    assert bool(_leaving(held, {"subject": SSN}, T0 + offset)[0]) is crosses
+
+
+def test_one_value_from_two_conversations_is_two_edges():
+    held = (_holdings("T1", {"ssn": SSN}, ("SSN", SSN))
+            + _holdings("T2", {"ssn": SSN}, ("SSN", SSN), at=T0 + dt.timedelta(minutes=1)))
+    assert _leaving(held, {"subject": SSN}) == ([(SSN, cross.VALUE_ONLY, "T1"), (SSN, cross.VALUE_ONLY, "T2")], [])
+
+
+def test_a_value_held_from_more_than_m_conversations_is_common_counted_by_conversation():
+    held = [h for i in range(4) for leg in (("a", "b", "c") if i == 0 else ("a",))
+            for h in _holdings(f"T{i}", {"ssn": SSN}, ("SSN", SSN), at=T0 + dt.timedelta(seconds=i), leg=leg)]
+    assert _leaving(held, {"subject": SSN}) == ([], [(SSN, 4)])
+    assert _leaving(held[:5], {"subject": SSN})[1] == []       # three conversations: M, still edges
+
+
+def test_a_common_value_does_not_corroborate():
+    held = [h for i in range(4) for h in _holdings(f"T{i}", {"ssn": SSN, "dob": DOB}, ("SSN", SSN), ("DOB", DOB))]
+    held = [h for h in held if h.value == DOB] + [h for h in held if h.trace_id == "T0" and h.value == SSN]
+    assert _leaving(held, {"subject": SSN, "since": DOB}) == ([(SSN, cross.VALUE_ONLY, "T0")], [(DOB, 4)])
+
+
+def test_the_conversation_s_own_holdings_never_count():
+    held = [h for i in range(3) for h in _holdings(f"T{i}", {"ssn": SSN}, ("SSN", SSN))]
+    own = _holdings("T9", {"ssn": SSN}, ("SSN", SSN), leg="ix-own")
+    assert _leaving(held + own, {"subject": SSN})[1] == []
+
+
+def test_an_own_holding_the_fold_already_routes_here_is_not_drawn_again():
+    own = _holdings("T9", {"ssn": SSN}, ("SSN", SSN), leg="ix-own")
+    assert _leaving(own, {"subject": SSN})[0] == [(SSN, cross.VALUE_ONLY, "T9")]
+    assert _leaving(own, {"subject": SSN}, routed=[("ix-own", "request")]) == ([], [])
+
+
+def test_the_search_finds_the_same_whatever_else_is_held():
+    held = _holdings("T1", {"ssn": SSN, "dob": DOB}, ("SSN", SSN), ("DOB", DOB))
+    others = [f"{i % 1000:03d}-{i % 97:02d}-{i:04d}" for i in range(1000, 3000)]
+    noise = [h for v in others for h in _holdings("N", {"ssn": v}, ("SSN", v))]
+    assert _leaving(held + noise, {"subject": SSN, "since": DOB}) == _leaving(held, {"subject": SSN, "since": DOB})
+
+
+# --- the fold with a crossing --------------------------------------------------------------------------------------
+
+ENTITIES = {e.id: e for e in (Entity("a", "agent:lab/a", "agent"), Entity("v", "service:partner", "service"),
+                              Entity("t", "tool:lab/t", "tool"))}
+
+
+def _trace(trace_id: str, legs: list[tuple[str, str, str, str, object, list | None]], t0: dt.datetime):
+    """legs: (interaction, leg type, caller, callee, content, findings marks or None = unclassified)."""
+    wire, payloads, findings = [], {}, {}
+    for n, (ix, lt, caller, callee, content, marks) in enumerate(legs):
+        h = f"h-{trace_id}-{n}"
+        payloads[h] = content
+        if marks is not None:
+            findings[h] = _findings(project(content), *marks)
+        wire.append(fold.WireLeg(ix, lt, n + 1, caller, callee, h, occurred_at=t0 + dt.timedelta(seconds=2 * n)))
+    return fold.TraceInput(trace_id, wire, ENTITIES, payloads, findings)
+
+
+RECORD = {"ssn": SSN, "dob": DOB}
+
+
+def _first():
+    return _trace("T1", [("1", "request", "a", "v", RECORD, [("SSN", SSN), ("DOB", DOB)]),
+                         ("1", "response", "a", "v", {"ok": True}, [])], T0)
+
+
+def _second(priors=()):
+    t = _trace("T2", [("2", "request", "a", "v", {"q": "lookup"}, []),
+                      ("2", "response", "a", "v", {"subject": SSN, "since": DOB}, []),
+                      ("3", "request", "a", "t", {"subject": SSN, "since": DOB}, [])], T0 + dt.timedelta(minutes=5))
+    return fold.TraceInput(t.trace_id, t.legs, t.entities, t.payloads, t.findings, priors=tuple(priors))
+
+
+def test_what_a_persistent_entity_receives_is_registered_with_its_record_and_interval():
+    d = fold.derive(_first(), find.exact, crossing=ON)
+    assert sorted((h.entity_id, h.value, h.evidence, h.record is not None) for h in d.holdings) == [
+        ("v", SSN, "classified", True), ("v", DOB, "classified", True)]
+    assert {(h.valid_from, h.valid_to) for h in d.holdings} == {(T0, T0 + ON.retention)}
+
+
+def test_nothing_is_registered_without_the_switch():
+    assert fold.derive(_first(), find.exact).holdings == ()
+
+
+def test_a_finding_with_no_letter_or_digit_is_not_held():
+    t = _trace("T1", [("1", "request", "a", "v", {"code": "--", "ssn": SSN}, [("SSN", "--"), ("SSN", SSN)]),
+                      ("1", "response", "a", "v", {"ok": True}, [])], T0)
+    assert [h.value for h in fold.derive(t, find.exact, crossing=ON).holdings] == [SSN]
+
+
+def test_priors_are_refused_without_the_switch():
+    with pytest.raises(ValueError, match="cross-conversation switch"):
+        fold.derive(_second(fold.derive(_first(), find.exact, crossing=ON).holdings), find.exact)
+
+
+def test_a_crossing_carries_the_earlier_origin_and_travels_on_as_an_ordinary_edge():
+    d = fold.derive(_second(fold.derive(_first(), find.exact, crossing=ON).holdings), find.exact, crossing=ON)
+    by = sorted((e.from_key, e.to_key, e.unit.entity_type, e.unit.origin.trace_id, e.from_trace_id,
+                 d.levels[e.key].level if e.key in d.levels else None) for e in d.edges)
+    assert by == [
+        (("1", "request"), ("2", "response"), "DOB", "T1", "T1", cross.CORROBORATED),
+        (("1", "request"), ("2", "response"), "SSN", "T1", "T1", cross.CORROBORATED),
+        (("2", "response"), ("3", "request"), "DOB", "T1", None, None),
+        (("2", "response"), ("3", "request"), "SSN", "T1", None, None),
+    ]
+
+
+def test_without_the_switch_the_second_conversation_is_its_own():
+    d = fold.derive(_second(), find.exact)
+    assert d.edges == () and d.levels == {} and d.commons == ()
+
+
+def test_a_crossing_does_not_claim_a_finding_of_the_leg():
+    first = fold.derive(_first(), find.exact, crossing=ON).holdings
+    t = _second(first)
+    findings = dict(t.findings)
+    h = t.legs[1].payload_hash
+    findings[h] = _findings(project(t.payloads[h]), ("SSN", SSN))
+    t = fold.TraceInput(t.trace_id, t.legs, t.entities, t.payloads, findings, priors=t.priors)
+    d = fold.derive(t, find.exact, crossing=ON)
+    at_response = {(o.unit.origin.trace_id, o.unit.entity_type) for o in d.occurrences[("2", "response")]}
+    assert at_response == {("T1", "SSN"), ("T1", "DOB"), ("T2", "SSN")}
+
+
+def test_a_crossed_value_a_persistent_entity_receives_is_registered_as_crossed():
+    first = fold.derive(_first(), find.exact, crossing=ON).holdings
+    d = fold.derive(_second(first), find.exact, {"agent:lab/a": "persistent"}, crossing=ON)
+    at = {(h.occurrence.at.leg, h.value, h.evidence, h.level) for h in d.holdings if h.entity_id == "a"}
+    assert ((("2", "response"), SSN, "crossed", cross.CORROBORATED) in at)
+
+
+def test_a_later_call_of_the_same_conversation_is_linked_once_and_one_call_stands_alone():
+    t = _trace("T1", [("1", "request", "t", "v", {"ssn": SSN}, [("SSN", SSN)]),
+                      ("1", "response", "t", "v", {"subject": SSN}, []),
+                      ("2", "request", "t", "v", {"q": "again"}, []),
+                      ("2", "response", "t", "v", {"subject": SSN}, [])], T0)
+    plain = fold.derive(t, find.exact)
+    d = fold.derive(t, find.exact, crossing=ON)
+    assert [(e.from_key, e.to_key) for e in plain.edges] == [(("1", "request"), ("1", "response"))]
+    assert sorted((e.from_key, e.to_key, d.levels.get(e.key) and d.levels[e.key].level) for e in d.edges) == [
+        (("1", "request"), ("1", "response"), None),
+        (("1", "request"), ("2", "response"), cross.VALUE_ONLY)]
+
+
+def test_a_leg_without_an_event_time_is_neither_matched_nor_registered():
+    t = _first()
+    legs = [fold.WireLeg(x.interaction_id, x.leg_type, x.seq, x.caller_entity_id, x.callee_entity_id,
+                         x.payload_hash, occurred_at=None) for x in t.legs]
+    t = fold.TraceInput(t.trace_id, legs, t.entities, t.payloads, t.findings)
+    assert fold.derive(t, find.exact, crossing=ON).holdings == ()
+
+
+# --- the fold inside one conversation is unchanged -------------------------------------------------------------------
+
+def test_candidates_from_inside_the_conversation_claim_exactly_as_before():
+    text = '{"name": "Alice Moreno", "ssn": "123-45-6789", "ssn_suffix": "6789"}'
+    store = Site("T", "ix-store", "response", "h-store")
+    held = [at_origin(u) for u in units_of(_findings(text, ("SSN", SSN)), text, store)]
+    out = ProjectedPayload(Site("T", "ix-out", "request", "h-out"), text)
+    candidates = find.exact(held, out)
+    own = units_of([{"entity_type": "SSN", "text": "6789", "start": text.rindex("6789"),
+                     "end": text.rindex("6789") + 4}], text, out.site)
+    assert fold.attribute(candidates, own) == fold.attribute(candidates, own, ())
+    occs, _ = fold.attribute(candidates, own, ())
+    assert [o.unit.origin for o in occs] == [store]
+    occs, _ = fold.attribute([], own, candidates)
+    assert sorted(o.unit.origin.interaction_id for o in occs) == ["ix-out", "ix-store"]

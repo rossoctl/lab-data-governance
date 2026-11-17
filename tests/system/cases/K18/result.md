@@ -36,14 +36,14 @@ DIS     s4    ·      ·      ·      ·             ·      ·      ·      · 
 conversation 2
               17     18     19     20     21     22     23     24     25     26     27     28     29     30     31     32     
               U>A    A>L    L>A    A>T2   T2>V2  V2>T2  T2>A   A>L    L>A    A>T3   T3>V3⚑ V3>T3  T3>A   A>L    L>A    A>U    
-SSN     s1    ·      ·      ·      ·      ·      ┈┈┈┈┈┈●━━━━━━○━━━━━━○━━━━━━○━━━━━━○━━━━━━○·      ·      ·      ·      ·      
-MRN     s2    ·      ·      ·      ·      ·      ┈┈┈┈┈┈●━━━━━━○━━━━━━○━━━━━━○━━━━━━○━━━━━━○·      ·      ·      ·      ·      
-DOB     s3    ·      ·      ·      ·      ·      ┈┈┈┈┈┈●━━━━━━○━━━━━━○━━━━━━○━━━━━━○━━━━━━○·      ·      ·      ·      ·      
+SSN     s1    ·      ·      ·      ·      ·      ━━━━━━●━━━━━━○━━━━━━○━━━━━━○━━━━━━○━━━━━━○·      ·      ·      ·      ·      
+MRN     s2    ·      ·      ·      ·      ·      ━━━━━━●━━━━━━○━━━━━━○━━━━━━○━━━━━━○━━━━━━○·      ·      ·      ·      ·      
+DOB     s3    ·      ·      ·      ·      ·      ━━━━━━●━━━━━━○━━━━━━○━━━━━━○━━━━━━○━━━━━━○·      ·      ·      ·      ·      
 DIS     s4    ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      
 verdict at 27: expected off=allow / conv=block / cross=block, observed off=allow / conv=block / cross=block
 ```
 
-**Reasons.** pending: no crossing on this branch: the crossing core draws the crossing and the edges that rest on it; the level on its way carries crossed and its level to every later leg and into the policy input. The verdicts and the conversation's own edges already match · edges missing: s1 11>22 co, s2 11>22 co, s3 11>22 co · evidence at 22 s1: want [classified SSN, crossed co], got [classified SSN] · evidence at 22 s2: want [classified MRN, crossed co], got [classified MRN] · evidence at 22 s3: want [classified DOB, crossed co], got [classified DOB] · evidence at 27 s1: want [crossed co, inherited], got [inherited] · evidence at 27 s2: want [crossed co, inherited], got [inherited] · evidence at 27 s3: want [crossed co, inherited], got [inherited]
+**Reasons.** pending: the crossing is drawn, beside the leg's own finding; the level on its way carries crossed and its level to every later leg, so the flagged leg reads it as crossed. The verdicts and the conversation's own edges already match · evidence at 27 s1: want [crossed co, inherited], got [inherited] · evidence at 27 s2: want [crossed co, inherited], got [inherited] · evidence at 27 s3: want [crossed co, inherited], got [inherited]
 
 **Rows (cross run).**
 
@@ -57,7 +57,7 @@ verdict at 27: expected off=allow / conv=block / cross=block, observed off=allow
 | 7 | T1>A | RESTRICTED DOB=1961-03-14 MRN=4471820 SSN=123-45-6789 | — | — |
 | 8 | A>L | RESTRICTED DOB=1961-03-14 MRN=4471820 SSN=123-45-6789 | s3=1961-03-14 (DOB, from 7), s2=4471820 (MRN, from 7), s1=123-45-6789 (SSN, from 7) | — |
 | 9 | L>A | RESTRICTED DOB=1961-03-14 MRN=4471820 SSN=123-45-6789 | s3=1961-03-14 (DOB, from 8), s2=4471820 (MRN, from 8), s1=123-45-6789 (SSN, from 8) | — |
-| 10 | A>T2 | RESTRICTED DOB=1961-03-14 MRN=4471820 SSN=123-45-6789 | s3=1961-03-14 (DOB, from 7), s2=4471820 (MRN, from 7), s1=123-45-6789 (SSN, from 7), s3=1961-03-14 (DOB, from 9), s2=4471820 (MRN, from 9), s1=123-45-6789 (SSN, from 9) | — |
+| 10 | A>T2 | RESTRICTED DOB=1961-03-14 MRN=4471820 SSN=123-45-6789 | s3=1961-03-14 (DOB, from 9), s3=1961-03-14 (DOB, from 7), s2=4471820 (MRN, from 9), s2=4471820 (MRN, from 7), s1=123-45-6789 (SSN, from 9), s1=123-45-6789 (SSN, from 7) | — |
 | 11 | T2>V2 | RESTRICTED DOB=1961-03-14 MRN=4471820 SSN=123-45-6789 | s3=1961-03-14 (DOB, from 10), s2=4471820 (MRN, from 10), s1=123-45-6789 (SSN, from 10) | — |
 | 12 | V2>T2 | PUBLIC  | — | — |
 | 13 | T2>A | PUBLIC  | — | — |
@@ -69,19 +69,19 @@ verdict at 27: expected off=allow / conv=block / cross=block, observed off=allow
 | 19 | L>A | PUBLIC  | — | — |
 | 20 | A>T2 | PUBLIC  | — | — |
 | 21 | T2>V2 | PUBLIC  | — | — |
-| 22 | V2>T2 | RESTRICTED DOB=1961-03-14 MRN=4471820 SSN=123-45-6789 | — | — |
-| 23 | T2>A | PUBLIC  | s3=1961-03-14 (DOB, from 22), s2=4471820 (MRN, from 22), s1=123-45-6789 (SSN, from 22) | — |
-| 24 | A>L | PUBLIC  | s3=1961-03-14 (DOB, from 23), s2=4471820 (MRN, from 23), s1=123-45-6789 (SSN, from 23) | — |
-| 25 | L>A | PUBLIC  | s3=1961-03-14 (DOB, from 24), s2=4471820 (MRN, from 24), s1=123-45-6789 (SSN, from 24) | — |
-| 26 | A>T3 | PUBLIC  | s3=1961-03-14 (DOB, from 23), s2=4471820 (MRN, from 23), s1=123-45-6789 (SSN, from 23), s3=1961-03-14 (DOB, from 25), s2=4471820 (MRN, from 25), s1=123-45-6789 (SSN, from 25) | — |
-| 27 | T3>V3⚑ | PUBLIC  | s3=1961-03-14 (DOB, from 26), s2=4471820 (MRN, from 26), s1=123-45-6789 (SSN, from 26) | critical block ['T-SENS'] v1 |
+| 22 | V2>T2 | RESTRICTED DOB=1961-03-14 MRN=4471820 SSN=123-45-6789 | s3=1961-03-14 (DOB, from 11, co), s2=4471820 (MRN, from 11, co), s1=123-45-6789 (SSN, from 11, co) | — |
+| 23 | T2>A | PUBLIC  | s2=4471820 (MRN, from 22), s2=4471820 (MRN, from 22), s3=1961-03-14 (DOB, from 22), s3=1961-03-14 (DOB, from 22), s1=123-45-6789 (SSN, from 22), s1=123-45-6789 (SSN, from 22) | — |
+| 24 | A>L | PUBLIC  | s2=4471820 (MRN, from 23), s2=4471820 (MRN, from 23), s3=1961-03-14 (DOB, from 23), s3=1961-03-14 (DOB, from 23), s1=123-45-6789 (SSN, from 23), s1=123-45-6789 (SSN, from 23) | — |
+| 25 | L>A | PUBLIC  | s2=4471820 (MRN, from 24), s2=4471820 (MRN, from 24), s3=1961-03-14 (DOB, from 24), s3=1961-03-14 (DOB, from 24), s1=123-45-6789 (SSN, from 24), s1=123-45-6789 (SSN, from 24) | — |
+| 26 | A>T3 | PUBLIC  | s2=4471820 (MRN, from 23), s2=4471820 (MRN, from 23), s2=4471820 (MRN, from 25), s2=4471820 (MRN, from 25), s3=1961-03-14 (DOB, from 23), s3=1961-03-14 (DOB, from 23), s3=1961-03-14 (DOB, from 25), s3=1961-03-14 (DOB, from 25), s1=123-45-6789 (SSN, from 23), s1=123-45-6789 (SSN, from 23), s1=123-45-6789 (SSN, from 25), s1=123-45-6789 (SSN, from 25) | — |
+| 27 | T3>V3⚑ | PUBLIC  | s2=4471820 (MRN, from 26), s2=4471820 (MRN, from 26), s3=1961-03-14 (DOB, from 26), s3=1961-03-14 (DOB, from 26), s1=123-45-6789 (SSN, from 26), s1=123-45-6789 (SSN, from 26) | critical block ['T-SENS'] v1 |
 | 28 | V3>T3 | PUBLIC  | — | — |
 | 29 | T3>A | PUBLIC  | — | — |
 | 30 | A>L | PUBLIC  | — | — |
 | 31 | L>A | PUBLIC  | — | — |
 | 32 | A>U | PUBLIC  | — | — |
 
-Risk observer calls: 37
+Risk observer calls: 38
 
 **Notes.** K1 with V2's answer under the keys the model recognises: the classifier labels the three at leg 22 too. The leg shows both, classified and crossed, corroborated; neither changes the other. At the flagged leg both reach it: inherited (the label classified at 22) and crossed. The conversation's own edges from 22 are drawn in every mode, so conv already blocks.
 

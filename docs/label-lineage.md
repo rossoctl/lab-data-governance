@@ -33,7 +33,10 @@ is routed by that call, and an entity's declared memory scope replaces its kind'
   read (nested too deeply or an integer too long included), not an object, an empty key, an unknown scope or a key given twice
   (at any depth) exits 2. A declared key that matches no entity changes nothing and is not reported.
   Inside one conversation only a declared `call` or `conversation` changes the fold; an entity
-  declared `persistent` keeps what its kind does there, and nothing reads `persistent` yet.
+  declared `persistent` keeps what its kind does there. With `LABEL_CROSS_CONVERSATION=on` the
+  crossing reads `persistent` (below): a value such an entity received, in another conversation or
+  in an earlier call of this one, is linked to the payload that sends it again, so a store that
+  returns a value later in the same conversation draws a crossing there.
   A changed declaration re-derives nothing by itself: it reaches a conversation when that
   conversation is derived again, so until the replay (the recovery in `deploy/k8s/93-label-lineage.yaml`)
   history is a mix of the old and the new declaration, conversation by conversation.
@@ -73,7 +76,53 @@ payload is absent or classified), re-derives each trace of a delivered run once,
 that advances its `label_lineage` cursor, and deletes the trace's rows the derivation no longer
 produces by set membership. A stale arm re-derives traces whose legs changed under the cursor. Every
 changed inherited summary (a first row with edges included) is written to `risk_recompute_requests`,
-and each derivation notifies `dg_interaction_leg_ready`; the processor reads no risk configuration.
+and each derivation notifies `dg_interaction_leg_ready`. The one risk setting it reads is
+`RISK_INHERITED_LABELS`, and only to keep the cross-conversation switch off while it is off.
+
+## Across conversations: `LABEL_CROSS_CONVERSATION`
+
+Off by default; on has effect only while `RISK_INHERITED_LABELS` is on (both are set on this
+processor). Every `LABEL_CROSS_*` setting is read at startup whether the switch is on or off, and an
+invalid one exits 2: a label type in `LABEL_CROSS_ANCHORS` that is not in the classifier's tag table
+(the TAG column of `processors/classification/_config_data/EntityTypesForTokenClassification_with_tags.csv`),
+a retention that reaches past the last date, a limit that is not a positive integer. With it on, at
+each leg in wire order:
+
+1. **match** — a payload a `persistent` entity sends is searched for the values it received in
+   other conversations (and in earlier calls of this one, R7): exact, the whole bounded value, an
+   occurrence valid strictly inside `(received, received + LABEL_CROSS_RETENTION_SECONDS)` in event
+   time. A value held from more than `LABEL_CROSS_COMMON_LIMIT` (M, default 3) other conversations is
+   *common*: no edge, the count is written. The rest pass the rule table, per record of the leg
+   that received them: no anchoring identifier (`LABEL_CROSS_ANCHORS`, the person identifiers by
+   default) draws nothing; an identifier alone is `value_only`; an identifier and another value of
+   the same record are `corroborated`. A record is the object a value is the whole member of in a
+   structured payload; a value in prose or inside a string has none and is value-only at most.
+2. **crossing edge** — one `payload_label_edges` row per occurrence that passes, from the leg that
+   received it (`from_trace_id`) with its origin unit (`origin_trace_id`); its level, or a common
+   value's count, is a `label_crossings` row. The fold carries the crossed occurrence on to later
+   legs as ordinary edges with that origin. A crossing never claims a finding of the leg.
+3. **register** — every labelled value a `persistent` entity receives is a `label_occurrences` row
+   with its record, interval and evidence (`classified`, `inherited`, or `crossed` with its level),
+   replaced when the conversation is derived again. A derivation with the switch off writes none
+   and deletes the trace's rows; switching on does not look back. A leg without an event time is
+   neither matched nor registered. A conversation derived again after the switch was turned on is
+   derived whole, so the legs it received before the switch are registered too: "does not look
+   back" means no conversation is derived because the switch changed.
+
+A derivation loads only the occurrences of its persistent senders, from other conversations, valid in
+its time window, whose value is in a payload they send. A value found bounded
+begins and ends at word boundaries of the payload, so its core (first letter or digit to last) is a run
+of its own number of consecutive payload words; each occurrence stores the hash of its core and its word
+count, and the derivation hashes every run of 1..K words of each payload a sender sends (K the most
+words among that sender's occurrences the load could return: other conversations, the same window) and
+loads by those hashes. K is read from an index on (entity, `valid_to`) that includes the columns it
+filters on, so its scan covers the sender's occurrences still valid at the window's start, not its
+history. The cost per payload is its words times K hashes and index probes, whatever the values look
+like; a long value that expired, or one held only in this conversation, does not count. The match then costs one lookup per start
+boundary and distinct held length. An occurrence row is deleted only when its conversation is derived
+again: there is no expiry job, so `label_occurrences` keeps every value a persistent entity received
+(the index on `valid_to` keeps expired rows out of the load). The policy does not read a crossing
+yet: the risk engine passes on only labels whose origin is in the same conversation.
 
 ## The flag: `RISK_INHERITED_LABELS`
 
@@ -114,7 +163,7 @@ edges' `from_*` back from the leg, each next hop read at the payload the edge wa
 (`from_payload_hash`), so a chain is a chain of payloads; only the leg read is pinned to its current
 payload. A value that reached the leg two ways (the edges form a DAG) has two chains, every complete
 route, shortest first. The walk crosses into other traces through `from_trace_id` / `origin_trace_id`
-(no finder writes them yet; the read already follows them). A cycle stops at the repeated edge, the
+(a crossing writes them; the read follows them). A cycle stops at the repeated edge, the
 depth is capped (`MAX_CHAIN_DEPTH`, logged when hit), and a walk that ends before the origin is kept
 as a chain whose first hop is a `hop`, never shown as the origin. The origin hop carries an `excerpt`
 of its payload's projected text around the unit.
@@ -176,8 +225,10 @@ implements one (`docs/LIVE-E2E.md` numbers its live scenarios with an R too; tho
 - **R10** A persistent entity needs nothing beyond its scope (its kind's, or declared) to cross: a
   shared agent mixes its users by definition, and declaring it is the acceptance.
 
-None of them is built yet: every case that cites a rule is pending, or green only because nothing
-crosses.
+Built so far, in `label_lineage/cross.py` and the fold's match and register: R1, R2, R4 and R6 to R10.
+Not yet: R3's level on the way and R5's crossed label reaching the policy, and a conversation derived
+before a value it would cross arrived is not derived again, so R1 and R2 hold at the payload's time
+only when conversations are derived in event order.
 
 ## What this does not do yet
 
@@ -185,8 +236,8 @@ crosses.
   spelled-out email is not the unit (structural transformations come next).
 - No fragments: a value split across fields or cut to its last four reaches nothing; `recombined`
   is always false.
-- No labels across conversations: no priors, no window, no cross-trace edges; `from_trace_id` and
-  `origin_trace_id` stay null (the labels read already walks them when a finder writes them).
+- A crossed label is not yet carried as crossed past the leg it crossed at, nor read by the policy;
+  a conversation derived before an earlier one arrived is not matched again (both come next).
 - No semantic judge. Data lineage keeps its own `SEMANTIC_MATCHER`; label lineage's finders are not offered there.
 - No floor on a unit's length: a short finding (a two-digit age, a misread word) is found wherever
   those bytes stand whole and bounded, so its labels travel as far as the bytes do.
@@ -208,5 +259,6 @@ crosses.
 
 The feature space is a grid of cases — transformation (exact | structural | free) ×
 shape (straight | split-merge inside | assembled late) × time (one conversation | across) × content
-(identifier | content); this is exact / straight / one conversation, and every later capability is
+(identifier | content); this is exact / straight / one conversation and across conversations through a
+persistent entity, and every later capability is
 added beside it, as a finder, an attribution clause or more inputs.

@@ -382,7 +382,7 @@ def test_a_stale_authored_record_fails_loudly():
 def test_an_edge_with_an_end_on_no_line_leg_is_a_problem():
     case = _case()
     leg_of_key = {("i1", "request"): 1, ("i2", "request"): 2}
-    resolved, _, _, problems = resolve_edges(case, [("i1", "request", "i9", "response", "MRN", MRN, MRN, "whole", None)],
+    resolved, _, _, problems = resolve_edges(case, [("i1", "request", "i9", "response", "MRN", MRN, MRN, "whole", None, "o1")],
                                              leg_of_key)
     assert resolved == set() and problems == ["edge s1 1>None (MRN) has an end on no line leg"]
 
@@ -390,7 +390,7 @@ def test_an_edge_with_an_end_on_no_line_leg_is_a_problem():
 def test_an_edge_carrying_another_type_is_a_problem():
     case = _case()
     leg_of_key = {("i1", "request"): 1, ("i2", "request"): 2}
-    resolved, _, _, problems = resolve_edges(case, [("i1", "request", "i2", "request", "SSN", MRN, MRN, "whole", None)],
+    resolved, _, _, problems = resolve_edges(case, [("i1", "request", "i2", "request", "SSN", MRN, MRN, "whole", None, "o1")],
                                              leg_of_key)
     assert resolved == {("s1", 1, 2, None)} and problems == ["edge s1 1>2 carries SSN, not one of ['MRN']"]
 
@@ -398,7 +398,7 @@ def test_an_edge_carrying_another_type_is_a_problem():
 @pytest.mark.parametrize("matched, kind", [("4471", "whole"), (MRN, "fragment")])
 def test_an_edge_whose_evidence_is_not_the_whole_value_is_a_problem(matched, kind):
     leg_of_key = {("i1", "request"): 1, ("i2", "request"): 2}
-    _, _, _, problems = resolve_edges(_case(), [("i1", "request", "i2", "request", "MRN", MRN, matched, kind, None)],
+    _, _, _, problems = resolve_edges(_case(), [("i1", "request", "i2", "request", "MRN", MRN, matched, kind, None, "o1")],
                                       leg_of_key)
     assert problems == [f"edge s1 1>2 matched {matched!r} as {kind!r}, not the whole value"]
 
@@ -406,9 +406,18 @@ def test_an_edge_whose_evidence_is_not_the_whole_value_is_a_problem(matched, kin
 def test_an_edge_on_bytes_of_no_unit_is_an_extra():
     case = _case()
     leg_of_key = {("i1", "request"): 1, ("i2", "request"): 2}
-    resolved, _, _, _ = resolve_edges(case, [("i1", "request", "i2", "request", "MRN", "123", "123", "whole", None)],
+    resolved, _, _, _ = resolve_edges(case, [("i1", "request", "i2", "request", "MRN", "123", "123", "whole", None, "o1")],
                                       leg_of_key)
     assert resolved == {("?123", 1, 2, None)}
+
+
+def test_two_origins_of_one_value_are_two_rows_by_right_and_one_origin_twice_is_red():
+    leg_of_key = {("i1", "request"): 1, ("i2", "request"): 2}
+    row = ("i1", "request", "i2", "request", "MRN", MRN, MRN, "whole", None)
+    resolved, _, _, problems = resolve_edges(_case(), [(*row, "o1"), (*row, "o2")], leg_of_key)
+    assert resolved == {("s1", 1, 2, None)} and problems == []
+    _, _, _, problems = resolve_edges(_case(), [(*row, "o1"), (*row, "o1")], leg_of_key)
+    assert problems == ["edge s1 1>2 (MRN) drawn by 2 rows"]
 
 
 def _record(version, legs, enforcement):
@@ -509,6 +518,13 @@ def test_the_case_record_carries_no_timing():
     runs["cross"].timings = {"reset": 0.1, "total": 0.1}
     record = case_markdown(judge(_case(), runs))
     assert "0.1" not in record and "Risk observer calls: 0" in record
+
+
+def test_the_case_record_shows_the_observed_marks():
+    from .report import case_markdown
+    runs = _runs(EDGES)
+    runs["cross"].marks = {3: frozenset({"common 4"})}
+    assert "Marks (cross run): leg 3 [common 4]" in case_markdown(judge(_case(), runs))
 
 
 # --- every remaining refusal ----------------------------------------------------------------------------------
@@ -858,14 +874,14 @@ def test_a_step_sends_its_legs_rows_in_the_order_given():
 
 def test_a_duplicate_row_is_red():
     leg_of_key = {("i1", "request"): 1, ("i2", "request"): 2}
-    row = ("i1", "request", "i2", "request", "MRN", MRN, MRN, "whole", None)
+    row = ("i1", "request", "i2", "request", "MRN", MRN, MRN, "whole", None, "o1")
     resolved, _, _, problems = resolve_edges(_case(), [row, row], leg_of_key)
     assert resolved == {("s1", 1, 2, None)} and problems == ["edge s1 1>2 (MRN) drawn by 2 rows"]
     assert _judge(_case(), problems=problems).status == "RED"
-    other_type = ("i1", "request", "i2", "request", "OPID", MRN, MRN, "whole", None)   # a second origin, by right
+    other_type = ("i1", "request", "i2", "request", "OPID", MRN, MRN, "whole", None, "o2")   # a second origin, by right
     case = _case(accepts={"s1": frozenset({"MRN", "OPID"})})
     assert resolve_edges(case, [row, other_type], leg_of_key)[3] == []
-    crossing = ("i1", "request", "i2", "request", "MRN", MRN, MRN, "whole", "vo")      # beside the conversation's
+    crossing = ("i1", "request", "i2", "request", "MRN", MRN, MRN, "whole", "vo", "o3")      # beside the conversation's
     assert resolve_edges(_case(), [row, crossing], leg_of_key)[0] == {("s1", 1, 2, None), ("s1", 1, 2, "vo")}
 
 

@@ -1,8 +1,9 @@
 """P-label-lineage entry point — ``python -m data_governance.processors.label_lineage``.
 
-Reads ``DATABASE_URL``, validates ``LABEL_MATCHER`` and ``LABEL_MEMORY_SCOPES`` before
-any DB work (an unknown finder or an invalid scope declaration exits 2 rather than
-deriving under a configuration the operator did not mean), runs the schema-version check
+Reads ``DATABASE_URL``, validates ``LABEL_MATCHER``, ``LABEL_MEMORY_SCOPES`` and the
+cross-conversation configuration (``LABEL_CROSS_*``, and ``RISK_INHERITED_LABELS`` when
+the switch is on) before any DB work (an invalid one exits 2 rather than deriving
+under a configuration the operator did not mean), runs the schema-version check
 (ADR-0002: exit 3 on a mismatch, 4 if it cannot compare), then drives the
 readiness-gated drain (:func:`driver.run`) until SIGINT/SIGTERM. Shaped like the
 data-lineage entry point: no metrics surface, no model load.
@@ -19,8 +20,6 @@ import threading
 
 from data_governance import db
 from data_governance.db.schema_version import SchemaVersionMismatch, check_schema_version
-from data_governance.label_lineage import find
-from data_governance.processors.data_lineage import memory
 
 from . import driver
 
@@ -41,11 +40,14 @@ def main() -> int:
 
     try:
         config = driver.configured()
-    except (find.UnknownFinder, memory.InvalidScopes) as exc:
+    except ValueError as exc:   # an unknown finder, invalid scopes, crossing or RISK_INHERITED_LABELS
         sys.stderr.write(f"{exc}\n")
         return 2
     log.info("label lineage with LABEL_MATCHER=%s, LABEL_MEMORY_SCOPES=%s", config.matcher,
              json.dumps(dict(config.scopes), sort_keys=True))
+    c = config.crossing
+    log.info("across conversations: %s", "off" if c is None else
+             f"on, M={c.common_limit}, retention {int(c.retention.total_seconds())} s, anchors {','.join(sorted(c.anchors))}")
 
     db.configure(dsn)
     try:

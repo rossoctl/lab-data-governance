@@ -51,16 +51,9 @@ expect:
       s1:
       - crossed vo ambiguous
   pending:
-    reason: 'no crossing on this branch: the crossing core draws the crossing and the edges that rest on it; the level on
-      its way carries crossed and its level to every later leg and into the policy input, so the cross run blocks at the flagged
-      leg. The off and conv runs already match'
-    missing:
-    - s1 3>22 vo
-    - s1 9>22 vo
-    - s1 15>22 vo
-    - s1 22>23
-    - s1 23>24
-    - s1 24>25
+    reason: the crossing and the edges that rest on it are drawn; the level on its way carries crossed and its level to every
+      later leg, marks the result ambiguous, and carries both into the policy input, which passes on no label from another
+      conversation before it, so the cross run blocks at the flagged leg. The off and conv runs already match
     verdict:
     - cross
     evidence:

@@ -8,6 +8,7 @@ import json
 from collections import Counter
 
 import psycopg
+import pytest
 from psycopg.types.json import Jsonb
 
 from data_governance import db, retrieval
@@ -356,3 +357,228 @@ def test_the_declared_scope_reaches_the_running_derivation(configured_db: str, m
     monkeypatch.setenv(memory.SCOPES_ENV_VAR, json.dumps({store: "conversation"}))
     driver.drain(0, driver.configured())
     assert _edge_rows(configured_db) == declared
+
+
+# --- across conversations ------------------------------------------------------------------------------------------
+
+def _seed_input(dsn: str, t: fold.TraceInput) -> None:
+    """Write a hand-built trace (``tests.label_lineage.test_cross``) as the upstream processors would have."""
+    with psycopg.connect(dsn) as conn:
+        for e in t.entities.values():
+            conn.execute("INSERT INTO entities (id, kind, natural_key, display_name, detected_from, original_seq) "
+                         "VALUES (%s, %s, %s, %s, 'observed', 1) ON CONFLICT DO NOTHING",
+                         (e.id, e.kind, e.natural_key, e.id))
+        for leg in t.legs:
+            conn.execute("INSERT INTO interactions (id, trace_id, caller_entity_id, callee_entity_id, summary) "
+                         "VALUES (%s, %s, %s, %s, '') ON CONFLICT DO NOTHING",
+                         (leg.interaction_id, t.trace_id, leg.caller_entity_id, leg.callee_entity_id))
+            content = t.payloads[leg.payload_hash]
+            conn.execute("INSERT INTO interaction_payloads (content_hash, content, byte_size) VALUES (%s, %s, %s) "
+                         "ON CONFLICT DO NOTHING", (leg.payload_hash, Jsonb(content), len(json.dumps(content))))
+            classify(conn, {"content_hash": leg.payload_hash, "sensitivity_level": "RESTRICTED", "regulatory_tags": [],
+                            "contains_identity_bundle": False, "is_personalized": False, "primary_domain": None,
+                            "findings": t.findings.get(leg.payload_hash, []), "model_version": 1})
+        seq = _q(dsn, "SELECT coalesce(max(seq), 0) FROM interaction_legs")[0][0]
+        for n, leg in enumerate(t.legs, start=1):
+            conn.execute("INSERT INTO interaction_legs (interaction_id, leg_type, seq, occurred_at, payload_hash, error) "
+                         "VALUES (%s, %s, %s, %s, %s, false)",
+                         (leg.interaction_id, leg.leg_type, seq + n, leg.occurred_at, leg.payload_hash))
+
+
+def _crossings(dsn: str) -> list[tuple]:
+    return _q(dsn, "SELECT e.entity_type, e.from_trace_id, c.level FROM payload_label_edges e "
+                   "JOIN label_crossings c ON c.edge_id = e.edge_id ORDER BY 1")
+
+
+def test_the_cross_switch_reaches_the_running_derivation(configured_db: str, monkeypatch) -> None:
+    from data_governance.label_lineage import cross
+    from tests.label_lineage.test_cross import _first, _second
+    monkeypatch.setenv(cross.SWITCH_ENV_VAR, "on")
+    monkeypatch.setenv("RISK_INHERITED_LABELS", "on")
+    _seed_input(configured_db, _first())
+    cursor = driver.drain(0, driver.configured())
+    _seed_input(configured_db, _second())
+    driver.drain(cursor, driver.configured())
+    assert _crossings(configured_db) == [("DOB", "T1", "corroborated"), ("SSN", "T1", "corroborated")]
+
+
+def test_the_load_reads_only_the_holdings_whose_value_is_in_a_payload_the_senders_send(configured_db: str) -> None:
+    from data_governance.label_lineage import cross
+    from tests.label_lineage.test_cross import _first, _second
+    config = driver.Config(find.exact, "exact", crossing=cross.Crossing())
+    _seed_input(configured_db, _first())
+    driver.drain(0, config)
+    _seed_input(configured_db, _second())
+
+    def priors(content: object) -> list[str]:
+        payloads = {h: (content if c and "subject" in c else c) for h, c in t.payloads.items()}
+        return sorted(h.value for h in driver.load_priors(tx, "T2", list(t.legs), t.entities, payloads, config))
+
+    with db.transaction() as tx:
+        t = driver.load_trace(tx, "T2", config)
+        assert sorted(h.value for h in t.priors) == ["123-45-6789", "1961-03-14"]
+        assert priors({"nothing": "here"}) == []
+        # the first words of both held values, neither value: nothing is loaded
+        assert priors({"subject": "123-45-0000", "since": "1961-04-14"}) == []
+        assert priors({"subject": "123-45-6789", "since": "1961-04-14"}) == ["123-45-6789"]
+
+
+@pytest.mark.parametrize("env, on", [
+    ({}, False),
+    ({"LABEL_CROSS_CONVERSATION": "on"}, False),                                  # inherited labels off
+    ({"LABEL_CROSS_CONVERSATION": "on", "RISK_INHERITED_LABELS": "off"}, False),
+    ({"LABEL_CROSS_CONVERSATION": "on", "RISK_INHERITED_LABELS": "on"}, True),
+    ({"LABEL_CROSS_CONVERSATION": "off", "RISK_INHERITED_LABELS": "on"}, False),
+])
+def test_the_cross_switch_has_effect_only_while_inherited_labels_are_on(monkeypatch, env, on) -> None:
+    for k in ("LABEL_CROSS_CONVERSATION", "RISK_INHERITED_LABELS"):
+        monkeypatch.delenv(k, raising=False)
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    assert (driver.configured().crossing is not None) is on
+
+
+def test_with_inherited_labels_off_the_cross_switch_draws_and_stores_nothing(configured_db: str, monkeypatch) -> None:
+    from tests.label_lineage.test_cross import _first, _second
+    monkeypatch.setenv("LABEL_CROSS_CONVERSATION", "on")
+    monkeypatch.setenv("RISK_INHERITED_LABELS", "off")
+    _seed_input(configured_db, _first())
+    _seed_input(configured_db, _second())
+    driver.drain(0, driver.configured())
+    assert _q(configured_db, "SELECT (SELECT count(*) FROM label_occurrences), (SELECT count(*) FROM label_crossings)"
+              ) == [(0, 0)]
+
+
+def test_an_invalid_cross_configuration_stops_the_processor_at_startup(monkeypatch) -> None:
+    from data_governance.processors.label_lineage import __main__ as entry
+    monkeypatch.setenv("DATABASE_URL", "postgres://unused")
+    monkeypatch.setenv("LABEL_CROSS_CONVERSATION", "on")
+    monkeypatch.setenv("RISK_INHERITED_LABELS", "all")
+    assert entry.main() == 2
+    monkeypatch.setenv("RISK_INHERITED_LABELS", "on")
+    monkeypatch.setenv("LABEL_CROSS_COMMON_LIMIT", "-1")
+    assert entry.main() == 2
+
+
+def test_one_run_derives_its_conversations_in_event_order(configured_db: str) -> None:
+    """Both conversations in one delivered run, the earlier one with the id that sorts last: it is derived first,
+    so the later one's crossings see what it registered."""
+    import dataclasses
+
+    from data_governance.label_lineage import cross
+    from tests.label_lineage.test_cross import _first, _second
+    _seed_input(configured_db, dataclasses.replace(_first(), trace_id="Z1"))
+    _seed_input(configured_db, _second())
+    driver.drain(0, driver.Config(find.exact, "exact", crossing=cross.Crossing()))
+    assert _crossings(configured_db) == [("DOB", "Z1", "corroborated"), ("SSN", "Z1", "corroborated")]
+
+
+CROSS_TABLES = ("label_occurrences", "label_crossings")
+
+
+def test_a_trace_that_loses_every_leg_loses_its_cross_conversation_rows(configured_db: str) -> None:
+    from data_governance.label_lineage import cross
+    from tests.label_lineage.test_cross import _first, _second
+    config = driver.Config(find.exact, "exact", crossing=cross.Crossing())
+    _seed_input(configured_db, _first())
+    cursor = driver.drain(0, config)
+    _seed_input(configured_db, _second())
+    cursor = driver.drain(cursor, config)
+    assert all(_q(configured_db, f"SELECT count(*) FROM {t} WHERE trace_id IN ('T1', 'T2')")[0][0]
+               for t in CROSS_TABLES)
+    with psycopg.connect(configured_db) as conn:
+        for trace_id in ("T1", "T2"):
+            conn.execute("DELETE FROM interaction_legs WHERE interaction_id IN "
+                         "(SELECT id FROM interactions WHERE trace_id = %s)", (trace_id,))
+            conn.execute("DELETE FROM interactions WHERE trace_id = %s", (trace_id,))
+            conn.execute("SELECT dg_queue_label_trace(%s)", (trace_id,))
+    driver.drain(cursor, config)
+    assert {t: _q(configured_db, f"SELECT count(*) FROM {t}")[0][0] for t in CROSS_TABLES} == dict.fromkeys(
+        CROSS_TABLES, 0)
+
+
+def test_a_long_value_held_only_in_this_conversation_does_not_raise_the_cost(configured_db: str,
+                                                                             monkeypatch) -> None:
+    """K comes from other conversations only: derived again, a conversation whose partner received a 30-word value
+    in it still hashes runs as long as what another conversation gave the partner (one SSN, three words)."""
+    import datetime as dt
+
+    from data_governance.label_lineage import cross
+    from tests.label_lineage.test_cross import SSN, T0, _trace
+    config = driver.Config(find.exact, "exact", crossing=cross.Crossing())
+    other = "987-65-4321"
+    long_value = " ".join(f"street{i}" for i in range(30))
+    _seed_input(configured_db, _trace("T9", [("9", "request", "t", "v", {"ssn": other}, [("SSN", other)])],
+                                      T0 - dt.timedelta(minutes=1)))
+    _seed_input(configured_db, _trace("T1", [("1", "request", "t", "v", {"addr": long_value, "ssn": SSN},
+                                              [("ADDRESS", long_value), ("SSN", SSN)]),
+                                             ("1", "response", "t", "v", {"subject": other}, [])], T0))
+    cursor = driver.drain(0, config)
+    assert _q(configured_db, "SELECT max(word_count) FROM label_occurrences WHERE trace_id = 'T1'")[0][0] == 30
+    seen = []
+    real = cross.window_hashes
+    monkeypatch.setattr(cross, "window_hashes", lambda text, longest: seen.append(longest) or real(text, longest))
+    with psycopg.connect(configured_db) as conn:
+        conn.execute("SELECT dg_queue_label_trace('T1')")
+    driver.drain(cursor, config)
+    assert seen and set(seen) == {3}                                   # T9's SSN, not T1's own address
+    assert [c[:2] for c in _crossings(configured_db)] == [("SSN", "T9")]
+
+
+def test_a_conversation_derived_again_never_loads_its_own_earlier_holdings(configured_db: str) -> None:
+    """A crossing inside one conversation, then the receiving leg rewritten without the value and derived again
+    by the stale arm: what the conversation itself registered before is not a prior, so the crossing goes. Another
+    conversation gave the partner a value of the same shape, so the load does run for the partner's sends."""
+    import datetime as dt
+
+    from data_governance.label_lineage import cross
+    from tests.label_lineage.test_cross import SSN, T0, _trace
+    config = driver.Config(find.exact, "exact", crossing=cross.Crossing())
+    _seed_input(configured_db, _trace("T9", [("9", "request", "t", "v", {"ssn": "987-65-4321"},
+                                              [("SSN", "987-65-4321")])], T0 - dt.timedelta(minutes=1)))
+    _seed_input(configured_db, _trace("T1", [("1", "request", "t", "v", {"ssn": SSN}, [("SSN", SSN)]),
+                                             ("1", "response", "t", "v", {"subject": SSN}, []),
+                                             ("2", "request", "t", "v", {"q": "again"}, []),
+                                             ("2", "response", "t", "v", {"subject": SSN}, [])], T0))
+    cursor = driver.drain(0, config)
+    assert [c[0] for c in _crossings(configured_db)] == ["SSN"]
+    other = "000-00-0000"
+    with psycopg.connect(configured_db) as conn:
+        conn.execute("INSERT INTO interaction_payloads (content_hash, content, byte_size) VALUES ('h-new', %s, 20)",
+                     (Jsonb({"ssn": other}),))
+        classify(conn, {"content_hash": "h-new", "sensitivity_level": "RESTRICTED", "regulatory_tags": [],
+                        "contains_identity_bundle": False, "is_personalized": False, "primary_domain": None,
+                        "findings": [{"entity_type": "SSN", "text": other, "start": 9, "end": 20,
+                                      "regulatory_tags": ["PII"], "sensitivity_level": "RESTRICTED"}],
+                        "model_version": 1})
+        conn.execute("UPDATE interaction_legs SET payload_hash = 'h-new' "
+                     "WHERE interaction_id = '1' AND leg_type = 'request'")
+    driver.drain(cursor, config)
+    assert _q(configured_db, "SELECT value_text FROM label_occurrences WHERE trace_id = 'T1'") == [(other,)]
+    assert _crossings(configured_db) == []
+
+
+def test_the_longest_held_value_counts_only_while_it_can_still_be_sent(configured_db: str, monkeypatch) -> None:
+    """K, the most words the load hashes runs of, comes from the occurrences valid for the sends: a long value
+    the sender held a month ago does not raise the cost of what it sends now."""
+    import datetime as dt
+
+    from data_governance.label_lineage import cross
+    from tests.label_lineage.test_cross import SSN, T0, _first, _second, _trace
+    config = driver.Config(find.exact, "exact", crossing=cross.Crossing())
+    long_value = " ".join(f"street{i}" for i in range(30))
+    _seed_input(configured_db, _trace("T0", [("0", "request", "a", "v", {"addr": long_value, "ssn": SSN},
+                                              [("ADDRESS", long_value), ("SSN", SSN)]),
+                                             ("0", "response", "a", "v", {"ok": True}, [])],
+                                      T0 - dt.timedelta(days=30)))
+    _seed_input(configured_db, _first())
+    cursor = driver.drain(0, config)
+    assert _q(configured_db, "SELECT max(word_count) FROM label_occurrences")[0][0] == 30
+    seen = []
+    real = cross.window_hashes
+    monkeypatch.setattr(cross, "window_hashes", lambda text, longest: seen.append(longest) or real(text, longest))
+    _seed_input(configured_db, _second())
+    driver.drain(cursor, config)
+    (t1_longest,) = _q(configured_db, "SELECT max(word_count) FROM label_occurrences WHERE trace_id = 'T1'")[0]
+    assert seen and set(seen) == {t1_longest} and t1_longest < 30     # T1's SSN and DOB, not T0's address
+    assert [c[:2] for c in _crossings(configured_db)] == [("DOB", "T1"), ("SSN", "T1")]

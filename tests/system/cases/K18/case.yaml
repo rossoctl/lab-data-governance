@@ -85,15 +85,9 @@ expect:
       - inherited
       - crossed co
   pending:
-    reason: 'no crossing on this branch: the crossing core draws the crossing and the edges that rest on it; the level on
-      its way carries crossed and its level to every later leg and into the policy input. The verdicts and the conversation''s
-      own edges already match'
-    missing:
-    - s1 11>22 co
-    - s2 11>22 co
-    - s3 11>22 co
+    reason: the crossing is drawn, beside the leg's own finding; the level on its way carries crossed and its level to every
+      later leg, so the flagged leg reads it as crossed. The verdicts and the conversation's own edges already match
     evidence:
-    - 22
     - 27
 classifier:
   must_see:

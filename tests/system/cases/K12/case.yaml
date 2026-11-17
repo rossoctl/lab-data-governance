@@ -99,6 +99,4 @@ classifier:
   authored: true
 notes: 'K1 with V2 declared call scope: it remembers nothing past one call, so nothing it returns in conversation 2 can cross.
   No crossing, allow. A declared key that is no derived entity makes the run red; that the declaration reaches the processor
-  at all is K22c''s check. Green on this branch only because nothing crosses at all here; the case means something once the
-  crossing core exists, and its deliberate break (the declaration ignored, V2 back at its default, persistent) must turn it
-  red.'
+  at all is K22c''s check. Its deliberate break (the declaration ignored, V2 back at its default, persistent) turns it red.'
