@@ -38,11 +38,20 @@ GitHub clones only, and `run-all.sh` runs the whole experiment and checks each s
 crossed labels), keeps the strictest decision, and records the tier that decided it: the first tier that blocks, else
 the highest asked (`interaction_risk_tiers`, one row per record version, `0` with inherited labels off). A version
 stricter than the latest earlier one that evidenced the same legs is a late finding (`late` on its row, leg-ready's
-`late_findings_total`); it does not reach back. What is built is the tiers at the level of the decision record. What
-is not: an answer before label lineage is ready. A record is still written only once its leg is ready with all the
-evidence leg-ready waits for, so the service answers as before, a decided record at once and `pending` at `wait_ms`;
-it never answers early at a lower tier, and nothing changes in what the gate receives at its limit. An allow on
-incomplete evidence at the limit, marked with the tier reached, is not built.
+`late_findings_total`); it does not reach back.
+
+**The early block.** A decision is released when it is a block, or when the evidence is complete. With
+`RISK_INHERITED_LABELS=on` a request leg is ready only once label lineage has derived it, and a request the classifier
+alone would block used to wait for that. Now, when a waited request is classified and label lineage has not derived
+it, leg-ready's priority decision arm asks the policy once on the classification alone. A block is written at once,
+at tier 0, and the service answers it `decided` like any record; no later tier relaxes a block. Any other answer is
+not written and the exchange waits for the full computation as before. The early record is only ever the first for
+its legs: it is not written when one exists. The full computation follows when label lineage is ready and writes a
+new version if the labels change the record (its rules or its summary); until then the latest record of that
+exchange, in the console and in the trace's record too, carries the classification alone. `LEG_READY_EARLY_BLOCK=off`
+on leg-ready restores the wait; leg-ready counts `early_blocks_total`. The service itself is unchanged: it reads
+records and never calls the policy. What is not built: an allow on incomplete evidence at the gate's limit, marked
+with the tier reached; nothing changes in what the gate receives there.
 
 **What the gate does with `unjudged`.** It refuses the answer unless its verdict is one it denies anyway, with one
 exception: with `capture_io` off it lets a `body_not_captured` body through, because whoever turned capture off gave up

@@ -121,3 +121,4 @@ def test_leg_ready_runs_the_priority_decision_arm() -> None:
     (c,) = dep["spec"]["template"]["spec"]["containers"]
     env = {e["name"]: e.get("value") for e in c["env"]}
     assert env["LEG_READY_PRIORITY_DECISION"] == "on"
+    assert env["LEG_READY_EARLY_BLOCK"] == "on"

@@ -321,8 +321,9 @@ whatever order the conversations are derived in.
 - No fragments: a value split across fields or cut to its last four reaches nothing; `recombined`
   is always false.
 - The verdict is asked in tiers (classification, in-conversation, cross-conversation) at the level of the
-  decision record only (`docs/verdict-service.md`): no answer is given before label lineage is ready. A leg
-  cut by a limit is not part of the policy input.
+  decision record (`docs/verdict-service.md`). One answer is given before label lineage is ready: a block on
+  the classification alone, for a request a gate waits on (the early block). An allow always waits for label
+  lineage. A leg cut by a limit is not part of the policy input.
 - No semantic judge. Data lineage keeps its own `SEMANTIC_MATCHER`; label lineage's finders are not offered there.
 - No floor on a unit's length: a short finding (a two-digit age, a misread word) is found wherever
   those bytes stand whole and bounded, so its labels travel as far as the bytes do.

@@ -306,3 +306,108 @@ def test_a_full_allow_is_deferred_when_a_lower_tier_cannot_be_asked(interaction:
         _compute(monkeypatch, _evidence(inherited=conv), _LowerTiersTimeOut(full_answered=not cached))
     assert _rows(interaction) == []
 
+
+
+# --- the early block ---------------------------------------------------------------------------------
+def _early(monkeypatch, evidence: Evidence, policy: _Policy) -> bool:
+    """Ask the early question on *evidence* and run its write, if it has one."""
+    from data_governance import db
+    monkeypatch.setattr(compute, "gather_evidence", lambda _iid: evidence)
+    write = compute.prepare_early_block(_IX, opa_client=policy)
+    if write is not None:
+        with db.transaction() as tx:
+            write(tx)
+    return write is not None
+
+
+def _cached_decisions(dsn: str) -> int:
+    with psycopg.connect(dsn) as conn:
+        return conn.execute("SELECT count(*) FROM interaction_policy_decisions WHERE interaction_id = %s",
+                            (_IX,)).fetchone()[0]
+
+
+BOTH = labels.Inherited(mode="on", cross=True, by_leg={"request": [INSIDE, CROSSED]})
+
+
+def test_an_early_block_is_decided_on_the_classification_alone(interaction: str, monkeypatch) -> None:
+    """The classifier's own finding blocks: the record is written from tier 0's input (one item, nothing
+    inherited read), with its tier row, and the decision cache is not touched."""
+    metrics.make_registry()
+    policy = _Policy()
+    assert _early(monkeypatch, _evidence(LABELLED, BOTH), policy)
+    assert _rows(interaction) == [(1, "block", ["items-1"], 0, False)]
+    assert len(policy.calls) == 1 and _cached_decisions(interaction) == 0
+    assert metrics.early_blocks_total._value.get() == 1
+
+
+def test_the_early_question_writes_nothing_unless_it_blocks(interaction: str, monkeypatch) -> None:
+    """A crossed label would block at tier 2; the classification alone does not: no record, no cached decision."""
+    metrics.make_registry()
+    policy = _Policy()
+    assert not _early(monkeypatch, _evidence(CLEAN, BOTH), policy)
+    assert _rows(interaction) == [] and _cached_decisions(interaction) == 0
+    assert [len(c["flows"]["request"]["data_items"]) for c in policy.calls] == [1]
+    assert metrics.early_blocks_total._value.get() == 0
+
+
+def test_an_early_block_never_replaces_a_record_of_the_same_legs(interaction: str, monkeypatch) -> None:
+    """The full record landed first: the early block, computed on older readiness, writes nothing."""
+    metrics.make_registry()
+    _compute(monkeypatch, _evidence(LABELLED, BOTH), _Policy())
+    before = _rows(interaction)
+    assert before == [(1, "block", ["items-3"], 0, False)]
+    assert _early(monkeypatch, _evidence(LABELLED, BOTH), _Policy())      # it would block, and has a write
+    assert _rows(interaction) == before and metrics.early_blocks_total._value.get() == 0
+
+
+def test_the_full_computation_follows_an_early_block(interaction: str, monkeypatch) -> None:
+    """After the early block the full evidence is computed as ever: a record the labels change is a new version,
+    not a late finding (block after block); the same computation again writes nothing."""
+    metrics.make_registry()
+    assert _early(monkeypatch, _evidence(LABELLED, BOTH), _Policy())
+    for _ in range(2):
+        _compute(monkeypatch, _evidence(LABELLED, BOTH), _Policy())
+    assert _rows(interaction) == [(1, "block", ["items-1"], 0, False), (2, "block", ["items-3"], 0, False)]
+    assert metrics.late_findings_total._value.get() == 0
+
+
+
+def test_the_early_record_carries_the_classification_alone(interaction: str, monkeypatch) -> None:
+    """Nothing inherited reaches the early record: its summary is the one of a record with no labels to inherit."""
+    assert _early(monkeypatch, _evidence(LABELLED, BOTH), _Policy())
+    with psycopg.connect(interaction) as conn:
+        (early,) = conn.execute("SELECT classification_summary FROM interaction_risk_records WHERE interaction_id = %s",
+                                (_IX,)).fetchone()
+    assert early == utils.classification_summary({"request": LABELLED}, None)
+    assert early != utils.classification_summary({"request": LABELLED}, BOTH), "the full record's does carry them"
+
+
+def test_the_early_guard_is_per_set_of_legs(interaction: str, monkeypatch) -> None:
+    """A record that evidences only the request does not stop an early block on request and response: an early
+    block is the first answer for its legs, not for the exchange."""
+    _compute(monkeypatch, _legs(request=CLEAN), _Policy())
+    assert _early(monkeypatch, _legs(request=LABELLED, response=CLEAN), _Policy())
+    assert [(v, e, t) for v, e, _r, t, _late in _rows(interaction)] == [(1, "allow", 0), (2, "block", 0)]
+    assert not _early_wrote(monkeypatch, _legs(request=LABELLED, response=CLEAN)), "and only the first for them"
+
+
+def _early_wrote(monkeypatch, evidence: Evidence) -> bool:
+    from data_governance import db
+    monkeypatch.setattr(compute, "gather_evidence", lambda _iid: evidence)
+    write = compute.prepare_early_block(_IX, opa_client=_Policy())
+    with db.transaction() as tx:
+        return write(tx)
+
+
+def test_the_early_write_waits_for_a_full_write_in_flight(interaction: str, monkeypatch) -> None:
+    """The schedule the interaction lock is there for: the early write would read "no record" while the full
+    record is inserted and not yet committed, and insert its own after. Under the lock it reads only after the
+    commit, finds the record and writes nothing."""
+    from .interleave import read_between_write_and_commit
+    monkeypatch.setattr(compute, "gather_evidence", lambda _iid: _evidence(LABELLED, BOTH))
+    full = compute.prepare_interaction_risk(_IX, opa_client=_Policy())
+    early = compute.prepare_early_block(_IX, opa_client=_Policy())
+    errors = read_between_write_and_commit(full, early, read_marker="AND legs_evidenced = %s LIMIT 1",
+                                           monkeypatch=monkeypatch)
+    assert errors == []
+    assert _rows(interaction) == [(1, "block", ["items-3"], 0, False)]

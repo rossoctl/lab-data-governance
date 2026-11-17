@@ -54,11 +54,11 @@ from __future__ import annotations
 import logging
 
 from data_governance.processors.leg_ready.driver import Leg, LegDeferred, Observer
-from data_governance.risk.engine.compute import RecordWrite, prepare_interaction_risk
+from data_governance.risk.engine.compute import RecordWrite, prepare_early_block, prepare_interaction_risk
 from data_governance.risk.engine.evidence import InteractionNotFoundError
 from data_governance.risk.engine.opa import OpaClient, OpaError
 
-__all__ = ["make_risk_observer"]
+__all__ = ["make_early_block_observer", "make_risk_observer"]
 
 log = logging.getLogger(__name__)
 
@@ -86,4 +86,24 @@ def make_risk_observer(opa_client: OpaClient) -> Observer:
                 f"deferred: {exc}"
             ) from exc
 
+    return observe
+
+
+def make_early_block_observer(opa_client: OpaClient) -> Observer:
+    """Build the observer of the priority decision arm's early question
+    (:func:`~.compute.prepare_early_block`): for a leg that is classified and whose
+    label lineage is not ready, the write of a block decided on the classification
+    alone, or ``None`` when the policy does not block on it. The failure semantics are
+    :func:`make_risk_observer`'s."""
+    def observe(leg: Leg) -> RecordWrite | None:
+        try:
+            return prepare_early_block(leg.interaction_id, opa_client=opa_client)
+        except InteractionNotFoundError:
+            log.error("early block: leg seq=%d references missing interaction_id=%s; nothing asked",
+                      leg.seq, leg.interaction_id)
+            return None
+        except OpaError as exc:
+            raise LegDeferred(
+                f"early block for interaction_id={leg.interaction_id} deferred: {exc}"
+            ) from exc
     return observe

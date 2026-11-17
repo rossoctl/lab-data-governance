@@ -113,7 +113,7 @@ class Case:
     marks: dict[int, frozenset[str]] = dataclasses.field(default_factory=dict)
     scopes: dict[str, str] = dataclasses.field(default_factory=dict)
     config: dict[str, int] = dataclasses.field(default_factory=dict)
-    steps: tuple[tuple, ...] = ()            # ("send", legs) | ("drain",) | ("derive", n) | ("reclassify", ...) | ("cross", on/off)
+    steps: tuple[tuple, ...] = ()            # ("send", legs) | ("drain",) | ("ask",) | ("derive", n) | ("reclassify", ...) | ("cross", on/off)
 
     @property
     def values(self) -> dict[str, str]:
@@ -346,15 +346,20 @@ def _steps(name: str, line: cl.CaseLine, raw: Any) -> tuple[tuple, ...]:
     if raw is None:
         return ("send", tuple(wire)), ("drain",)
     if not isinstance(raw, list):
-        raise ValueError(f"{name}: steps is a list of drain, send, derive, reclassify and cross steps; got {raw!r}")
+        raise ValueError(f"{name}: steps is a list of drain, ask, send, derive, reclassify and cross steps; got {raw!r}")
     steps: list[tuple] = []
     for item in raw:
         if item == "drain":
             steps.append(("drain",))
             continue
+        if item == "ask":
+            if line.sink is None:
+                raise ValueError(f"{name}: an ask step asks for the flagged exchange's verdict; the line flags none")
+            steps.append(("ask",))
+            continue
         if not isinstance(item, dict) or len(item) != 1 or next(iter(item)) not in ("send", "derive", "reclassify",
                                                                                      "cross"):
-            raise ValueError(f"{name}: a step is drain, or one of send, derive, reclassify, cross; got {item!r}")
+            raise ValueError(f"{name}: a step is drain, ask, or one of send, derive, reclassify, cross; got {item!r}")
         ((kind, arg),) = item.items()
         if kind == "send":
             steps.append(("send", _legs(name, line, arg)))

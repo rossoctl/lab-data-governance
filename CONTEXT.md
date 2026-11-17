@@ -1077,8 +1077,23 @@ stricter decision is the one kept), and the verdict service answers it as `tier`
 by a leg-ready pod still on an older image during a rollout).
 _Avoid_: reading strictest-so-far across versions — a new snapshot asks every
 tier again, so a correction of the evidence (a label taken away) may relax the
-decision; and reading `tier` as how far the evidence had arrived — the record is
-written once its leg is ready, with all the evidence leg-ready waits for.
+decision; and reading `tier` as how far the evidence had arrived — a record is
+written once its leg is ready, with all the evidence leg-ready waits for, except an
+**Early block**.
+
+**Early block**:
+A block released to a waiting gate before label lineage is ready. A decision is
+released when it is a block, or when the evidence is complete: leg-ready's priority
+decision arm asks the policy once on the classification alone when a waited request
+is classified and label lineage has not derived it, and writes the record, at tier
+0, only when the answer is a block and no record evidences those legs yet. It is
+only ever the first answer for its legs; the full computation follows as ever
+and writes a new version when the labels change the record. Behind
+`LEG_READY_EARLY_BLOCK` (on by default), reachable only with
+`RISK_INHERITED_LABELS=on`; counted by leg-ready's `early_blocks_total`.
+_Avoid_: an early allow — any decision but a block waits for the last tier; and
+reading the early version as the whole record — until the full computation lands
+it carries the classification alone.
 
 **Late finding**:
 An **Interaction risk record** version stricter than the latest earlier version

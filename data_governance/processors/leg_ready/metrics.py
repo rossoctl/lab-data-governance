@@ -22,6 +22,9 @@ Two counters:
   ``interaction_risk_tiers.late`` (a **Late finding**), counted in the write before its
   transaction commits: a write that rolls back and is redone counts twice. The rows
   are the count of record; this is its live signal.
+- ``early_blocks_total`` — one increment per risk record written as an early block: a
+  block released to a waiting gate on the classification alone, before label lineage
+  derived the leg. Counted in the write, like ``late_findings_total``.
 """
 
 from __future__ import annotations
@@ -32,13 +35,14 @@ __all__ = [
     "make_registry",
     "legs_observed_total",
     "late_findings_total",
+    "early_blocks_total",
 ]
 
 # Module-level registry; replaced by make_registry() in tests.
 _registry = prom.CollectorRegistry(auto_describe=True)
 
 
-def _make_metrics(registry: prom.CollectorRegistry) -> tuple[prom.Counter, prom.Counter]:
+def _make_metrics(registry: prom.CollectorRegistry) -> tuple[prom.Counter, prom.Counter, prom.Counter]:
     # Named with the explicit ``_total`` suffix so the registered name equals the
     # scrape/exposition name (prometheus_client appends ``_total`` to counters),
     # matching the sibling consumers' convention.
@@ -54,10 +58,16 @@ def _make_metrics(registry: prom.CollectorRegistry) -> tuple[prom.Counter, prom.
         "answered with (interaction_risk_tiers.late), counted when written",
         registry=registry,
     )
-    return legs_observed_total, late_findings_total
+    early_blocks_total = prom.Counter(
+        "early_blocks_total",
+        "Risk records written as an early block: released to a waiting gate on the "
+        "classification alone, before label lineage derived the leg",
+        registry=registry,
+    )
+    return legs_observed_total, late_findings_total, early_blocks_total
 
 
-legs_observed_total, late_findings_total = _make_metrics(_registry)
+legs_observed_total, late_findings_total, early_blocks_total = _make_metrics(_registry)
 
 
 def make_registry() -> prom.CollectorRegistry:
@@ -70,9 +80,9 @@ def make_registry() -> prom.CollectorRegistry:
     kwarg.
     """
     global _registry  # noqa: PLW0603
-    global legs_observed_total, late_findings_total  # noqa: PLW0603
+    global legs_observed_total, late_findings_total, early_blocks_total  # noqa: PLW0603
 
     new_registry = prom.CollectorRegistry(auto_describe=True)
     _registry = new_registry
-    legs_observed_total, late_findings_total = _make_metrics(new_registry)
+    legs_observed_total, late_findings_total, early_blocks_total = _make_metrics(new_registry)
     return new_registry

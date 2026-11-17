@@ -28,6 +28,17 @@ stays the only OPA client and the only risk writer.
   expires: the cursor arm still delivers the leg in order. Nothing here moves the
   cursor or claims anything durable.
 
+**The early block** (``LEG_READY_EARLY_BLOCK``, with inherited labels on). A
+decision is released when it is a block, or when the evidence is complete. A named
+id whose request leg is classified while label lineage has not derived it is asked
+once on the classification alone (the *early* observer,
+:func:`~data_governance.risk.engine.compute.prepare_early_block`): a block is written
+and the id is done, since no later tier relaxes it; anything else writes nothing and
+the id stays pending for the full computation. The choice between the early question
+and the full computation is made on a readiness read inside the turn, and the early
+write inserts only when no record evidences its legs yet, so it is only ever the
+first answer for those legs and never replaces a record of them.
+
 A named id whose request leg is not ready yet (the span is still in flight, the
 payload is not classified, label lineage has not derived it under this trace, or the
 trace has a label correction pending; the stream's own rule, :func:`.driver.one_leg`)
@@ -74,6 +85,10 @@ RECONNECT_SECONDS = 2.0
 MAX_PENDING = 1024
 
 
+#: No early question asked yet (``None`` is a payload hash: a leg without a payload).
+_NEVER = object()
+
+
 class _RowMoved(Exception):
     """Someone wrote the cursor row during this computation: drop it, keep the id."""
 
@@ -88,13 +103,34 @@ def _valid_id(payload: str) -> bool:
 
 class PriorityDecisionArm:
     """The arm's state and loop. :meth:`run` is the thread body; :meth:`serve`
-    is one pass over the pending ids (the unit the tests drive)."""
+    is one pass over the pending ids (the unit the tests drive). *early* is the
+    observer of the early question; without it the arm waits for full readiness."""
 
-    def __init__(self, observer: driver.Observer, *, guard=None) -> None:
+    def __init__(self, observer: driver.Observer, *, guard=None, early: driver.Observer | None = None) -> None:
         self._observer = observer
+        self._early = early
         self._guard = guard
         #: interaction id -> monotonic deadline, oldest first.
         self.pending: OrderedDict[str, float] = OrderedDict()
+        #: pending interaction id -> the request payload the early question was asked on
+        #: and did not block. Lives and dies with the pending entry. Keyed by the request
+        #: payload alone: the gate holds the request, so while it waits there is no
+        #: response whose classification could change the answer.
+        self.asked_early: dict[str, str | None] = {}
+
+    def _drop(self, interaction_id: str) -> None:
+        self.pending.pop(interaction_id, None)
+        self.asked_early.pop(interaction_id, None)
+
+    def _worth_a_turn(self, interaction_id: str, leg: "driver.Leg | None") -> bool:
+        """Whether *leg* has something to compute: it is ready, or it is classified
+        and the early question was not asked on this payload yet."""
+        if leg is None:
+            return False
+        if leg.ready:
+            return True
+        return (self._early is not None and leg.classified
+                and self.asked_early.get(interaction_id, _NEVER) != leg.payload_hash)
 
     def want(self, interaction_id: str, now: float | None = None) -> None:
         if not _valid_id(interaction_id):
@@ -104,7 +140,7 @@ class PriorityDecisionArm:
         self.pending[interaction_id] = now + TTL_SECONDS
         self.pending.move_to_end(interaction_id)
         while len(self.pending) > MAX_PENDING:
-            self.pending.popitem(last=False)
+            self._drop(next(iter(self.pending)))
 
     def serve(self, now: float | None = None) -> int:
         """Compute every pending interaction whose request leg is ready; drop the
@@ -116,15 +152,16 @@ class PriorityDecisionArm:
         done = 0
         for interaction_id, deadline in list(self.pending.items()):
             if now > deadline:
-                del self.pending[interaction_id]
+                self._drop(interaction_id)
                 log.info("priority decision interaction_id=%s expired before its request leg was ready", interaction_id)
                 continue
             try:
                 with db.transaction() as tx:
                     leg = driver.one_leg(tx, interaction_id, "request")
-                if leg is None or not leg.ready:
+                if not self._worth_a_turn(interaction_id, leg):
                     continue
-                self._compute(leg)
+                if not self._compute(leg):
+                    continue
             except driver.LegDeferred as exc:
                 log.warning("priority decision interaction_id=%s deferred by observer (%s); retrying",
                             interaction_id, exc.__cause__ or exc)
@@ -138,27 +175,50 @@ class PriorityDecisionArm:
             except Exception as exc:  # noqa: BLE001 — one id's fault must not starve the ids behind it
                 log.warning("priority decision interaction_id=%s failed (%s); retrying until it expires", interaction_id, exc)
                 continue
-            del self.pending[interaction_id]
+            self._drop(interaction_id)
             done += 1
         return done
 
-    def _compute(self, leg: driver.Leg) -> None:
+    def _compute(self, leg: driver.Leg) -> bool:
+        """Compute *leg*'s interaction in one turn. Returns whether the id is done:
+        the full computation ran, or the early question blocked. ``False`` keeps it
+        pending: the early question did not block, or the leg stopped being worth a
+        turn before the turn was taken.
+
+        Readiness is read again inside the turn, with the cursor row's stamp: the
+        choice between the full computation and the early question is made on the
+        state this computation runs on, not on the look that took the turn."""
         started = time.monotonic()
         with driver.TURNS.priority_decision():
             if self._guard is not None:
                 self._guard()
             with db.transaction() as tx:
+                leg = driver.one_leg(tx, leg.interaction_id, leg.leg_type)
                 seq, stamp = driver.read_stamp(tx, driver.PROCESSOR_NAME)
-            write = self._observer(leg)
+            if not self._worth_a_turn(leg.interaction_id if leg else "", leg):
+                return False
+            early = not leg.ready
+            write = (self._early if early else self._observer)(leg)
+            wrote = None
             if write is not None:
                 try:
                     with db.transaction() as tx:
                         driver.advance_from(tx, driver.PROCESSOR_NAME, seq, seq, stamp)
-                        write(tx)
+                        wrote = write(tx)
                 except db.LockLost as exc:
                     raise _RowMoved(str(exc)) from exc
-        log.info("priority decision interaction_id=%s computed (leg seq=%d) in %.0f ms",
-                 leg.interaction_id, leg.seq, (time.monotonic() - started) * 1000)
+            elif early:
+                # asked and not blocked: remembered only now, so a failed or fenced-out
+                # attempt is asked again
+                self.asked_early[leg.interaction_id] = leg.payload_hash
+                log.info("priority decision interaction_id=%s: no block on the classification alone; "
+                         "waiting for label lineage", leg.interaction_id)
+                return False
+        what = "computed" if not early else ("blocked early, before label lineage" if wrote is not False
+                                             else "already has a record of these legs; the early block wrote nothing")
+        log.info("priority decision interaction_id=%s %s (leg seq=%d) in %.0f ms", leg.interaction_id, what, leg.seq,
+                 (time.monotonic() - started) * 1000)
+        return True
 
     def run(self, stop_event: threading.Event, dsn: str) -> None:
         """Listen on the priority decision channel and the leg-ready channel until
@@ -170,7 +230,8 @@ class PriorityDecisionArm:
                 # The priority decision channel last: the session's last statement names it,
                 # which tells it apart from the cursor arm's LISTEN session.
                 with db.listen_payloads((driver.NOTIFY_CHANNEL, PRIORITY_DECISION_CHANNEL), dsn) as listener:
-                    log.info("priority decision arm listening on %r", PRIORITY_DECISION_CHANNEL)
+                    log.info("priority decision arm listening on %r, early block %s", PRIORITY_DECISION_CHANNEL,
+                             "on" if self._early is not None else "off")
                     while not stop_event.is_set():
                         notes = listener.wait(RECHECK_SECONDS if self.pending else IDLE_SECONDS)
                         now = time.monotonic()
@@ -190,9 +251,10 @@ class PriorityDecisionArm:
                 stop_event.wait(RECONNECT_SECONDS)
 
 
-def start(observer: driver.Observer, stop_event: threading.Event, dsn: str, *, guard=None) -> threading.Thread:
+def start(observer: driver.Observer, stop_event: threading.Event, dsn: str, *, guard=None,
+          early: driver.Observer | None = None) -> threading.Thread:
     """Start the arm on a daemon thread and return it."""
-    arm = PriorityDecisionArm(observer, guard=guard)
+    arm = PriorityDecisionArm(observer, guard=guard, early=early)
     thread = threading.Thread(target=arm.run, args=(stop_event, dsn), name="leg-ready-priority-decision", daemon=True)
     thread.start()
     return thread

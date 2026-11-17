@@ -245,3 +245,24 @@ def test_a_waiting_instance_exits_clean_on_sigterm(migrated_dsn: str) -> None:
             if proc is not None and proc.poll() is None:
                 proc.send_signal(signal.SIGTERM)
                 proc.wait(timeout=10)
+
+
+def _arm_line(migrated_dsn: str, **env: str) -> str:
+    """The priority decision arm's own startup line, from a real process."""
+    proc = _spawn(migrated_dsn, **env)
+    try:
+        assert _wait_for(lambda: _priority_decision_listeners(migrated_dsn) == 1)
+    finally:
+        if proc.poll() is None:
+            proc.send_signal(signal.SIGTERM)
+            proc.wait(timeout=10)
+    out = (proc.stderr.read() if proc.stderr else "") + (proc.stdout.read() if proc.stdout else "")
+    (line,) = [ln for ln in out.splitlines() if "priority decision arm listening" in ln]
+    return line
+
+
+def test_the_early_block_reaches_the_running_arm_and_its_switch_turns_it_off(migrated_dsn: str) -> None:
+    """The arm says what it was started with, so the wiring from the environment to the arm is what is read here,
+    not the entrypoint's own account of it."""
+    assert _arm_line(migrated_dsn).endswith("early block on")
+    assert _arm_line(migrated_dsn, LEG_READY_EARLY_BLOCK="off").endswith("early block off")

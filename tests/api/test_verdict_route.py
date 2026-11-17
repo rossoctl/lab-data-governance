@@ -967,3 +967,34 @@ def test_the_full_api_does_not_serve_the_verdict(api_server, configured_db) -> N
     r = httpx.get(f"http://{api_server.host}:{api_server.port}/enforce/v1/verdicts/{_TRACE}/{_EXCHANGE}",
                   timeout=5)
     assert r.status_code == 404
+
+
+# --- the early block ---------------------------------------------------------------
+
+
+@pytest.mark.parametrize("policy, state, verdict", [("block", "decided", "block"), ("allow", "pending", None)])
+def test_a_classifier_block_answers_before_label_lineage_and_an_allow_does_not(
+        serve, configured_db, monkeypatch, policy, state, verdict) -> None:
+    """What the service answers after leg-ready's priority decision arm has served the exchange (the arm is
+    driven here by hand; the notify that names the exchange has its own tests): with inherited labels on, the
+    request is classified and label lineage has not derived it. A block on the classification alone is a record like any other and the
+    service answers it, ``decided``, tier 0; anything else is not written, so the service has nothing to answer."""
+    from data_governance.processors.leg_ready import driver, priority_decision
+    from data_governance.risk.engine.observer import make_early_block_observer, make_risk_observer
+    from data_governance.risk.engine.opa import OpaDecision
+
+    class _Opa:
+        def evaluate(self, **_kwargs) -> OpaDecision:
+            return OpaDecision(risk_level="high", enforcement_type=policy, allowed_actions=[], explanation=None,
+                               triggered_rules=["DG-001"], confidence=0.5, policy_version="1")
+
+    monkeypatch.setattr(driver.risk_config, "inherited_labels_mode", lambda: "on")
+    _seed(configured_db, payload_hash="h-early", payload={"ssn": "123-45-6789"})
+    _classify(configured_db, "h-early", [])
+    arm = priority_decision.PriorityDecisionArm(make_risk_observer(_Opa()), early=make_early_block_observer(_Opa()))
+    arm.want(_IID)
+    arm.serve()
+    with serve() as (base, _app):
+        body = _get(base, 0).json()
+    assert body["state"] == state and body.get("verdict") == verdict
+    assert body.get("tier") == (0 if verdict else None)
