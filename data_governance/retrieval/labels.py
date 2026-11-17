@@ -43,6 +43,21 @@ kept as a chain whose first hop is a ``hop``, never dressed up as an origin. The
 origin hop carries an ``excerpt`` of the origin payload's projected text around
 the unit, so the reader sees the value in the company it was born in.
 
+**Crossings** (migration 0031). A crossing between conversations is an ordinary
+edge whose carrier is a leg of the earlier conversation and whose origin unit is
+that conversation's, so the walk above follows it into the earlier conversation
+down to the origin like any other edge, keyed by the origin unit, never by the
+value text, and keeps every origin a value has. Each hop after the origin says
+what the rows say of the edge into it: ``crossed`` (its ``label_crossed_edges``
+row: how surely the value is the label's at that hop, and whether it rests on
+more than one origin) and ``crossing`` (its ``label_crossings`` level: the rule's
+own level, on the hop the crossing reaches). Both are left out of the wire when
+absent (:func:`wire_dict`), so the response is byte-identical to the read before
+crossings whenever the 0031 tables hold no row for the hops read, or do not
+exist. Like the rest of this read it reads no switch: rows are shown as written
+(a trace derived while ``LABEL_CROSS_CONVERSATION`` was on keeps its crossings
+until it is derived again).
+
 **A fact, not a decision.** Nothing here says whether a carried label reached a
 risk decision — that depends on ``RISK_INHERITED_LABELS``, which this pod does not
 read. The risk record's ``classification_summary.<leg>.inherited`` (and
@@ -71,6 +86,7 @@ from data_governance.processors.classification.projection import project
 __all__ = [
     "CarriedLabelsView",
     "CarrierLeg",
+    "CrossedView",
     "EdgeLineage",
     "FoundLabelsView",
     "GetLegLabelsResult",
@@ -83,6 +99,7 @@ __all__ = [
     "MAX_ROUTE_COUNT",
     "get_leg_labels",
     "merge",
+    "wire_dict",
 ]
 
 #: Characters of the origin's projected text kept on each side of the unit.
@@ -112,6 +129,16 @@ class HopExcerpt:
 
 
 @dataclass(frozen=True)
+class CrossedView:
+    """How a value that rests on a crossing is known at a hop: ``level``
+    (``value_only`` | ``corroborated``) and whether more than one origin unit
+    crossed onto its span (``ambiguous``)."""
+
+    level: str
+    ambiguous: bool
+
+
+@dataclass(frozen=True)
 class LineageHop:
     """One payload a value sat on, on its way from the origin to the leg read.
     ``role`` is ``origin`` (the classifier found it here; ``text``/``start``/
@@ -119,7 +146,9 @@ class LineageHop:
     that payload, ``None`` when the edge has none) or ``here`` (the leg read).
     ``seq`` and caller/callee are ``None`` when the leg is gone. ``trace_id`` is
     always set; a hop in another trace names that trace. ``excerpt`` is set on
-    the origin hop when its payload is still stored."""
+    the origin hop when its payload is still stored. ``crossed`` and
+    ``crossing`` describe the edge into the hop when it rests on a crossing (see
+    the module docstring); ``None``, and left out of the wire, otherwise."""
 
     interaction_id: str
     leg_type: str
@@ -132,6 +161,19 @@ class LineageHop:
     end: int | None
     role: str
     excerpt: HopExcerpt | None = None
+    crossed: CrossedView | None = None
+    crossing: str | None = None
+
+
+#: The fields left out of the wire when ``None``: what a crossing adds to a hop.
+_ABSENT_WHEN_NONE = frozenset({"crossed", "crossing"})
+
+
+def wire_dict(items: list[tuple[str, Any]]) -> dict[str, Any]:
+    """``dataclasses.asdict``'s ``dict_factory`` for this read: a hop's
+    ``crossed`` and ``crossing`` are left out when ``None``, so a response
+    without crossings is the response before them, byte for byte."""
+    return {k: v for k, v in items if not (v is None and k in _ABSENT_WHEN_NONE)}
 
 
 @dataclass(frozen=True, order=True)
@@ -526,6 +568,15 @@ _HOPS_SQL = (
 
 _PAYLOADS_SQL = "SELECT content_hash, content FROM interaction_payloads WHERE content_hash = ANY(%s)"
 
+# What migration 0031 says of an edge a chain walked: its carried row (how the
+# value is known at its to leg) and its crossing row (the rule's level).
+_CROSSED_SQL = (
+    "SELECT e.id, x.level, x.ambiguous, c.level FROM unnest(%s::text[]) AS e(id) "
+    "LEFT JOIN label_crossed_edges x ON x.edge_id = e.id "
+    "LEFT JOIN label_crossings c ON c.edge_id = e.id "
+    "WHERE x.edge_id IS NOT NULL OR c.edge_id IS NOT NULL"
+)
+
 
 @dataclass(frozen=True)
 class _Side:
@@ -564,10 +615,12 @@ def _excerpt(text: str, start: int, end: int) -> HopExcerpt | None:
 
 
 def _hop(side: _Side, role: str, text: str | None, start: int | None, end: int | None,
-         excerpt: HopExcerpt | None = None) -> LineageHop:
+         excerpt: HopExcerpt | None = None,
+         mark: tuple[CrossedView | None, str | None] = (None, None)) -> LineageHop:
     return LineageHop(interaction_id=side.interaction_id, leg_type=side.leg_type, seq=side.seq,
                       trace_id=side.trace_id, caller=side.caller, callee=side.callee,
-                      text=text, start=start, end=end, role=role, excerpt=excerpt)
+                      text=text, start=start, end=end, role=role, excerpt=excerpt,
+                      crossed=mark[0], crossing=mark[1])
 
 
 @dataclass(frozen=True)
@@ -756,6 +809,10 @@ def _read_lineage(tx: db.Transaction, edge_ids: list[str]) -> dict[str, EdgeLine
         )
     origin_hashes = sorted({ends[path[-1]].from_payload_hash for path, complete in routes.values()
                             if complete and path[-1] in ends})
+    marks: dict[str, tuple[CrossedView | None, str | None]] = {}
+    if ends and _tables_exist(tx, ("label_crossed_edges", "label_crossings")):
+        for eid, level, ambiguous, crossing in tx.fetch_all(_CROSSED_SQL, (sorted(ends),)):
+            marks[eid] = (None if level is None else CrossedView(level, bool(ambiguous)), crossing)
     texts: dict[str, str] = {}
     if origin_hashes:
         for h, content in tx.fetch_all(_PAYLOADS_SQL, (origin_hashes,)):
@@ -777,7 +834,7 @@ def _read_lineage(tx: db.Transaction, edge_ids: list[str]) -> dict[str, EdgeLine
         for eid in reversed(path):
             e = ends[eid]
             hops.append(_hop(e.to, "here" if eid == start else "hop",
-                             e.matched_text, e.matched_start, e.matched_end))
+                             e.matched_text, e.matched_start, e.matched_end, mark=marks.get(eid, (None, None))))
         lineage[start] = EdgeLineage(hops, counts[start], carriers[start])
     return lineage
 

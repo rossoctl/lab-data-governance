@@ -1025,3 +1025,84 @@ def test_a_reclassified_cell_must_end_unlabelled_and_the_calibration_keeps_the_f
     assert premise(case, unlabelled) == []
     assert premise(case, labelled) == ["leg 1: the model DID label s1 (MRN); the case assumed it would not"]
     assert premise(case, labelled, (case.must_see, case.must_miss)) == []
+
+
+# --- the read: what the production read shows at a leg (cross run) --------------------------------------------
+
+READ = "from 1 · 2>3 vo · crossed vo"
+
+
+def test_the_stated_read_at_a_leg_is_compared_exactly():
+    case = _case(read={3: {"s1": frozenset({READ})}})
+    runs = _runs(EDGES)
+    runs["cross"].read = {3: {"s1": frozenset({READ})}}
+    assert judge(case, runs).status == "GREEN"
+    for got in (set(), {"from ?2 · 2>3 vo · crossed vo"}, {READ, "from 4 · 2>3 vo · crossed vo"}):
+        runs["cross"].read = {3: {"s1": frozenset(got)}}
+        out = judge(case, runs)
+        assert out.status == "RED" and out.reasons == [f"read at 3 s1: want [{READ}], got [{', '.join(sorted(got))}]"]
+    runs["cross"].read, runs["off"].read = {3: {"s1": frozenset({READ})}}, {}
+    assert judge(case, runs).status == "GREEN"      # the cross run's read only
+
+
+def test_a_wrong_read_is_red_even_for_a_pending_case():
+    case = _case(read={3: {"s1": frozenset({READ})}}, pending=WAITS)
+    runs = {"off": _obs("off", {("s1", 1, 2, None)}, "allow"), "conv": _obs("conv", EDGES, "block"),
+            "cross": _obs("cross", {("s1", 1, 2, None)}, "allow")}
+    runs["off"].edges = runs["cross"].edges
+    assert judge(case, runs).status == "RED"
+    runs["cross"].read = {3: {"s1": frozenset({READ})}}
+    assert judge(case, runs).status == "PENDING"
+
+
+@pytest.mark.parametrize("read, error", [
+    ("{3: {s1: [from 1]}}", "expect.read at leg 3 s1"),
+    ("{3: {s1: [from 1 · 2>3 strong · crossed vo]}}", "expect.read at leg 3 s1"),
+    ("{3: {s1: [from 1 · inherited, from 1 · inherited]}}", "expect.read at leg 3 s1"),
+    ("{3: {s1: []}}", "expect.read at leg 3 s1"),
+    ("{4: {s1: [from 1 · inherited]}}", "expect.read at leg 4: s1 is not on that leg"),
+    ("{9: {s1: [from 1 · inherited]}}", "expect.read names leg 9, which the line lacks"),
+    ("{3: {}}", "expect.read at leg 3: a mapping of units to their chains"),
+    ("{3: [s1]}", "expect.read at leg 3: a mapping of units to their chains"),
+    ("{3: {s1: {from 1 · inherited: ignored}}}", "expect.read at leg 3 s1"),
+    ("{3: {s1: from 1 · inherited}}", "expect.read at leg 3 s1"),
+    ("{3: {s1: [7]}}", "expect.read at leg 3 s1"),
+])
+def test_the_loader_refuses_a_read_it_cannot_compare(tmp_path: Path, read, error):
+    with pytest.raises(ValueError, match=re.escape(error)):
+        load_case(_yaml(tmp_path, f"expect:\n{VERDICT}  edges: []\n  read: {read}\n" + SEE_ALL))
+
+
+def test_the_loader_reads_a_read(tmp_path: Path):
+    case = load_case(_yaml(tmp_path, "expect:\n" + VERDICT + "  edges: []\n  read: {3: {s1: ['from 1 · 1>2 co · "
+                                     "2>3 vo · crossed vo ambiguous', from 2 · inherited]}}\n" + SEE_ALL))
+    assert case.read == {3: {"s1": frozenset({"from 1 · 1>2 co · 2>3 vo · crossed vo ambiguous", "from 2 · inherited"})}}
+
+
+def _hop(ix: str, role: str, crossing=None, crossed=None):
+    from data_governance.retrieval.labels import CrossedView, LineageHop
+    return LineageHop(interaction_id=ix, leg_type="request", seq=None, trace_id="t", caller=None, callee=None,
+                      text=None, start=None, end=None, role=role, crossing=crossing,
+                      crossed=None if crossed is None else CrossedView(*crossed))
+
+
+def test_the_read_is_stated_per_chain_from_the_production_shape():
+    from data_governance.retrieval.labels import GetLegLabelsResult, LabelOriginView, LabelView, LegLabelsView
+    from .engine import read_at
+
+    def origin(chains):
+        return LabelOriginView(origin_interaction_id="i1", origin_leg_type="request", origin_seq=None, caller=None,
+                               callee=None, unit_text=MRN, unit_value=MRN, match_kind="whole", origin_trace_id=None,
+                               chains=chains)
+    crossed = [_hop("i1", "origin"), _hop("i2", "hop", "corroborated", ("corroborated", False)),
+               _hop("i3", "here", "value_only", ("value_only", True))]
+    cut = [_hop("i2", "hop"), _hop("i3", "here")]
+    label = LabelView(text=MRN, start=0, end=7, entity_type="MRN", sensitivity_level=None, regulatory_tags=[],
+                      found_here=False, carried_in=[origin([crossed, cut])])
+    other = LabelView(text="nobody's", start=9, end=17, entity_type="MRN", sensitivity_level=None,
+                      regulatory_tags=[], found_here=True, carried_in=[])
+    result = GetLegLabelsResult(legs=[LegLabelsView(leg_type="request", payload_hash="h", seq=3, found=None,
+                                                    carried=None, labels=[label, other])])
+    leg_of_key = {(f"i{n}", "request"): n for n in (1, 2, 3)}
+    assert read_at(_case(), result, "request", leg_of_key) == {
+        "s1": frozenset({"from 1 · 1>2 co · 2>3 vo · crossed vo ambiguous", "from ?2 · inherited"})}

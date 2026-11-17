@@ -68,10 +68,10 @@ def v(off, conv, cross) -> dict:
 
 
 def case(id_, title, line, *, verdict, edges, must_see, must_miss, notes, cell, pending=None, authored=False,
-         units=UNITS, cross=(), evidence=None, marks=None, scopes=None, config=None, steps=None) -> None:
+         units=UNITS, cross=(), evidence=None, marks=None, read=None, scopes=None, config=None, steps=None) -> None:
     expect = {"verdict": verdict, "edges": edges}
     expect.update({k: val for k, val in (("cross", list(cross)), ("evidence", evidence), ("marks", marks),
-                                         ("pending", pending)) if val})
+                                         ("read", read), ("pending", pending)) if val})
     d = {"id": id_, "title": title, "cell": cell, "line": line, "units": units,
          **{k: val for k, val in (("scopes", scopes), ("config", config), ("steps", steps)) if val},
          "expect": expect,
@@ -80,7 +80,7 @@ def case(id_, title, line, *, verdict, edges, must_see, must_miss, notes, cell, 
          "notes": notes}
     if not verdict:
         del d["expect"]["verdict"]
-    for key in ("evidence", "marks"):
+    for key in ("evidence", "marks", "read"):
         if d["expect"].get(key):
             d["expect"][key] = {str(k): cells for k, cells in d["expect"][key].items()}
     p = CASES_DIR / id_
@@ -304,12 +304,14 @@ def across_cases() -> None:
          verdict=crossed_block, edges=sent_edges(0, THREE) + sent_edges(16, THREE), cross=k10_cross,
          evidence={**received(11, ["s1"]), **received(27, ["s1"]),
                    **every(range(38, 44), ["s1"], "crossed vo ambiguous")},
+         read={43: {"s1": ["from 7 · 11>38 vo · crossed vo ambiguous", "from 23 · 27>38 vo · crossed vo ambiguous"]}},
          must_see={**sent_premise(0, THREE), **sent_premise(16, THREE)}, must_miss=returned_premise(32, ["s1"]),
          authored=True,
          notes="Conversations 1 and 2 each send V2 the SSN (with the MRN and the birthdate); conversation 3 gets the SSN "
                "alone back. Identity is the origin, never the text: two edges, each value-only, and the result is "
                "ambiguous. It blocks (R5): what is uncertain is which conversation it came from. "
-               "The ambiguity is stated on every later leg too: the policy reads it at the flagged leg.")
+               "The ambiguity is stated on every later leg too: the policy reads it at the flagged leg. The labels read "
+               "at the flagged leg walks back across each crossing to both origins.")
 
     # K11a/b: event times are exact: leg 11 leaves at 09:00:16; conversation 2's partner answer (leg 22) at 38 s
     # plus the gap plus 0.1 s after 09:00:00. The retention of a time-based entity is 15 minutes (R9) and the
@@ -418,12 +420,14 @@ def across_cases() -> None:
          verdict=crossed_block, edges=sent_edges(0, THREE), cross=k17_cross,
          evidence={**received(11, THREE), **every(range(22, 28), THREE, "crossed co"),
                    **every(range(38, 44), ["s1"], "crossed vo")},
+         read={43: {"s1": ["from 7 · 11>22 co · 27>38 vo · crossed vo"]}},
          must_see=sent_premise(0, THREE), must_miss={**returned_premise(16, THREE), **returned_premise(32, ["s1"])},
          authored=True,
          notes="Conversation 1 to 2 by a corroborated crossing at V2 (as K1): V3 receives the three at leg 27 as "
                "crossed, corroborated, and holds them (what is registered includes a crossing's label). "
                "Conversation 3 gets the SSN alone back from V3: value-only. Along the path the weakest level "
-               "holds: the label reaches conversation 3 as crossed, value-only.")
+               "holds: the label reaches conversation 3 as crossed, value-only. The labels read at the flagged leg "
+               "walks back through both crossings to the origin in conversation 1, each with its rule level.")
 
     k18 = f"{sends(THREE)} ~10min> " + returns(THREE, answer=f"{SEEN} -")
     k18_cross = crossing(11, 22, THREE, "co")
@@ -485,7 +489,7 @@ def across_cases() -> None:
     case("K21", "the partner returns it in a later call", k21, cell="across/scope/same-conversation",
          units={"s1": "SSN"}, verdict=crossed_block, edges=["s1 4>5", "s1 5>6"], cross=k21_cross,
          evidence={5: {"s1": ["classified SSN", "inherited"]}, 6: {"s1": ["inherited"]},
-                   **every(range(10, 14), ["s1"], "crossed vo")},
+                   **every(range(10, 14), ["s1"], "crossed vo")}, read={13: {"s1": ["from 4 · 5>10 vo · crossed vo"]}},
          must_see={4: ["s1"], 5: ["s1"]}, must_miss={i: ["s1"] for i in (6, 10, 11, 12, 13)}, authored=True,
          notes="One conversation. T2 gets the SSN from V1 and sends it to V2, which echoes it inside the same call (5>6, "
                "the conversation's own edge). In a later call, from T3, V2 returns it again. V2 is persistent: the "

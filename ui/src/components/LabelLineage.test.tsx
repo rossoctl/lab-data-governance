@@ -132,6 +132,27 @@ describe('LabelLineage', () => {
     expect(setHover).not.toHaveBeenCalled();
   });
 
+  it('names the crossing a hop rests on and how the value is known there, and nothing on other hops', () => {
+    const earlier = { ...BORN, trace_id: 'aaaa1111bbbb2222' };
+    const crossed = { level: 'value_only' as const, ambiguous: true };
+    const label = { ...PID, carried_in: [{ ...PID.carried_in[0], chains: [[earlier,
+      { ...DIRECT[1], crossing: 'corroborated' as const, crossed }, { ...DIRECT[2], crossed }]] }] };
+    render(<MemoryRouter><LabelLineage label={label} traceId={T} /></MemoryRouter>);
+    const rows = screen.getAllByRole('listitem');
+    expect(within(rows[0]).queryByTestId('crossing')).toBeNull();
+    expect(within(rows[0]).queryByTestId('crossed')).toBeNull();
+    expect(within(rows[1]).getByTestId('crossing')).toHaveTextContent('crossing · corroborated');
+    expect(within(rows[1]).getByTestId('crossed')).toHaveTextContent('crossed, value-only, ambiguous');
+    expect(within(rows[2]).queryByTestId('crossing')).toBeNull();
+    expect(within(rows[2]).getByTestId('crossed')).toHaveTextContent('crossed, value-only, ambiguous');
+  });
+
+  it('shows no crossing on a chain the read sends without one', () => {
+    render(<MemoryRouter><LabelLineage label={PID} traceId={T} /></MemoryRouter>);
+    expect(screen.queryAllByTestId('crossing')).toHaveLength(0);
+    expect(screen.queryAllByTestId('crossed')).toHaveLength(0);
+  });
+
   it('never says why', () => {
     render(<MemoryRouter><LabelLineage label={PID} traceId={T} /></MemoryRouter>);
     expect(screen.getByTestId('label-lineage')).not.toHaveTextContent(/why|caused|because/i);

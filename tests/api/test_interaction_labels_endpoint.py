@@ -116,6 +116,22 @@ def test_labels_wire_shape(seeded, api_server):
     assert (opid["entity_type"], opid["found_here"], opid["carried_in"]) == ("OPID", True, [])
 
 
+def test_a_hop_that_rests_on_a_crossing_carries_its_level(seeded, configured_db, api_server):
+    # Additive only: the two keys appear on the hop they describe and nowhere else.
+    with psycopg.connect(configured_db) as conn:
+        conn.execute("INSERT INTO label_crossed_edges (edge_id, trace_id, level, ambiguous) "
+                     "VALUES ('edge-1', %s, 'value_only', true)", (_TID,))
+        conn.execute("INSERT INTO label_crossings (crossing_id, trace_id, interaction_id, leg_type, value_hash, "
+                     "conversations, edge_id, occurrence_id, level) "
+                     "VALUES ('c-1', %s, %s, 'request', 'vh', 1, 'edge-1', 'occ', 'corroborated')", (_TID, _IX))
+        conn.commit()
+    resp = httpx.get(f"{_base_url(api_server)}/api/traces/{seeded}/interactions/{_IX}/labels")
+    (origin,) = resp.json()["legs"][0]["labels"][0]["carried_in"]
+    born, here = origin["chains"][0]
+    assert "crossed" not in born and "crossing" not in born
+    assert (here["crossed"], here["crossing"]) == ({"level": "value_only", "ambiguous": True}, "corroborated")
+
+
 def test_a_route_count_too_large_for_json_saturates_and_the_response_encodes(configured_db, api_server):
     # 15,000 diamonds in series: each holding p<i> reaches p<i+1> directly and
     # through m<i> (an LLM round trip, say), so the routes double at every step

@@ -26,6 +26,9 @@ the shipped cases; it loads, ``test_judge`` loads it), every key shown:
                                                   # [ambiguous]; a crossed label drawn at a cell not stated is wrong
       marks: {10: [incomplete payload_bytes]}     # at a leg (cross run): capped N, incomplete LIMIT; every mark drawn
                                                   # must be stated
+      read: {11: {s1: [from 3 · 3>10 vo · crossed vo]}}   # at a leg, per unit, what the production labels read shows
+                                                  # (cross run): one line per chain, its origin leg, each crossing
+                                                  # with its rule level, how the value is known at the leg read
       pending:                                    # optional, for a case this branch cannot pass yet: exactly what it
         reason: one sentence                      # gets wrong; any other difference, or none, is red
         missing: [s1 3>10 vo]                     # expected edges the cross run did not draw
@@ -76,6 +79,7 @@ _EDGE = re.compile(rf"(s\d+) (\d+)>(\d+){_LEVEL_OR_NONE}")
 _KIND = re.compile(rf"classified (\S+)|inherited|crossed ({'|'.join(LEVELS)})( ambiguous)?")
 _MARK = re.compile(rf"capped (0|[1-9]\d*)|incomplete ({'|'.join(LIMITS)})")
 _DECISION = re.compile(r"(?!(?:tier|late)\b)\S+( tier [012])?( late)?")
+_READ = re.compile(rf"from \d+( · \d+>\d+ ({'|'.join(LEVELS)}))* · (inherited|crossed ({'|'.join(LEVELS)})( ambiguous)?)")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -113,6 +117,7 @@ class Case:
     marks: dict[int, frozenset[str]] = dataclasses.field(default_factory=dict)
     scopes: dict[str, str] = dataclasses.field(default_factory=dict)
     config: dict[str, int] = dataclasses.field(default_factory=dict)
+    read: dict[int, dict[str, frozenset[str]]] = dataclasses.field(default_factory=dict)   # leg -> unit -> chains
     steps: tuple[tuple, ...] = ()            # ("send", legs) | ("drain",) | ("derive", n) | ("reclassify", ...) | ("cross", on/off)
 
     @property
@@ -305,6 +310,28 @@ def _marks(name: str, line: cl.CaseLine, d: dict | None) -> dict[int, frozenset[
     return out
 
 
+def _read(name: str, line: cl.CaseLine, d: dict | None) -> dict[int, dict[str, frozenset[str]]]:
+    """leg -> unit -> the chains the read shows there, each once: ``from ORIGIN · A>B LEVEL ... · KNOWN``."""
+    wire = _wire(line)
+    out: dict[int, dict[str, frozenset[str]]] = {}
+    for k, cells in (d or {}).items():
+        leg = wire.get(int(k))
+        if leg is None or int(k) in out:
+            raise ValueError(f"{name}: expect.read names leg {k}, which the line lacks or which it names twice")
+        if not isinstance(cells, dict) or not cells:
+            raise ValueError(f"{name}: expect.read at leg {k}: a mapping of units to their chains, got {cells!r}")
+        out[int(k)] = {}
+        for unit, chains in cells.items():
+            if unit not in leg.units:
+                raise ValueError(f"{name}: expect.read at leg {k}: {unit} is not on that leg")
+            if (not isinstance(chains, list) or not chains or not all(isinstance(c, str) for c in chains)
+                    or len(set(chains)) != len(chains) or not all(_READ.fullmatch(c) for c in chains)):
+                raise ValueError(f"{name}: expect.read at leg {k} {unit}: chains, each once, as \"from 3 · 3>10 vo · "
+                                 f"crossed vo\" (crossings optional; inherited or crossed vo|co [ambiguous]), got {chains!r}")
+            out[int(k)][unit] = frozenset(chains)
+    return out
+
+
 def _scopes(name: str, line: cl.CaseLine, d: dict | None) -> dict[str, str]:
     parties = {p for leg in line.legs for p in (leg.frm, leg.to)}
     if d is not None and not isinstance(d, dict):
@@ -394,7 +421,7 @@ class _StrictLoader(yaml.SafeLoader):
 
 
 TOP_KEYS = {"id", "title", "cell", "line", "units", "scopes", "config", "steps", "expect", "classifier", "notes"}
-EXPECT_KEYS = {"verdict", "edges", "cross", "evidence", "marks", "pending"}
+EXPECT_KEYS = {"verdict", "edges", "cross", "evidence", "marks", "read", "pending"}
 CLASSIFIER_KEYS = {"must_see", "must_miss", "authored"}
 
 
@@ -448,7 +475,7 @@ def load_case(case_dir: Path) -> Case:
         line_text=d["line"], line=line, units={u: t[0] for u, t in types.items()}, accepts=accepts,
         verdict=verdict, edges=edges, pending=pending, must_see=must_see, must_miss=must_miss, authored=authored,
         notes=d.get("notes", ""), dir=case_dir, cross=frozenset(cross), evidence=evidence,
-        marks=_marks(name, line, expect.get("marks")), scopes=_scopes(name, line, d.get("scopes")),
+        marks=_marks(name, line, expect.get("marks")), read=_read(name, line, expect.get("read")), scopes=_scopes(name, line, d.get("scopes")),
         config=_config(name, d.get("config")), steps=steps,
     )
     render(case.id, case.units, case.line)  # the renderer's refusals fire at load, not at run

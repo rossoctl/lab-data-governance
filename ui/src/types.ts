@@ -182,7 +182,17 @@ export interface LineageHop {
   end: number | null;
   role: 'origin' | 'hop' | 'here';
   excerpt: { text: string; start: number; end: number } | null;
+  /**
+   * Set when the edge into this hop rests on a crossing between conversations: how
+   * the value is known here and whether it rests on more than one origin. Absent otherwise.
+   */
+  crossed?: { level: CrossedLevel; ambiguous: boolean };
+  /** Set on the hop a crossing reaches: the crossing rule's own level. Absent otherwise. */
+  crossing?: CrossedLevel;
 }
+
+/** How surely a value that crossed between conversations is the label's: one identifier alone, or with more of its record. */
+export type CrossedLevel = 'value_only' | 'corroborated';
 
 /**
  * One label on one span of a leg's payload: `found_here` when the classifier

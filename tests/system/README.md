@@ -66,6 +66,11 @@ The keys of a case across conversations (`cases.py` shows each; R1–R10 are the
 - **`expect.marks`**: at a leg, `capped 4` (a value whose edges were capped, and how many other conversations hold it) or `incomplete payload_bytes`
   (a limit that cut the result), read from `label_crossings` (its count, or its `cut`). Every mark drawn
   must be stated.
+- **`expect.read`**: at a leg, per unit, what the production labels read (`retrieval.get_leg_labels`, the API's
+  and the UI's source) shows in the cross run, one line per chain: `from 7 · 11>22 co · 27>38 vo · crossed vo` (the
+  origin leg, `from ?11` when the chain stops short of it; each hop a crossing reaches, with the crossing's rule level;
+  how the value is known at the leg read, `inherited` or `crossed L [ambiguous]`). Compared exactly, as a set; a
+  stated read is never pending. Two origin units at one leg (two spans of one origin payload) would read as one line.
 - **`steps`**: `send: 17-32` (legs, a range in its own direction: `32-1` is reversed), `drain` (every
   drain on from where it stopped), `derive: 2` (the conversation queued again through the production
   correction queue, `dg_queue_label_trace`), `reclassify: {7: [s1]}`, `cross: 'on'` (the cross-conversation

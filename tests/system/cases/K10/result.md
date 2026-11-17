@@ -110,7 +110,9 @@ verdict at 43: expected off=allow / conv=allow / cross=block, observed off=allow
 | 47 | L>A | PUBLIC  | — | — |
 | 48 | A>U | PUBLIC  | — | — |
 
+Read (cross run): leg 43 s1 [from 23 · 27>38 vo · crossed vo ambiguous, from 7 · 11>38 vo · crossed vo ambiguous]
+
 Risk observer calls: 55
 
-**Notes.** Conversations 1 and 2 each send V2 the SSN (with the MRN and the birthdate); conversation 3 gets the SSN alone back. Identity is the origin, never the text: two edges, each value-only, and the result is ambiguous. It blocks (R5): what is uncertain is which conversation it came from. The ambiguity is stated on every later leg too: the policy reads it at the flagged leg.
+**Notes.** Conversations 1 and 2 each send V2 the SSN (with the MRN and the birthdate); conversation 3 gets the SSN alone back. Identity is the origin, never the text: two edges, each value-only, and the result is ambiguous. It blocks (R5): what is uncertain is which conversation it came from. The ambiguity is stated on every later leg too: the policy reads it at the flagged leg. The labels read at the flagged leg walks back across each crossing to both origins.
 

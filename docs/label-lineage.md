@@ -240,7 +240,10 @@ the leg, shortest first, `route_count`, how many routes there are in all (satura
 JavaScript's largest safe integer: a count at the cap means at least that many), and `carriers`, every
 leg on any of them (the origin and this leg included). The walk crosses into
 other traces through `from_trace_id` / `origin_trace_id` (a crossing writes them; the read
-follows them). A route that cannot reach the origin ends at the nearest edge with no edge of its own
+follows them). Two fields say how sure a route is, and both are left out when absent: `crossing`,
+on the hop where a crossing lands, is the level the rule gave that crossing (`value_only` or
+`corroborated`); `crossed`, on a hop the label reaches only through a crossing, is its level there
+and whether it is `ambiguous`. A route that cannot reach the origin ends at the nearest edge with no edge of its own
 (where the walk meets itself only when every route circles; on such data, a fault, the count and the
 carriers are not exact) and is kept as a chain whose first hop is
 a `hop`, never shown as the origin. The origin hop carries an

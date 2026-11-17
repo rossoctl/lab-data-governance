@@ -38,6 +38,10 @@ expect:
     '13':
       s1:
       - crossed vo
+  read:
+    '13':
+      s1:
+      - from 4 · 5>10 vo · crossed vo
 classifier:
   must_see:
     '4':

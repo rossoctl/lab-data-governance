@@ -12,6 +12,7 @@ pin what only the SQL decides: pinning to the current payload, where the origin'
 
 from __future__ import annotations
 
+import dataclasses
 import json
 
 import psycopg
@@ -457,6 +458,100 @@ def test_a_chain_crosses_into_the_origin_trace_and_stops_there(two_traces) -> No
 def test_the_one_hop_cross_trace_chain(two_traces) -> None:
     (origin,) = _legs(retrieval.get_leg_labels(_LATER, "ix-x"))["request"].labels[0].carried_in
     assert [(h.seq, h.trace_id) for h in origin.chains[0]] == [(5, _EARLIER), (12, _LATER)]
+
+
+# The same rows as a crossing the derivation drew (migration 0031): x-from-o is the
+# crossing, its rule level corroborated; the value is known value-only and
+# ambiguous at X and at Y (another origin weakened it; the rows say so, the read
+# only shows them).
+
+
+def _crossed(conn, eid: str, trace: str, level: str, ambiguous: bool, crossing: str | None = None) -> None:
+    conn.execute("INSERT INTO label_crossed_edges (edge_id, trace_id, level, ambiguous) VALUES (%s, %s, %s, %s)",
+                 (eid, trace, level, ambiguous))
+    if crossing is not None:
+        conn.execute(
+            "INSERT INTO label_crossings (crossing_id, trace_id, interaction_id, leg_type, value_hash, "
+            "conversations, edge_id, occurrence_id, level) VALUES (%s, %s, 'ix-x', 'request', 'vh', 1, %s, 'occ', %s)",
+            (f"c-{eid}", trace, eid, crossing))
+
+
+def _chain_marks(interaction: str) -> list[tuple]:
+    (origin,) = _legs(retrieval.get_leg_labels(_LATER, interaction))["request"].labels[0].carried_in
+    return [(h.seq, h.role, h.crossing, h.crossed) for h in origin.chains[0]]
+
+
+def test_a_hop_shows_the_crossing_s_level_and_how_the_value_is_known_there(two_traces, configured_db) -> None:
+    with psycopg.connect(configured_db) as conn:
+        _crossed(conn, "x-from-o", _LATER, "value_only", True, crossing="corroborated")
+        _crossed(conn, "y-from-x", _LATER, "value_only", True)
+        conn.commit()
+    vo = labels.CrossedView(level="value_only", ambiguous=True)
+    assert _chain_marks("ix-y") == [(5, "origin", None, None), (12, "hop", "corroborated", vo), (19, "here", None, vo)]
+    assert _chain_marks("ix-x") == [(5, "origin", None, None), (12, "here", "corroborated", vo)]
+
+
+def test_a_crossing_edge_without_a_carried_row_still_shows_its_level(two_traces, configured_db) -> None:
+    # A unit that also reaches the leg inside its conversation is read as inherited there (no carried row);
+    # the crossing still shows the rule's level.
+    with psycopg.connect(configured_db) as conn:
+        conn.execute(
+            "INSERT INTO label_crossings (crossing_id, trace_id, interaction_id, leg_type, value_hash, "
+            "conversations, edge_id, occurrence_id, level) VALUES ('c', %s, 'ix-x', 'request', 'vh', 1, "
+            "'x-from-o', 'occ', 'value_only')", (_LATER,))
+        conn.commit()
+    assert _chain_marks("ix-y") == [(5, "origin", None, None), (12, "hop", "value_only", None), (19, "here", None, None)]
+
+
+def test_a_relay_through_two_crossings_marks_every_hop_with_its_own_rows(configured_db) -> None:
+    # K17's shape: the origin O in conversation 1; A in conversation 2 is reached by a corroborated
+    # crossing and B carries it on; C in conversation 3 is reached by a value-only crossing and D,
+    # the leg read, carries it on. Each hop shows the rows of the edge into it, none another's.
+    t1, t2, t3 = "trace-1", "trace-2", "trace-3"
+    with psycopg.connect(configured_db) as conn:
+        conn.execute(
+            "INSERT INTO entities (id, kind, natural_key, display_name, detected_from, original_seq) "
+            "VALUES ('e-a', 'agent', 'nk-a', 'agent-a', 'span-attr', 1), "
+            "('e-b', 'tool', 'nk-b', 'tool-b', 'span-attr', 1)"
+        )
+        legs = {"o": (t1, 5), "a": (t2, 12), "b": (t2, 19), "c": (t3, 26), "d": (t3, 33)}
+        for name, (trace, seq) in legs.items():
+            _interaction(conn, f"ix-{name}", trace, "e-a", "e-b", [("request", f"{name}-req", seq)])
+        leg = {name: (f"ix-{name}", "request", f"{name}-req") for name in legs}
+        ssn = dict(origin=leg["o"], unit=(3, 14), entity_type="SSN", tags=["PII"], level="RESTRICTED",
+                   value="123-45-6789", span=(0, 11))
+        for eid, to, frm, from_trace in (("a-from-o", "a", "o", t1), ("b-from-a", "b", "a", None),
+                                         ("c-from-b", "c", "b", t2), ("d-from-c", "d", "c", None)):
+            trace, seq = legs[to]
+            _edge2(conn, eid=eid, trace=trace, to=leg[to], frm=leg[frm], from_trace=from_trace,
+                   origin_trace=t1, seq=seq, **ssn)
+        for eid, trace, level in (("a-from-o", t2, "corroborated"), ("b-from-a", t2, "corroborated"),
+                                  ("c-from-b", t3, "value_only"), ("d-from-c", t3, "value_only")):
+            _crossed(conn, eid, trace, level, False,
+                     crossing=level if eid in ("a-from-o", "c-from-b") else None)
+        conn.commit()
+    (origin,) = _legs(retrieval.get_leg_labels(t3, "ix-d"))["request"].labels[0].carried_in
+    co, vo = labels.CrossedView("corroborated", False), labels.CrossedView("value_only", False)
+    assert [(h.seq, h.trace_id, h.role, h.crossing, h.crossed) for h in origin.chains[0]] == [
+        (5, t1, "origin", None, None), (12, t2, "hop", "corroborated", co), (19, t2, "hop", None, co),
+        (26, t3, "hop", "value_only", vo), (33, t3, "here", None, vo)]
+
+
+def test_without_crossing_rows_the_wire_shape_is_today_s(two_traces, configured_db) -> None:
+    # Byte identity holds per "no rows in the 0031 tables": the two keys are left out, not sent as null;
+    # and the same read without the 0031 tables at all.
+    def wire() -> str:
+        return json.dumps([dataclasses.asdict(leg, dict_factory=labels.wire_dict)
+                           for leg in retrieval.get_leg_labels(_LATER, "ix-y").legs])
+    now = wire()
+    assert '"crossed"' not in now and '"crossing"' not in now
+    hop_keys = set(json.loads(now)[0]["labels"][0]["carried_in"][0]["chains"][0][0])
+    assert hop_keys == {"interaction_id", "leg_type", "seq", "trace_id", "caller", "callee", "text", "start", "end",
+                        "role", "excerpt"}
+    with psycopg.connect(configured_db) as conn:
+        conn.execute("DROP TABLE label_crossed_edges, label_crossings")
+        conn.commit()
+    assert wire() == now
 
 
 # Guards: edges run from earlier to later seq, so a cycle cannot exist; the walk
