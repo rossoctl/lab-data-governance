@@ -1,0 +1,77 @@
+id: K21
+title: the partner returns it in a later call
+cell: across/scope/same-conversation
+line: U>A[-], A>T2[-], T2>V1[-], V1>T2[s1 -], T2>V2[s1 -], V2>T2[s1@subject -], T2>A[-], A>T3[-], T3>V2[-], V2>T3[s1@subject
+  -], T3>A[s1@subject -], A>T4[s1@subject -], T4>V4[s1@subject -]⚑, V4>T4[-], T4>A[-], A>U[-]
+units:
+  s1: SSN
+expect:
+  verdict:
+    'off': allow
+    conv: allow
+    cross: block
+  edges:
+  - s1 4>5
+  - s1 5>6
+  cross:
+  - s1 5>10 vo
+  - s1 10>11
+  - s1 11>12
+  - s1 12>13
+  evidence:
+    '5':
+      s1:
+      - classified SSN
+      - inherited
+    '6':
+      s1:
+      - inherited
+    '10':
+      s1:
+      - crossed vo
+    '11':
+      s1:
+      - crossed vo
+    '12':
+      s1:
+      - crossed vo
+    '13':
+      s1:
+      - crossed vo
+  pending:
+    reason: 'no crossing on this branch: the crossing core draws the crossing and the edges that rest on it; the level on
+      its way carries crossed and its level to every later leg and into the policy input, so the cross run blocks at the flagged
+      leg. The off and conv runs already match'
+    missing:
+    - s1 5>10 vo
+    - s1 10>11
+    - s1 11>12
+    - s1 12>13
+    verdict:
+    - cross
+    evidence:
+    - 10
+    - 11
+    - 12
+    - 13
+classifier:
+  must_see:
+    '4':
+    - s1
+    '5':
+    - s1
+  must_miss:
+    '6':
+    - s1
+    '10':
+    - s1
+    '11':
+    - s1
+    '12':
+    - s1
+    '13':
+    - s1
+  authored: true
+notes: 'One conversation. T2 gets the SSN from V1 and sends it to V2, which echoes it inside the same call (5>6, the conversation''s
+  own edge). In a later call, from T3, V2 returns it again. V2 is persistent: the same mechanism links the two calls (R7),
+  one edge, value-only; inside one call the existing edge stands alone, never a second row (5>6 is not drawn again as a crossing).'

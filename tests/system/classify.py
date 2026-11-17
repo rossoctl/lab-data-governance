@@ -83,6 +83,19 @@ def check_authored(case, renderer, recorded: dict[str, dict[str, Any]] | None) -
                          f"run `.venv-classif/bin/python -m tests.system.calibrate {case.dir}`")
 
 
+def recorded_findings(case, renderer) -> dict[int, list[tuple[str, str]]]:
+    """leg -> the findings ``findings.json`` holds for its payload, as (type, text): what every run replays. Read
+    without a run, so a held case's premise and its stated types (R8) are checked too."""
+    from data_governance.processors.classification import projection
+
+    by_text = load(case.dir)._by_text
+    out: dict[int, list[tuple[str, str]]] = {}
+    for r in renderer.rendered:
+        text = projection.project(r.content)
+        out[r.leg.index] = [(t, text[a:b]) for a, b, t in by_text.get(text, [])]
+    return out
+
+
 def subtract(by_text: dict[str, list[list]], text: str, values: set[str]) -> int:
     """Remove every annotation whose span is one of *values*; returns how many."""
     before = len(by_text[text])

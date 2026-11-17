@@ -1,0 +1,46 @@
+id: K13
+title: a persistent agent, the value arrives after it left
+cell: across/rule/interval
+line: U>A[-], A>L[-], L>A[s1@subject -], A>T2[s1@subject -], T2>V2[s1@subject -]⚑, V2>T2[-], T2>A[-], A>U[-] ~1min> U>A[s1
+  -], A>U[-]
+units:
+  s1: SSN
+  s2: MRN
+  s3: DOB
+  s4: DIS
+scopes:
+  A: persistent
+steps:
+- send: 9-10
+- drain
+- send: 1-8
+- drain
+expect:
+  verdict:
+    'off': allow
+    conv: allow
+    cross: allow
+  edges: []
+  evidence:
+    '4':
+      s1: []
+    '9':
+      s1:
+      - classified SSN
+classifier:
+  must_see:
+    '9':
+    - s1
+  must_miss:
+    '3':
+    - s1
+    '4':
+    - s1
+    '5':
+    - s1
+  authored: true
+notes: 'Agent A is declared persistent and serves two users. In user B''s conversation (legs 1-8) the LLM writes a number
+  equal to user A''s SSN, unlabelled, and A sends it on at 09:00:06. User A gives A that SSN at 09:01:16 (leg 9). A''s legs
+  arrive first, so the occurrence exists when B''s leg is matched, but it is valid only after 09:01:16 (R1): no crossing,
+  allow. Green on this branch only because nothing crosses at all here; the case means something once the crossing core exists,
+  and its deliberate break (the valid interval ignored) must turn it red.'

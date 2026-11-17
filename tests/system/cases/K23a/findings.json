@@ -1,0 +1,73 @@
+{
+ "model_dir": "classification/model/20260304",
+ "model_version": 2,
+ "calibrated_at": "2026-11-13T07:30:29+00:00",
+ "by_text": {
+  "{\"note\": \"please process at the usual priority\"}": [],
+  "{\"note\": \"no further action needed\"}": [],
+  "{\"note\": \"forwarded for fulfilment\"}": [],
+  "{\"note\": \"acknowledged\"}": [],
+  "{\"dob\": \"1961-03-14\", \"note\": \"please process at the usual priority\", \"ssn\": \"123-45-6789\"}": [
+   [
+    9,
+    19,
+    "DOB"
+   ],
+   [
+    78,
+    89,
+    "SSN"
+   ]
+  ],
+  "{\"dob\": \"1961-03-14\", \"note\": \"no further action needed\", \"ssn\": \"123-45-6789\"}": [
+   [
+    9,
+    19,
+    "DOB"
+   ],
+   [
+    66,
+    77,
+    "SSN"
+   ]
+  ],
+  "{\"dob\": \"1961-03-14\", \"note\": \"forwarded for fulfilment\", \"ssn\": \"123-45-6789\"}": [
+   [
+    9,
+    19,
+    "DOB"
+   ],
+   [
+    66,
+    77,
+    "SSN"
+   ]
+  ],
+  "{\"dob\": \"1961-03-14\", \"note\": \"acknowledged\", \"ssn\": \"123-45-6789\"}": [
+   [
+    9,
+    19,
+    "DOB"
+   ],
+   [
+    54,
+    65,
+    "SSN"
+   ]
+  ],
+  "{\"dob\": \"1961-03-14\", \"note\": \"batch job window 02:00\", \"ssn\": \"123-45-6789\"}": [
+   [
+    9,
+    19,
+    "DOB"
+   ],
+   [
+    64,
+    75,
+    "SSN"
+   ]
+  ],
+  "{\"note\": \"routine refill request received\"}": []
+ },
+ "authored": null
+}

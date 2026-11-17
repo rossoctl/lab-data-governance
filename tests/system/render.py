@@ -31,6 +31,7 @@ from typing import Any
 from . import caseline as cl
 
 NAMESPACE = "lab"
+MODEL = "qwen2.5:7b"
 T0 = dt.datetime(2026, 11, 8, 9, 0, 0, tzinfo=dt.timezone.utc)
 
 # One value per label; a second unit with the same label takes the next value. NAME and PN share names: a
@@ -103,30 +104,41 @@ class Renderer:
         self.units = units                      # s1 -> "MRN"
         self.values = assign_values(case_id, units)
         self.rows: list[dict[str, Any]] = []
+        self.row_legs: list[int] = []           # the line leg each row of ``rows`` puts on the wire
         self.rendered: list[Rendered] = []
         self._n = 0
+        self._leg = 0
 
     def content_of(self, leg: cl.Leg) -> tuple[dict[str, Any], dict[str, str]]:
+        """The payload's JSON: its elements as keys of one object, a record's as keys of its own object in the
+        array under ``records``."""
         body: dict[str, Any] = {}
+        records: list[dict[str, Any]] = []
         text_values: dict[str, str] = {}
-        fill = 0
 
-        def put(key: str, value: str) -> None:
-            if key.startswith("note"):
-                raise ValueError(f"{self.case_id} leg {leg.index}: key {key!r} is reserved for filler")
-            if key in body:
+        def put(obj: dict[str, Any], key: str, value: str) -> None:
+            if key.startswith("note") or key == "records":
+                raise ValueError(f"{self.case_id} leg {leg.index}: key {key!r} is reserved")
+            if key in obj:
                 raise ValueError(f"{self.case_id} leg {leg.index}: two values under the key {key!r}; give one an @key")
-            body[key] = value
+            obj[key] = value
 
         for e in leg.elements:
+            if e.record is None:
+                obj = body
+            else:
+                records.extend({} for _ in range(e.record + 1 - len(records)))
+                obj = records[e.record]
             if e.is_filler:
-                body[f"note{fill or ''}"] = FILLER[(leg.index + fill) % len(FILLER)]
-                fill += 1
+                fill = sum(k.startswith("note") for k in obj)
+                obj[f"note{fill or ''}"] = FILLER[(leg.index + fill) % len(FILLER)]
             else:
                 if e.name not in self.units:
                     raise ValueError(f"{self.case_id} leg {leg.index}: unit {e.name} is not declared in units")
-                put(e.key or KEYS[self.units[e.name]], self.values[e.name])
+                put(obj, e.key or KEYS[self.units[e.name]], self.values[e.name])
                 text_values[e.name] = self.values[e.name]
+        if records:
+            body["records"] = records
         return body, text_values
 
     # --- ids ---------------------------------------------------------------
@@ -142,6 +154,7 @@ class Renderer:
              self_id: str, attrs: dict[str, Any]) -> None:
         a = {"lineage.self.id": self_id, "lineage.self.namespace": NAMESPACE, **attrs}
         ts = at.isoformat()
+        self.row_legs.append(self._leg)
         self.rows.append({
             "trace_id": trace_id, "span_id": span_id, "parent_id": parent, "kind": kind,
             "name": self_id, "service_name": "authbridge",
@@ -162,6 +175,19 @@ class Renderer:
     @staticmethod
     def _sidecar(party: str) -> bool:
         return cl.kind_of(party) in ("agent", "tool")
+
+    def natural_key(self, party: str) -> str:
+        """The ``entities.natural_key`` the sidecar derivation gives *party*: a pod (agent, tool) by its namespace
+        and self id, an LLM by its host and model, a partner (a service) by its host, the user as the anonymous
+        client it reaches the agent as."""
+        k = cl.kind_of(party)
+        if k in ("agent", "tool"):
+            return f"{k}:{NAMESPACE}/{party.lower()}"
+        if k == "llm":
+            return f"llm:{self._peer_host(party)}/{MODEL}"
+        if k == "external":
+            return f"service:{self._peer_host(party)}"
+        return "client:(unknown)"
 
     def _peer_host(self, to: str) -> str:
         k = cl.kind_of(to)
@@ -188,7 +214,7 @@ class Renderer:
         if protocol == "a2a":
             return {"a2a.method": "message/send"}
         if protocol == "inference":
-            return {"inference.model": "qwen2.5:7b"}
+            return {"inference.model": MODEL}
         return {"http.method": "POST", "url.path": "/intake", "url.scheme": "http"}
 
     def _serving(self, leg: cl.Leg, open_: list["Renderer._Open"]) -> "Renderer._Open | None":
@@ -254,6 +280,7 @@ class Renderer:
             for leg in legs:
                 if leg.invisible:
                     continue
+                self._leg = leg.index
                 body, values = self.content_of(leg)
                 answering = [ex for ex in open_ if ex.frm == leg.to and ex.to == leg.frm]
                 if len(answering) > 1:
@@ -295,6 +322,14 @@ class Renderer:
                                  + ", ".join(f"{ex.leg.index} {ex.leg.label()}" for ex in open_)
                                  + "; write each answer on the line")
         return self.rows
+
+    def rows_of(self, legs: tuple[int, ...]) -> list[dict[str, Any]]:
+        """The rows of *legs*, leg by leg in the order given (a step sends them)."""
+        return [row for i in legs for row, leg in zip(self.rows, self.row_legs) if leg == i]
+
+    def trace_of(self, conversation: int) -> str:
+        """The trace id of conversation *conversation* (1-based)."""
+        return self._trace_id(conversation - 1)
 
 
 def _answer_only(leg: cl.Leg) -> bool:

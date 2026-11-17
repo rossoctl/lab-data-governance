@@ -10,8 +10,9 @@ units:
   s4: DIS
 expect:
   verdict:
-    'on': block
     'off': block
+    conv: block
+    cross: block
   edges:
   - s1 1>2
   - s1 2>3

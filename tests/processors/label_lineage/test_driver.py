@@ -4,11 +4,15 @@ stale arm, and recompute requests written only when a summary changed."""
 
 from __future__ import annotations
 
+import json
+from collections import Counter
+
 import psycopg
 from psycopg.types.json import Jsonb
 
 from data_governance import db, retrieval
-from data_governance.label_lineage import find
+from data_governance.label_lineage import find, fold
+from data_governance.processors.data_lineage import memory
 from data_governance.processors.data_lineage import driver as data_lineage
 from data_governance.processors.label_lineage import driver
 from tests.label_lineage.fixtures import egress, legs_to, trace_input
@@ -329,3 +333,26 @@ def test_a_derivation_wakes_leg_ready(configured_db: str) -> None:
         driver.drain(0, OFF)
         got = list(listener.notifies(timeout=2, stop_after=1))
     assert got and all(n.channel == driver.NOTIFY_CHANNEL for n in got)
+
+
+def _edge_rows(dsn: str) -> Counter:
+    return Counter(_q(dsn, "SELECT from_interaction_id, from_leg_type::text, to_interaction_id, to_leg_type::text, "
+                           "entity_type, unit_value FROM payload_label_edges"))
+
+
+def _edges_of(derivation) -> Counter:
+    return Counter((*e.from_key, *e.to_key, e.unit.entity_type, e.unit.value.canonical) for e in derivation.edges)
+
+
+def test_the_declared_scope_reaches_the_running_derivation(configured_db: str, monkeypatch) -> None:
+    """R5's store declared ``conversation``: the processor, configured from its environment, pools the store's
+    calls and writes the edges the fold draws under that declaration, not the ones it draws by kind."""
+    store = "tool:lineage-lab/lab-store"
+    t = trace_input("R5")
+    declared, by_kind = (_edges_of(fold.derive(t, find.exact, {store: "conversation"})),
+                         _edges_of(fold.derive(t, find.exact)))
+    assert declared != by_kind                     # the declaration means something on this trace
+    seed(configured_db, "R5")
+    monkeypatch.setenv(memory.SCOPES_ENV_VAR, json.dumps({store: "conversation"}))
+    driver.drain(0, driver.configured())
+    assert _edge_rows(configured_db) == declared

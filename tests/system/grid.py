@@ -1,6 +1,6 @@
 """The unit grid: units as rows, legs as columns, drawn twice: the expected grid
-(the case's edges; ● must_see, ○ must_miss) above the observed one (what the run
-produced, inherited labels on; ● where ``Case.labelled`` says the model labelled it).
+(the case's edges, crossings included; ● must_see, ○ must_miss) above the observed one
+(what the cross run produced; ● where ``Case.labelled`` says the model labelled it).
 
     ●  present and labelled by the classifier here
     ○  present, the classifier did not label it here
@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from .cases import Case
+from .cases import MODES, Case
 from .engine import Observation
 
 def _width(legs) -> int:
@@ -25,23 +25,24 @@ def _present(case: Case, leg_index: int, unit: str) -> bool:
     return unit in leg.units
 
 
-def render_grid(case: Case, on: Observation | None, off: Observation | None) -> str:
-    """The expected grid above the observed one; in each, one block per
+def render_grid(case: Case, runs: dict[str, Observation]) -> str:
+    """The expected grid above the observed one (the cross run); in each, one block per
     conversation, leg numbers running on across conversations."""
-    obs = on or off
+    obs = runs.get("cross")
 
     def observed_found(leg_index: int, unit: str) -> bool:
         c = obs.legs[leg_index].classification if obs and leg_index in obs.legs else None
         return bool(c) and case.labelled(unit, c["findings"])
 
-    lines = ["expected", _grid(case, case.edges, lambda i, u: u in case.must_see.get(i, ())),
+    lines = ["expected", _grid(case, case.edges | case.cross, lambda i, u: u in case.must_see.get(i, ())),
              "", "observed", _grid(case, obs.edges, observed_found) if obs else "(not run)"]
     sink = case.line.sink
     if sink:
-        v_on = on.verdict if on else "?"
-        v_off = off.verdict if off else "?"
-        lines.append(f"verdict at {sink.index}: expected on={case.verdict.get('on')} / off={case.verdict.get('off')}, "
-                     f"observed on={v_on} / off={v_off}")
+        def show(v) -> str:
+            return v if isinstance(v, str) or v is None else "[" + ", ".join(v) + "]"
+        want = " / ".join(f"{m}={show(case.verdict.get(m))}" for m in MODES)
+        got = " / ".join(f"{m}={show(runs[m].verdict) if m in runs else '?'}" for m in MODES)
+        lines.append(f"verdict at {sink.index}: expected {want}, observed {got}")
     return "\n".join(lines)
 
 
@@ -67,7 +68,7 @@ def _block(case: Case, legs, edges: set, found: Callable[[int, str], bool], conv
                 cells.append(f"{'┈' * (W - 1) if seen_before else '':<{W}}")
                 continue
             present = _present(case, leg.index, unit)
-            edge_in = any(u == unit and to == leg.index for u, _, to in edges)
+            edge_in = any(e[0] == unit and e[2] == leg.index for e in edges)
             if present:
                 dot = "●" if found(leg.index, unit) else "○"
                 lead = "━" if edge_in else ("┈" if seen_before else " ")

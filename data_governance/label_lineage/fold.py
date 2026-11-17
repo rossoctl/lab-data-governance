@@ -5,7 +5,9 @@ to the next by a finder. Pure: a :class:`TraceInput` in, a
 At each payload-bearing leg, in :func:`wire_order`:
 
 1. **inputs** — the leg's inbound legs (``traversal.inbound_sets``; a tool or an
-   LLM routed by the call it is answering, :func:`with_invocation_scope`); each
+   LLM routed by the call it is answering, :func:`with_invocation_scope`; an
+   entity declared ``call`` or ``conversation`` routed as declared,
+   :func:`.memory.mixes_calls`); each
    contributes the occurrences it holds after its own fold. A leg with no payload
    is routed but holds nothing.
 2. **find** — the finder, once per input, returns candidate occurrences here.
@@ -75,13 +77,16 @@ def wire_order(legs: Sequence[WireLeg]) -> list[WireLeg]:
     return sorted(legs, key=lambda leg: positions[LegOrderKey(leg.interaction_id, leg.leg_type)])
 
 
-def derive(trace_input: TraceInput, finder: Finder) -> Derivation:
-    """Derive the label lineage of one trace."""
+def derive(trace_input: TraceInput, finder: Finder,
+           declared: Mapping[str, str] = memory.NO_DECLARATION) -> Derivation:
+    """Derive the label lineage of one trace; *declared* is the memory scope declared
+    per entity natural key (:func:`.memory.parse_scopes`)."""
     if trace_input.priors:
         raise ValueError("priors from other conversations are not read in one conversation")
     ordered = wire_order(trace_input.legs)
-    inbound = inbound_sets(ordered, dict(trace_input.entities), pair_responses=True)
-    inbound = with_invocation_scope(ordered, inbound, trace_input.entities)
+    inbound = inbound_sets(ordered, dict(trace_input.entities), pair_responses=True,
+                           accumulates=lambda e: memory.mixes_calls(e, declared))
+    inbound = with_invocation_scope(ordered, inbound, trace_input.entities, declared)
     texts = {h: project(c) for h, c in trace_input.payloads.items()}
     held: dict[LegKey, tuple[Occurrence, ...]] = {}
     summaries: dict[LegKey, LegSummary] = {}
@@ -159,8 +164,10 @@ def _nests_in(c: Occurrence, d: Occurrence) -> bool:
 
 
 def with_invocation_scope(ordered: Sequence[WireLeg], inbound: Mapping[LegKey, tuple[LegKey, ...]],
-                          entities: Mapping[str, Entity]) -> dict[LegKey, tuple[LegKey, ...]]:
-    """A tool or an LLM keeps one memory per call it receives (#348).
+                          entities: Mapping[str, Entity],
+                          declared: Mapping[str, str] = memory.NO_DECLARATION) -> dict[LegKey, tuple[LegKey, ...]]:
+    """A tool or an LLM keeps one memory per call it receives (#348); so does any
+    entity :func:`.memory.mixes_calls` says does not pool its calls under *declared*.
 
     What a memoryless entity sends inside a call (its requests to others and its
     answer) inherits from the request that opened the call and from the responses it
@@ -171,8 +178,8 @@ def with_invocation_scope(ordered: Sequence[WireLeg], inbound: Mapping[LegKey, t
     entity itself received count (a response is inbound to its caller). ``inbound_sets`` routes a memoryless entity by time
     instead (a request inherits the latest leg it received, from whichever call; a
     response its own request only), so its sets are replaced here. A request whose
-    call is unknown keeps them. Accumulating entities are untouched: one memory for
-    all calls (#349). ``inbound_sets`` itself is untouched.
+    call is unknown keeps them. Entities that pool their calls are untouched: one
+    memory for all calls (#349). ``inbound_sets`` itself is untouched.
     """
     position = {(leg.interaction_id, leg.leg_type): i for i, leg in enumerate(ordered)}
     receiver = {leg.interaction_id: leg.callee_entity_id for leg in ordered if leg.leg_type == "request"}
@@ -194,7 +201,7 @@ def with_invocation_scope(ordered: Sequence[WireLeg], inbound: Mapping[LegKey, t
                 continue
             have = (opener,)
         producer = entities.get(sender)
-        if producer is None or memory.accumulates(producer):
+        if producer is None or memory.mixes_calls(producer, declared):
             continue
         out[key] = have + tuple(k for k, received_by in children.get(call, ())
                                 if received_by == sender and position[k] < position[key] and k not in have)

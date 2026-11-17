@@ -1,0 +1,104 @@
+id: K12
+title: the partner declared call scope
+cell: across/rule/scope
+line: U>A[-], A>L[-], L>A[-], A>T1[-], ..V1.., T1>A[s1 s2 s3 -], A>L[s1 s2 s3 -], L>A[s1 s2 s3 -], A>T2[s1 s2 s3 -], T2>V2[s1
+  s2 s3 -], V2>T2[-], T2>A[-], A>L[-], L>A[-], A>U[-] ~10min> U>A[-], A>L[-], L>A[-], A>T2[-], T2>V2[-], V2>T2[s1@subject
+  s2@account s3@ref -], T2>A[s1@subject s2@account s3@ref -], A>L[s1@subject s2@account s3@ref -], L>A[s1@subject s2@account
+  s3@ref -], A>T3[s1@subject s2@account s3@ref -], T3>V3[s1@subject s2@account s3@ref -]⚑, V3>T3[-], T3>A[-], A>L[-], L>A[-],
+  A>U[-]
+units:
+  s1: SSN
+  s2: MRN
+  s3: DOB
+  s4: DIS
+scopes:
+  V2: call
+expect:
+  verdict:
+    'off': allow
+    conv: allow
+    cross: allow
+  edges:
+  - s1 7>8
+  - s1 8>9
+  - s1 9>10
+  - s1 10>11
+  - s2 7>8
+  - s2 8>9
+  - s2 9>10
+  - s2 10>11
+  - s3 7>8
+  - s3 8>9
+  - s3 9>10
+  - s3 10>11
+  - s1 7>10
+  - s2 7>10
+  - s3 7>10
+  evidence:
+    '11':
+      s1:
+      - classified SSN
+      - inherited
+      s2:
+      - classified MRN
+      - inherited
+      s3:
+      - classified DOB
+      - inherited
+    '22':
+      s1: []
+      s2: []
+      s3: []
+classifier:
+  must_see:
+    '7':
+    - s1
+    - s2
+    - s3
+    '8':
+    - s1
+    - s2
+    - s3
+    '9':
+    - s1
+    - s2
+    - s3
+    '10':
+    - s1
+    - s2
+    - s3
+    '11':
+    - s1
+    - s2
+    - s3
+  must_miss:
+    '22':
+    - s1
+    - s2
+    - s3
+    '23':
+    - s1
+    - s2
+    - s3
+    '24':
+    - s1
+    - s2
+    - s3
+    '25':
+    - s1
+    - s2
+    - s3
+    '26':
+    - s1
+    - s2
+    - s3
+    '27':
+    - s1
+    - s2
+    - s3
+  authored: true
+notes: 'K1 with V2 declared call scope: it remembers nothing past one call, so nothing it returns in conversation 2 can cross.
+  No crossing, allow. A declared key that is no derived entity makes the run red; that the declaration reaches the processor
+  at all is K22c''s check. Green on this branch only because nothing crosses at all here; the case means something once the
+  crossing core exists, and its deliberate break (the declaration ignored, V2 back at its default, persistent) must turn it
+  red.'

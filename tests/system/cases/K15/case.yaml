@@ -1,0 +1,82 @@
+id: K15
+title: the record number read as an operational identifier
+cell: across/rule/label-type
+line: U>A[-], A>L[-], L>A[-], A>T1[-], ..V1.., T1>A[s1 s2@external_id s3 -], A>L[s1 s2@external_id s3 -], L>A[s1 s2@external_id
+  s3 -], A>T2[s1 s2@external_id s3 -], T2>V2[s1 s2@external_id s3 -], V2>T2[-], T2>A[-], A>L[-], L>A[-], A>U[-] ~10min> U>A[-],
+  A>L[-], L>A[-], A>T2[-], T2>V2[-], V2>T2[s2@account -], T2>A[s2@account -], A>L[s2@account -], L>A[s2@account -], A>T3[s2@account
+  -], T3>V3[s2@account -]⚑, V3>T3[-], T3>A[-], A>L[-], L>A[-], A>U[-]
+units:
+  s1: SSN
+  s2:
+  - MRN
+  - OPID
+  s3: DOB
+  s4: DIS
+expect:
+  verdict:
+    'off': allow
+    conv: allow
+    cross: allow
+  edges:
+  - s1 7>8
+  - s1 8>9
+  - s1 9>10
+  - s1 10>11
+  - s3 7>8
+  - s3 8>9
+  - s3 9>10
+  - s3 10>11
+  - s1 7>10
+  - s3 7>10
+  evidence:
+    '11':
+      s2:
+      - classified OPID
+    '22':
+      s2: []
+classifier:
+  must_see:
+    '7':
+    - s1
+    - s3
+    '8':
+    - s1
+    - s3
+    '9':
+    - s1
+    - s3
+    '10':
+    - s1
+    - s3
+    '11':
+    - s1
+    - s2
+    - s3
+  must_miss:
+    '7':
+    - s2
+    '8':
+    - s2
+    '9':
+    - s2
+    '10':
+    - s2
+    '22':
+    - s2
+    '23':
+    - s2
+    '24':
+    - s2
+    '25':
+    - s2
+    '26':
+    - s2
+    '27':
+    - s2
+  authored: true
+notes: 'Conversation 1 sends the MRN under external_id; at leg 11, where V2 receives it, the model labels it an operational
+  identifier (OPID), not a person identifier. Whether a value anchors follows the type it was received with (R8): no crossing,
+  allow. The model''s findings on the MRN at legs 7-10 are subtracted (authored): it reads it as OPID there too, except at
+  leg 8 (DLN), which would give the value a second origin of another type. Green on this branch only because nothing crosses
+  at all here; the case means something once the crossing core exists, and its deliberate break (the anchor rule off) must
+  turn it red.'

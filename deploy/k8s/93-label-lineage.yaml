@@ -138,6 +138,19 @@ spec:
             # unregistered name exits 2 before any DB work.
             - name: LABEL_MATCHER
               value: "exact"
+            # LABEL_MEMORY_SCOPES (unset: nothing declared) declares an entity's
+            # memory scope by its natural key, overriding the default by kind
+            # (processors/data_lineage/memory.py): a JSON object,
+            # {"<natural_key>": "<scope>"}, scope one of call, conversation,
+            # persistent. Nothing reads persistent yet: inside one conversation
+            # an entity declared persistent keeps what its kind does. Not JSON
+            # this parser can read (nested too deeply or an integer too long
+            # included), not an object, an empty key, an unknown scope or a key
+            # given twice exits 2; a key that matches no
+            # entity changes nothing and is not reported. A change re-derives
+            # nothing by itself: it reaches a trace when that trace is derived
+            # again, so until the replay above history is a mix of the old and
+            # the new declaration, trace by trace.
           # No ports, no Service, no probes, no metrics surface — the
           # data-lineage processor's shape (90-data-lineage.yaml): k8s restarts
           # on process exit; the startup checks surface a wrong image or a

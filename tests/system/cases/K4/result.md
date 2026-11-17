@@ -40,10 +40,10 @@ SSN     s1    ·      ·      ·      ·      ·      ·      ·      ·      ·
 MRN     s2    ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      
 DOB     s3    ·      ·      ·      ·      ·      ┈┈┈┈┈┈○┈┈┈┈┈┈○┈┈┈┈┈┈○┈┈┈┈┈┈○┈┈┈┈┈┈○┈┈┈┈┈┈○·      ·      ·      ·      ·      
 DIS     s4    ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      
-verdict at 27: expected on=allow / off=allow, observed on=allow / off=allow
+verdict at 27: expected off=allow / conv=allow / cross=allow, observed off=allow / conv=allow / cross=allow
 ```
 
-**Rows (inherited labels on).**
+**Rows (cross run).**
 
 | leg | who | classification | inherited labels (from leg) | risk |
 |---|---|---|---|---|
@@ -81,5 +81,5 @@ verdict at 27: expected on=allow / off=allow, observed on=allow / off=allow
 
 Risk observer calls: 33
 
-**Notes.** K0 with V2 returning s3 in conversation 2. The classifier labels nothing in conversation 2, so only a crossing from conversation 1 can produce the alert at V3. Wanted under person-anchored: allow.
+**Notes.** K0 with V2 returning s3 in conversation 2. No anchoring identifier among the returned values: no crossing, allow. Green on this branch only because nothing crosses at all here; the case means something once the crossing core exists, and its deliberate break (the anchor rule off) must turn it red.
 

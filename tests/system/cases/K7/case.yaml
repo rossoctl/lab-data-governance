@@ -12,8 +12,9 @@ units:
   s4: DIS
 expect:
   verdict:
-    'on': block
     'off': allow
+    conv: allow
+    cross: block
   edges:
   - s1 7>8
   - s1 8>9
@@ -30,6 +31,9 @@ expect:
   - s1 7>10
   - s2 7>10
   - s3 7>10
+  cross:
+  - s2 11>22 co
+  - s3 11>22 co
   - s2 22>23
   - s2 23>24
   - s2 24>25
@@ -40,13 +44,53 @@ expect:
   - s3 24>25
   - s3 25>26
   - s3 26>27
-  - s2 11>23
-  - s3 11>23
+  - s2 23>26
+  - s3 23>26
+  evidence:
+    '11':
+      s2:
+      - classified MRN
+      - inherited
+      s3:
+      - classified DOB
+      - inherited
+    '22':
+      s2:
+      - crossed co
+      s3:
+      - crossed co
+    '23':
+      s2:
+      - crossed co
+      s3:
+      - crossed co
+    '24':
+      s2:
+      - crossed co
+      s3:
+      - crossed co
+    '25':
+      s2:
+      - crossed co
+      s3:
+      - crossed co
+    '26':
+      s2:
+      - crossed co
+      s3:
+      - crossed co
+    '27':
+      s2:
+      - crossed co
+      s3:
+      - crossed co
   pending:
-    reason: 'cross-conversation lineage not on this branch: the cross-trace fold (#273), and the risk engine forwarding a
-      cross-trace origin (labels.forwarded keeps same-trace origins only); the conversation-2 edges stated here are a proposal
-      that work will settle'
+    reason: 'no crossing on this branch: the crossing core draws the crossing and the edges that rest on it; the level on
+      its way carries crossed and its level to every later leg and into the policy input, so the cross run blocks at the flagged
+      leg. The off and conv runs already match'
     missing:
+    - s2 11>22 co
+    - s3 11>22 co
     - s2 22>23
     - s2 23>24
     - s2 24>25
@@ -57,10 +101,17 @@ expect:
     - s3 24>25
     - s3 25>26
     - s3 26>27
-    - s2 11>23
-    - s3 11>23
+    - s2 23>26
+    - s3 23>26
     verdict:
-    - 'on'
+    - cross
+    evidence:
+    - 22
+    - 23
+    - 24
+    - 25
+    - 26
+    - 27
 classifier:
   must_see:
     '7':
@@ -104,4 +155,5 @@ classifier:
     - s3
   authored: true
 notes: 'K0 with V2 returning s2 s3 in conversation 2. The classifier labels nothing in conversation 2, so only a crossing
-  from conversation 1 can produce the alert at V3. Wanted under person-anchored: block.'
+  from conversation 1 can produce the alert at V3. V2 received s2 s3 at leg 11 labelled MRN, DOB (R8); an identifier with
+  another value of the same record: corroborated.'
