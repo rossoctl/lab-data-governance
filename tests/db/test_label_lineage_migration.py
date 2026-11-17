@@ -136,7 +136,7 @@ def test_a_leg_row_defaults_to_nothing_inherited(migrated_dsn: str) -> None:
 def test_the_read_paths_are_indexed(migrated_dsn: str) -> None:
     edges = " ".join(_indexes(migrated_dsn, "payload_label_edges").values())
     assert "(trace_id)" in edges
-    assert "(to_interaction_id, to_leg_type)" in edges
+    assert "(to_interaction_id, to_leg_type, to_payload_hash)" in edges  # 0030
     assert "(origin_payload_hash, unit_start, unit_end)" in edges
     assert "(trace_id)" in " ".join(_indexes(migrated_dsn, "leg_inherited_labels").values())
 

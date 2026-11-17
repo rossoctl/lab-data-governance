@@ -13,8 +13,8 @@ import { useLabelTrack } from './flow/labelTrack';
  * block per value label lineage carried into the payload, with its origin (where
  * the classifier found it) and the previous hop (the hop it came from last,
  * distance 1 — several when the value arrived by several routes),
- * each a link to that interaction. "Show chains" opens the full routes for the
- * value (`LabelLineage`). A stacked list, not a table: it has to read in the
+ * each a link to that interaction. "Show chains" opens the routes the read
+ * lists for the value, one shortest per previous hop (`LabelLineage`). A stacked list, not a table: it has to read in the
  * ~500px detail panel, where five columns fold into slivers. Values the
  * classifier found here with nothing carried in are not listed: they have no
  * lineage, and the Classification tab lists them.
