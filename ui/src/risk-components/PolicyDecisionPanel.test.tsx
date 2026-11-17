@@ -328,7 +328,7 @@ describe('PolicyDecisionPanel', () => {
         expect(row('Regulatory tags')).toHaveTextContent(/^Regulatory tagsPI$/);
       });
 
-      it('says ambiguous and both levels, and leaves the toggle to the Carried in row when both rows show', () => {
+      it('says ambiguous and both levels, and has the toggle in both rows when both show', () => {
         const both = { ...CROSSED, levels: ['corroborated', 'value_only'], ambiguous: true };
         renderPanel(
           mkViolation({}, { classification_summary: { request: { sensitivity_level: 'INTERNAL', regulatory_tags: ['PI'], inherited: INHERITED, crossed: both } } }),
@@ -336,9 +336,9 @@ describe('PolicyDecisionPanel', () => {
           ENTITIES,
         );
 
-        expect(row('Crossed in')).toHaveTextContent(/^Crossed inRESTRICTED PII — crossed, corroborated and value-only, ambiguous — used in this decision$/);
+        expect(row('Crossed in')).toHaveTextContent(/^Crossed inRESTRICTED PII — crossed, corroborated and value-only, ambiguous — used in this decisionShow the values/);
         expect(within(row('Carried in')).getByTestId('toggle-values')).toBeInTheDocument();
-        expect(screen.getAllByTestId('toggle-values')).toHaveLength(1);
+        expect(within(row('Crossed in')).getByTestId('toggle-values')).toBeInTheDocument();
       });
 
       it('has no Crossed in row without the block', () => {

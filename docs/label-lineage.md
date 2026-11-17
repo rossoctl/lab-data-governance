@@ -212,12 +212,14 @@ Set on `85-leg-ready.yaml` only; leg-ready alone decides what inherited labels d
 payload-bearing leg, the classifier's findings on the payload (**found here**) beside the edges into
 the leg at its current payload hash (**carried in**), each with its origin leg, `seq`, caller ->
 callee, `unit_text` / `unit_value`, `match_kind` and `origin_trace_id` (null for this trace; the
-trace page does not link an origin in another one). `retrieval.labels.merge` pairs them per
+trace page links an origin in another one to that trace, marked "in trace"). `retrieval.labels.merge` pairs them per
 (span, entity type): a finding claims the same-type edges whose span overlaps its own (the extent rule
 can widen a number past what the classifier marked), an unclaimed edge group is a carried-in row,
 and two labels never fold into one. `lineage_status` is null when the trace is not derived (or 0024
 has not run), never `complete`. The trace page's Classification tab shows this as facts about the
 payload; it never says a label was used, because the API pod does not read `RISK_INHERITED_LABELS`.
+A label whose route rests on a crossing (the last hop of a chain says `crossed`) is shown apart, as
+**Crossed in**, with its level, in the tab's summary and on its row.
 The risk layer says "used in this decision" only from the record's
 `classification_summary.<leg>.inherited`, which leg-ready writes only for edges it forwarded; a label
 resting on a crossing is in `classification_summary.<leg>.crossed` instead, and the risk panel shows it

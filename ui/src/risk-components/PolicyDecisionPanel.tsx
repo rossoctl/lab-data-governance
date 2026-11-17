@@ -120,7 +120,7 @@ export function PolicyDecisionPanel({
   const crossed = crossedOfSummary(risk.classification_summary);
   // Opens the values on this payload with their lineage, below the list. A
   // toggle, not a row of its own: it is a view of the labels of the row it sits
-  // in, value by value. It sits in the first of the two label-lineage rows.
+  // in, value by value. Each label-lineage row has it; both open the same list.
   const valuesToggle = (
     <div>
       <Button
@@ -223,7 +223,7 @@ export function PolicyDecisionPanel({
                 {crossed.tags.length > 0 && `${crossed.tags.join(', ')} `}— crossed
                 {crossed.levels.length > 0 && `, ${crossed.levels.map((l) => l.replace('_', '-')).join(' and ')}`}
                 {crossed.ambiguous && ', ambiguous'} — used in this decision
-                {!carried && valuesToggle}
+                {valuesToggle}
               </DescriptionListDescription>
             </DescriptionListGroup>
           )}

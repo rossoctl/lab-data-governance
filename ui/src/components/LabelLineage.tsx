@@ -1,9 +1,9 @@
 import { useState } from 'react';
 import { Button, Label } from '@patternfly/react-core';
 import { Link } from 'react-router-dom';
-import type { CrossedLevel, LabelOrigin, LegLabel, LineageHop } from '../types';
+import type { LabelOrigin, LegLabel, LineageHop } from '../types';
 import { useHopHover } from './flow/hopHover';
-import { NO_HOP_LINKS, hopText, otherTraceHref, type HopLinks } from '../lib/hopLinks';
+import { LEVEL_WORD, NO_HOP_LINKS, crossedText, hopText, otherTraceHref, type HopLinks } from '../lib/hopLinks';
 
 /**
  * The lineage of one labelled value on a leg: for each origin label lineage
@@ -59,7 +59,6 @@ function OriginChains({ origin, traceId, links }: { origin: LabelOrigin; traceId
 }
 
 const ROLE_WORD: Record<LineageHop['role'], string> = { origin: 'origin', hop: 'then', here: 'current' };
-const LEVEL_WORD: Record<CrossedLevel, string> = { value_only: 'value-only', corroborated: 'corroborated' };
 
 function Chain({ hops, traceId, links }: { hops: LineageHop[]; traceId: string; links: HopLinks }) {
   const truncated = hops[0]?.role !== 'origin';
@@ -106,7 +105,7 @@ function Hop({ hop, traceId, links }: { hop: LineageHop; traceId: string; links:
         <>
           {' '}
           <span className="dg-label-lineage__crossed" data-testid="crossed">
-            crossed, {LEVEL_WORD[hop.crossed.level]}{hop.crossed.ambiguous ? ', ambiguous' : ''}
+            {crossedText(hop.crossed)}
           </span>
         </>
       )}
