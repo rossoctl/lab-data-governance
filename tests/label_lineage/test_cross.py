@@ -36,12 +36,20 @@ def _holdings(trace: str, content: object, *marks: tuple[str, str], at: dt.datet
             for o in (at_origin(u) for u in units_of(_findings(text, *marks), text, site))]
 
 
-def _leaving(holdings, content: object, t: dt.datetime = T0 + dt.timedelta(minutes=5), *,
-             trace: str = "T9", routed=(), crossing: cross.Crossing = ON):
+def _cut(holdings, content: object, t: dt.datetime = T0 + dt.timedelta(minutes=5), *,
+         trace: str = "T9", routed=(), crossing: cross.Crossing = ON, held: int = 0):
+    """(crossings, common values, the limits that cut the leg)."""
     output = ProjectedPayload(Site(trace, "ix-out", "response", "h-out"), project(content))
-    found, common = cross.leaving(cross.Memory(holdings), crossing, "v", output, t, routed)
+    found, common, cuts = cross.leaving(cross.Memory(holdings), crossing, "v", output, t, routed, held)
     return sorted((o.matched_text, c.level, o.unit.origin.trace_id) for o, c in found), \
-        [(m.value, m.conversations) for m in common]
+        [(m.value, m.conversations) for m in common], cuts
+
+
+def _leaving(holdings, content: object, t: dt.datetime = T0 + dt.timedelta(minutes=5), **kw):
+    """(crossings, common values) of a leg no limit cut."""
+    found, common, cuts = _cut(holdings, content, t, **kw)
+    assert cuts == []
+    return found, common
 
 
 # --- configuration -------------------------------------------------------------------------------------------------
@@ -65,8 +73,18 @@ def test_the_configuration_reads_m_retention_and_anchors():
     assert c == cross.Crossing(anchors=frozenset({"SSN", "MRN"}), common_limit=5, retention=dt.timedelta(seconds=60))
 
 
+def test_no_limit_unless_one_is_configured():
+    assert (ON.holdings_limit, ON.payload_bytes, ON.candidates_limit) == (None, None, None)
+    c = cross.configured({cross.SWITCH_ENV_VAR: "on", cross.HOLDINGS_LIMIT_ENV_VAR: "100",
+                          cross.PAYLOAD_BYTES_ENV_VAR: "4096", cross.CANDIDATES_LIMIT_ENV_VAR: " ",})
+    assert (c.holdings_limit, c.payload_bytes, c.candidates_limit) == (100, 4096, None)
+
+
 @pytest.mark.parametrize("env", [
     {cross.SWITCH_ENV_VAR: "yes"},
+    {cross.SWITCH_ENV_VAR: "on", cross.HOLDINGS_LIMIT_ENV_VAR: "0"},
+    {cross.SWITCH_ENV_VAR: "on", cross.PAYLOAD_BYTES_ENV_VAR: "4k"},
+    {cross.SWITCH_ENV_VAR: "on", cross.CANDIDATES_LIMIT_ENV_VAR: "-1"},
     {cross.SWITCH_ENV_VAR: "on", cross.COMMON_LIMIT_ENV_VAR: "0"},
     {cross.SWITCH_ENV_VAR: "on", cross.RETENTION_ENV_VAR: "15m"},
     {cross.SWITCH_ENV_VAR: "on", cross.ANCHORS_ENV_VAR: " , "},
@@ -75,6 +93,7 @@ def test_the_configuration_reads_m_retention_and_anchors():
     {cross.SWITCH_ENV_VAR: "on", cross.RETENTION_ENV_VAR: "100000000000000"},  # past the largest interval
     {cross.SWITCH_ENV_VAR: "off", cross.COMMON_LIMIT_ENV_VAR: "-1"},           # parsed with the switch off too
     {cross.ANCHORS_ENV_VAR: "SNN"},
+    {cross.SWITCH_ENV_VAR: "off", cross.PAYLOAD_BYTES_ENV_VAR: "abc"},           # a limit, with the switch off too
 ])
 def test_an_invalid_configuration_raises(env):
     with pytest.raises(cross.InvalidCrossing):
@@ -231,6 +250,48 @@ def test_an_own_holding_the_fold_already_routes_here_is_not_drawn_again():
     assert _leaving(own, {"subject": SSN}, routed=[("ix-own", "request")]) == ([], [])
 
 
+# --- the limits ------------------------------------------------------------------------------------
+
+def test_over_the_holdings_limit_nothing_is_searched_and_the_leg_is_cut():
+    held = _holdings("T1", {"ssn": SSN, "dob": DOB}, ("SSN", SSN), ("DOB", DOB))
+    limited = dataclasses.replace(ON, holdings_limit=2)
+    assert _cut(held, {"subject": SSN, "since": DOB}, crossing=limited, held=2)[2] == []
+    assert _cut(held, {"subject": SSN, "since": DOB}, crossing=limited, held=3) == ([], [], ["holdings_per_entity"])
+
+
+def test_only_the_first_payload_bytes_are_searched():
+    held = _holdings("T1", {"ssn": SSN}, ("SSN", SSN))
+    content = {"subject": SSN}                  # '{"subject": "123-45-6789"}': the value ends at character 24
+    text = project(content)
+    end = text.index(SSN) + len(SSN)
+    at = dataclasses.replace(ON, payload_bytes=end)
+    assert _cut(held, content, crossing=at) == ([(SSN, cross.VALUE_ONLY, "T1")], [], ["payload_bytes"])
+    assert _cut(held, content, crossing=dataclasses.replace(ON, payload_bytes=end - 1)) == ([], [], ["payload_bytes"])
+    assert _cut(held, content, crossing=dataclasses.replace(ON, payload_bytes=len(text)))[2] == []
+
+
+def test_a_value_cut_at_the_byte_limit_keeps_the_whole_text_s_boundaries():
+    held = _holdings("T1", {"ssn": SSN}, ("SSN", SSN))
+    content = {"subject": f"{SSN}0"}            # a longer number: not the value, even if the limit ends after it
+    text = project(content)
+    limited = dataclasses.replace(ON, payload_bytes=text.index(SSN) + len(SSN))
+    assert _cut(held, content, crossing=limited) == ([], [], ["payload_bytes"])
+
+
+def test_over_the_candidates_limit_nothing_is_asserted():
+    held = (_holdings("T1", {"ssn": SSN}, ("SSN", SSN))
+            + _holdings("T2", {"ssn": SSN}, ("SSN", SSN), at=T0 + dt.timedelta(minutes=1)))
+    assert _cut(held, {"subject": SSN}, crossing=dataclasses.replace(ON, candidates_limit=2))[2] == []
+    assert _cut(held, {"subject": SSN}, crossing=dataclasses.replace(ON, candidates_limit=1)) == (
+        [], [], ["candidates_per_payload"])
+
+
+def test_a_common_value_is_no_candidate():
+    held = [h for i in range(4) for h in _holdings(f"T{i}", {"ssn": SSN}, ("SSN", SSN))]
+    assert _cut(held, {"subject": SSN}, crossing=dataclasses.replace(ON, candidates_limit=1)) == (
+        [], [(SSN, 4)], [])
+
+
 def test_the_search_finds_the_same_whatever_else_is_held():
     held = _holdings("T1", {"ssn": SSN, "dob": DOB}, ("SSN", SSN), ("DOB", DOB))
     others = [f"{i % 1000:03d}-{i % 97:02d}-{i:04d}" for i in range(1000, 3000)]
@@ -349,6 +410,26 @@ def test_a_leg_without_an_event_time_is_neither_matched_nor_registered():
                          x.payload_hash, occurred_at=None) for x in t.legs]
     t = fold.TraceInput(t.trace_id, legs, t.entities, t.payloads, t.findings)
     assert fold.derive(t, find.exact, crossing=ON).holdings == ()
+
+
+def test_every_leg_a_persistent_entity_sends_is_recorded_and_the_cut_legs_are_named():
+    first = fold.derive(_first(), find.exact, crossing=ON).holdings
+    d = fold.derive(_second(first), find.exact, crossing=ON)
+    t2 = T0 + dt.timedelta(minutes=5, seconds=2)
+    assert d.sends == (("v", ("2", "response"), t2),) and d.cuts == ()
+    held_two = dataclasses.replace(_second(first), held_elsewhere={("2", "response"): 2})   # the driver counts
+    limited = fold.derive(held_two, find.exact, crossing=dataclasses.replace(ON, holdings_limit=1))
+    assert limited.cuts == ((("2", "response"), "holdings_per_entity"),) and limited.levels == {}
+    assert fold.derive(_second(), find.exact).sends == ()
+
+
+def test_the_holdings_limit_counts_other_conversations_and_the_conversation_s_own():
+    t = _trace("T1", [("1", "request", "a", "v", RECORD, [("SSN", SSN), ("DOB", DOB)]),
+                      ("1", "response", "a", "v", {"ok": True}, [])], T0)
+    two = dataclasses.replace(ON, holdings_limit=2)
+    assert fold.derive(t, find.exact, crossing=two).cuts == ()           # v holds its own two
+    t = dataclasses.replace(t, held_elsewhere={("1", "response"): 1})
+    assert fold.derive(t, find.exact, crossing=two).cuts == ((("1", "response"), "holdings_per_entity"),)
 
 
 # --- the fold inside one conversation is unchanged -------------------------------------------------------------------
@@ -488,3 +569,20 @@ def test_without_the_switch_a_carried_candidate_claims_as_before():
     for crossing in (None, ON):
         d = fold.derive(t, find.exact, crossing=crossing)
         assert {o.unit.origin.interaction_id for o in d.occurrences[("1", "request")]} == {"0"}
+
+
+def test_a_holding_fed_by_two_crossings_begins_at_the_later():
+    """V answers a twice in conversation A (clocked 25 s, then 20 s), each a crossing from what B gave it; a sends
+    the value on to V, clocked 10 s. The holding rests on both crossings and begins at the later one, which is not
+    the last one folded: it never begins before anything that fed it."""
+    s = lambda n: T0 + dt.timedelta(seconds=n)
+    t = _trace("A", [("a1", "request", "v", "a", {"subject": SSN}, []),
+                     ("a1b", "request", "v", "a", {"subject": SSN}, []),
+                     ("a2", "request", "a", "v", {"subject": SSN}, [])], T0)
+    at, parent = {"a1": s(25), "a1b": s(20), "a2": s(10)}, {"a1b": "a1", "a2": "a1b"}
+    legs = [dataclasses.replace(x, occurred_at=at[x.interaction_id], parent_interaction_id=parent.get(x.interaction_id))
+            for x in t.legs]
+    priors = _holdings("B", {"ssn": SSN}, ("SSN", SSN), at=T0)
+    d = fold.derive(dataclasses.replace(t, legs=legs, priors=tuple(priors)), find.exact, crossing=ON)
+    assert sorted(e.came_from.at.interaction_id for e in d.edges if e.to.at.interaction_id == "a2") == ["a1", "a1b"]
+    assert [(h.occurrence.at.interaction_id, h.valid_from) for h in d.holdings] == [("a2", s(25))]

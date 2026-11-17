@@ -1,6 +1,6 @@
 # K24 — conversation 1 arrives after conversation 2 was processed
 
-cell `across/order`  ·  status **PENDING**  ·  classifier **authored**: the model's findings subtracted at legs [22, 23, 24, 25, 26, 27]
+cell `across/order`  ·  status **GREEN**  ·  classifier **authored**: the model's findings subtracted at legs [22, 23, 24, 25, 26, 27]
 
 ```
 U>A[-], A>L[-], L>A[-], A>T1[-], ..V1.., T1>A[s1 s2 s3 -], A>L[s1 s2 s3 -], L>A[s1 s2 s3 -], A>T2[s1 s2 s3 -], T2>V2[s1 s2 s3 -], V2>T2[-], T2>A[-], A>L[-], L>A[-], A>U[-] ~10min> U>A[-], A>L[-], L>A[-], A>T2[-], T2>V2[-], V2>T2[s1@subject s2@account s3@ref -], T2>A[s1@subject s2@account s3@ref -], A>L[s1@subject s2@account s3@ref -], L>A[s1@subject s2@account s3@ref -], A>T3[s1@subject s2@account s3@ref -], T3>V3[s1@subject s2@account s3@ref -]⚑, V3>T3[-], T3>A[-], A>L[-], L>A[-], A>U[-]
@@ -36,14 +36,12 @@ DIS     s4    ·      ·      ·      ·             ·      ·      ·      · 
 conversation 2
               17     18     19     20     21     22     23     24     25     26     27     28     29     30     31     32     
               U>A    A>L    L>A    A>T2   T2>V2  V2>T2  T2>A   A>L    L>A    A>T3   T3>V3⚑ V3>T3  T3>A   A>L    L>A    A>U    
-SSN     s1    ·      ·      ·      ·      ·      ┈┈┈┈┈┈○┈┈┈┈┈┈○┈┈┈┈┈┈○┈┈┈┈┈┈○┈┈┈┈┈┈○┈┈┈┈┈┈○·      ·      ·      ·      ·      
-MRN     s2    ·      ·      ·      ·      ·      ┈┈┈┈┈┈○┈┈┈┈┈┈○┈┈┈┈┈┈○┈┈┈┈┈┈○┈┈┈┈┈┈○┈┈┈┈┈┈○·      ·      ·      ·      ·      
-DOB     s3    ·      ·      ·      ·      ·      ┈┈┈┈┈┈○┈┈┈┈┈┈○┈┈┈┈┈┈○┈┈┈┈┈┈○┈┈┈┈┈┈○┈┈┈┈┈┈○·      ·      ·      ·      ·      
+SSN     s1    ·      ·      ·      ·      ·      ━━━━━━○━━━━━━○━━━━━━○━━━━━━○━━━━━━○━━━━━━○·      ·      ·      ·      ·      
+MRN     s2    ·      ·      ·      ·      ·      ━━━━━━○━━━━━━○━━━━━━○━━━━━━○━━━━━━○━━━━━━○·      ·      ·      ·      ·      
+DOB     s3    ·      ·      ·      ·      ·      ━━━━━━○━━━━━━○━━━━━━○━━━━━━○━━━━━━○━━━━━━○·      ·      ·      ·      ·      
 DIS     s4    ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      
-verdict at 27: expected off=allow / conv=allow / cross=block, observed off=allow / conv=allow / cross=allow
+verdict at 27: expected off=allow / conv=allow / cross=[allow, block], observed off=allow / conv=allow / cross=[allow, block]
 ```
-
-**Reasons.** pending: conversation 2 is matched before conversation 1 has arrived, and nothing matches it again: the correction queues the leaving leg to be matched again when conversation 1 registers · verdict cross: want block, got allow · edges missing: s1 11>22 co, s1 22>23, s1 23>24, s1 23>26, s1 24>25, s1 25>26, s1 26>27, s2 11>22 co, s2 22>23, s2 23>24, s2 23>26, s2 24>25, s2 25>26, s2 26>27, s3 11>22 co, s3 22>23, s3 23>24, s3 23>26, s3 24>25, s3 25>26, s3 26>27 · evidence at 22 s1: want [crossed co], got [] · evidence at 22 s2: want [crossed co], got [] · evidence at 22 s3: want [crossed co], got [] · evidence at 23 s1: want [crossed co], got [] · evidence at 23 s2: want [crossed co], got [] · evidence at 23 s3: want [crossed co], got [] · evidence at 24 s1: want [crossed co], got [] · evidence at 24 s2: want [crossed co], got [] · evidence at 24 s3: want [crossed co], got [] · evidence at 25 s1: want [crossed co], got [] · evidence at 25 s2: want [crossed co], got [] · evidence at 25 s3: want [crossed co], got [] · evidence at 26 s1: want [crossed co], got [] · evidence at 26 s2: want [crossed co], got [] · evidence at 26 s3: want [crossed co], got [] · evidence at 27 s1: want [crossed co], got [] · evidence at 27 s2: want [crossed co], got [] · evidence at 27 s3: want [crossed co], got []
 
 **Rows (cross run).**
 
@@ -69,19 +67,19 @@ verdict at 27: expected off=allow / conv=allow / cross=block, observed off=allow
 | 19 | L>A | PUBLIC  | — | — |
 | 20 | A>T2 | PUBLIC  | — | — |
 | 21 | T2>V2 | PUBLIC  | — | — |
-| 22 | V2>T2 | PUBLIC  | — | — |
-| 23 | T2>A | PUBLIC  | — | — |
-| 24 | A>L | PUBLIC  | — | — |
-| 25 | L>A | PUBLIC  | — | — |
-| 26 | A>T3 | PUBLIC  | — | — |
-| 27 | T3>V3⚑ | PUBLIC  | — | none allow [] v1 |
+| 22 | V2>T2 | PUBLIC  | s2=4471820 (MRN, from 11, co; crossed co), s3=1961-03-14 (DOB, from 11, co; crossed co), s1=123-45-6789 (SSN, from 11, co; crossed co) | — |
+| 23 | T2>A | PUBLIC  | s2=4471820 (MRN, from 22; crossed co), s3=1961-03-14 (DOB, from 22; crossed co), s1=123-45-6789 (SSN, from 22; crossed co) | — |
+| 24 | A>L | PUBLIC  | s2=4471820 (MRN, from 23; crossed co), s3=1961-03-14 (DOB, from 23; crossed co), s1=123-45-6789 (SSN, from 23; crossed co) | — |
+| 25 | L>A | PUBLIC  | s2=4471820 (MRN, from 24; crossed co), s3=1961-03-14 (DOB, from 24; crossed co), s1=123-45-6789 (SSN, from 24; crossed co) | — |
+| 26 | A>T3 | PUBLIC  | s2=4471820 (MRN, from 25; crossed co), s2=4471820 (MRN, from 23; crossed co), s3=1961-03-14 (DOB, from 25; crossed co), s3=1961-03-14 (DOB, from 23; crossed co), s1=123-45-6789 (SSN, from 25; crossed co), s1=123-45-6789 (SSN, from 23; crossed co) | — |
+| 27 | T3>V3⚑ | PUBLIC  | s2=4471820 (MRN, from 26; crossed co), s3=1961-03-14 (DOB, from 26; crossed co), s1=123-45-6789 (SSN, from 26; crossed co) | critical block ['T-SENS'] v2 |
 | 28 | V3>T3 | PUBLIC  | — | — |
 | 29 | T3>A | PUBLIC  | — | — |
 | 30 | A>L | PUBLIC  | — | — |
 | 31 | L>A | PUBLIC  | — | — |
 | 32 | A>U | PUBLIC  | — | — |
 
-Risk observer calls: 33
+Risk observer calls: 38
 
-**Notes.** K1 with conversation 2 sent and drained before conversation 1 is sent: conversation 1 is classified and derived after conversation 2 was matched (the readiness cursor derives a leg only once it is classified, so a late classification is a late leg). The same final edges as in order: the late leg queues V2's later leaving leg to be matched again. That it is matched again exactly once is not stated by the notation: an open question for the correction.
+**Notes.** K1 with conversation 2 sent and drained before conversation 1 is sent: conversation 1 is classified and derived after conversation 2 was matched (the readiness cursor derives a leg only once it is classified, so a late classification is a late leg). Conversation 1's occurrences at V2 queue conversation 2, whose V2 answer lies inside their interval, and it is derived again: the same final edges as in order. The decision history, every version, predicted from the mechanism before the run: a version is written only when the computed record differs. At the first drain both legs of the flagged exchange are on the wire when leg-ready delivers its request, so one record evidences both (v1 allow; the response leg computes the same record, no version). At the second drain the correction changes the flagged leg's labels and queues its recompute: v2 block. The cross run's history is [allow, block]. That conversation 2 is derived exactly once more is the driver test's (test_a_late_conversation_corrects_the_one_derived_before_it_once).
 

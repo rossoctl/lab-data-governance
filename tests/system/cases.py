@@ -15,7 +15,8 @@ the shipped cases; it loads, ``test_judge`` loads it), every key shown:
     expect:
       verdict: {'off': allow, conv: allow, cross: block}   # of the flagged exchange in each mode (quote 'off': a
                                                   # bare off is a YAML 1.1 boolean); compared as the record writes
-                                                  # it; a list ([allow tier 1, block tier 2]) is the decision history
+                                                  # it; a list is the decision history, every version in order
+                                                  # ([allow, block]; with tiers [allow tier 1, ...])
       edges: [s1 2>3, s3 2>3]                     # the in-conversation edges: every run draws exactly these
       cross: [s1 3>10 vo, s1 10>11, s1 11>12]     # what the cross run draws besides: crossings carry their level
                                                   # (vo value-only, co corroborated), and the edges that rest on them
@@ -49,6 +50,7 @@ from __future__ import annotations
 
 import dataclasses
 import re
+from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
@@ -71,7 +73,7 @@ _LEVEL_OR_NONE = f"(?: ({'|'.join(LEVELS)}))?"
 _EDGE = re.compile(rf"(s\d+) (\d+)>(\d+){_LEVEL_OR_NONE}")
 _KIND = re.compile(rf"classified (\S+)|inherited|crossed ({'|'.join(LEVELS)})( ambiguous)?")
 _MARK = re.compile(rf"common [1-9]\d*|incomplete ({'|'.join(LIMITS)})")
-_DECISION = re.compile(r"\S+ tier [012]")
+_DECISION = re.compile(r"\S+( tier [012])?")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -124,7 +126,26 @@ class Case:
         return frozenset(name for name, used in (
             ("scopes", bool(self.scopes)), ("config", bool(self.config)), ("switch", "cross" in kinds),
             ("reclassify", "reclassify" in kinds),
-            ("tiers", any(not isinstance(v, str) for v in self.verdict.values()))) if used)
+            ("tiers", any(" tier " in d for v in self.verdict.values() if not isinstance(v, str) for d in v))) if used)
+
+    def premise_before(self, step: int | None = None) -> tuple[dict[int, list[str]], dict[int, list[str]]]:
+        """(must see, must miss) of the classification the rows hold before step *step* (``None``: after the last):
+        the premise, with every unit a reclassify step before it takes from a leg moved from must see to must miss
+        there (the step states it; nothing is inferred)."""
+        cut: dict[int, set[str]] = defaultdict(set)
+        for kind, *arg in self.steps[:step]:
+            if kind == "reclassify":
+                for leg, units in arg[0]:
+                    cut[leg].update(units)
+        see = {leg: [u for u in us if u not in cut.get(leg, ())] for leg, us in self.must_see.items()}
+        miss = {leg: sorted(set(self.must_miss.get(leg, [])) | cut.get(leg, set()))
+                for leg in set(self.must_miss) | set(cut)}
+        return {leg: us for leg, us in see.items() if us}, miss
+
+    @property
+    def final_premise(self) -> tuple[dict[int, list[str]], dict[int, list[str]]]:
+        """The premise of the classification the rows end with (:meth:`premise_before` the end)."""
+        return self.premise_before()
 
     def labelled(self, unit: str, findings: list[tuple[str, str]]) -> bool:
         """Whether the model labelled *unit* at a leg: a finding of one of its types on its own value.
@@ -217,7 +238,8 @@ def _verdict(name: str, d: dict) -> dict[str, str | tuple[str, ...]]:
         if isinstance(v, list):
             bad = [x for x in v if not _DECISION.fullmatch(str(x))]
             if not v or bad:
-                raise ValueError(f"{name}: a decision history lists \"<decision> tier <0|1|2>\" in order, got {v!r}")
+                raise ValueError(f"{name}: a decision history lists \"<decision>\" or \"<decision> tier <0|1|2>\" "
+                                 f"in order, got {v!r}")
             out[mode] = tuple(v)
         else:
             out[mode] = str(v)
@@ -405,13 +427,22 @@ def load_case(case_dir: Path) -> Case:
     if pending and pending.evidence - set(_wire(line)):
         raise ValueError(f"{name}: expect.pending.evidence names legs the line lacks: "
                          f"{sorted(pending.evidence - set(_wire(line)))}")
+    steps = _steps(name, line, d.get("steps"))
+    taken: set[tuple[int, str]] = set()
+    for step in steps:
+        if step[0] == "reclassify":
+            cells = {(leg, u) for leg, units in step[1] for u in units}
+            if any(u not in must_see.get(leg, []) for leg, u in cells) or cells & taken:
+                raise ValueError(f"{name}: reclassify takes a unit only from a leg the premise says the model "
+                                 f"labels there, and once: {sorted(cells)}")
+            taken |= cells
     case = Case(
         id=d["id"], title=d.get("title", ""), cell=d.get("cell", ""),
         line_text=d["line"], line=line, units={u: t[0] for u, t in types.items()}, accepts=accepts,
         verdict=verdict, edges=edges, pending=pending, must_see=must_see, must_miss=must_miss, authored=authored,
         notes=d.get("notes", ""), dir=case_dir, cross=frozenset(cross), evidence=evidence,
         marks=_marks(name, line, expect.get("marks")), scopes=_scopes(name, line, d.get("scopes")),
-        config=_config(name, d.get("config")), steps=_steps(name, line, d.get("steps")),
+        config=_config(name, d.get("config")), steps=steps,
     )
     render(case.id, case.units, case.line)  # the renderer's refusals fire at load, not at run
     return case

@@ -199,3 +199,83 @@ def test_a_changed_level_alone_is_a_change(configured_db: str) -> None:
     with db.transaction() as tx:
         assert store.write(tx, second, "exact") == set()
         assert store.write(tx, again, "exact") == {"2", "3"}
+
+
+# --- the correction and the limits ------------------------------------------------------------------
+
+def _write_and_correct(d: fold.Derivation) -> list[str]:
+    with db.transaction() as tx:
+        before = store.occurrences(tx, d.trace_id)
+        store.write(tx, d, "exact")
+        return store.correct(tx, d.trace_id, before)
+
+
+def _queued(dsn: str) -> list[str]:
+    return [r[0] for r in _rows(dsn, "SELECT trace_id FROM label_lineage_dirty_traces ORDER BY 1")]
+
+
+def test_what_a_persistent_entity_sends_is_recorded_and_replaced(configured_db: str) -> None:
+    first, second = _crossing()
+    for _ in range(2):
+        with db.transaction() as tx:
+            store.write(tx, first, "exact")
+            store.write(tx, second, "exact")
+    assert _rows(configured_db, "SELECT trace_id, interaction_id, leg_type::text, entity_id FROM label_sends "
+                                "ORDER BY 1") == [("T1", "1", "response", "v"), ("T2", "2", "response", "v")]
+    with db.transaction() as tx:
+        store.write(tx, fold.derive(_second(), find.exact), "exact")
+    assert _rows(configured_db, "SELECT trace_id FROM label_sends") == [("T1",)]
+
+
+def test_an_added_occurrence_queues_the_conversation_its_entity_sends_in_inside_the_interval(configured_db) -> None:
+    first, second = _crossing()
+    late = fold.derive(dataclasses.replace(_second(), trace_id="T3", legs=[
+        dataclasses.replace(x, interaction_id=f"late-{x.interaction_id}",
+                            occurred_at=x.occurred_at + cross.Crossing().retention) for x in _second().legs]),
+        find.exact, crossing=cross.Crossing())
+    _write_and_correct(fold.derive(_second(), find.exact, crossing=cross.Crossing()))   # derived before T1 arrived
+    _write_and_correct(late)                                                        # after T1's interval
+    assert _write_and_correct(first) == ["T2"]          # T1's own send inside the interval is not queued: own
+    assert _queued(configured_db) == ["T2"]
+
+
+def test_a_send_is_corrected_until_the_last_instant_of_the_interval_and_not_at_its_end(configured_db) -> None:
+    first, _ = _crossing()
+    retention = cross.Crossing().retention
+
+    def sent_at(trace_id: str, t: dt.datetime) -> fold.Derivation:
+        return fold.derive(dataclasses.replace(_second(), trace_id=trace_id, legs=[
+            dataclasses.replace(x, interaction_id=f"{trace_id}-{x.interaction_id}", occurred_at=t)
+            for x in _second().legs]), find.exact, crossing=cross.Crossing())
+
+    _write_and_correct(sent_at("T5", T0 + retention - dt.timedelta(seconds=1)))
+    _write_and_correct(sent_at("T6", T0 + retention))
+    assert _write_and_correct(first) == ["T5"]
+
+
+def test_an_unchanged_derivation_queues_nothing_and_a_removed_or_changed_occurrence_queues_again(
+        configured_db: str) -> None:
+    first, second = _crossing()
+    _write_and_correct(second)
+    _write_and_correct(first)
+    with psycopg.connect(configured_db) as conn:
+        conn.execute("DELETE FROM label_lineage_dirty_traces")
+    assert _write_and_correct(first) == []
+    weaker = dataclasses.replace(first, holdings=tuple(
+        dataclasses.replace(h, evidence="crossed", level=cross.VALUE_ONLY) for h in first.holdings))
+    assert _write_and_correct(weaker) == ["T2"]
+    assert _write_and_correct(fold.derive(_first(), find.exact)) == ["T2"]      # without the switch: removed
+    assert _write_and_correct(fold.derive(_first(), find.exact)) == []
+
+
+def test_a_cut_is_a_crossing_row_naming_its_limit_and_is_replaced(configured_db: str) -> None:
+    first, _ = _crossing()
+    t = dataclasses.replace(_second(first.holdings), held_elsewhere={("2", "response"): 2})
+    cut = fold.derive(t, find.exact, crossing=cross.Crossing(holdings_limit=1))
+    with db.transaction() as tx:
+        store.write(tx, cut, "exact")
+    assert _rows(configured_db, "SELECT interaction_id, leg_type::text, cut, value_hash, edge_id "
+                                "FROM label_crossings") == [("2", "response", "holdings_per_entity", None, None)]
+    with db.transaction() as tx:
+        store.write(tx, fold.derive(_second(first.holdings), find.exact, crossing=cross.Crossing()), "exact")
+    assert _rows(configured_db, "SELECT count(*) FROM label_crossings WHERE cut IS NOT NULL") == [(0,)]

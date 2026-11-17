@@ -947,6 +947,21 @@ _Avoid_: reading it as a node of the lineage — it is an index of what an entit
 can send again; and confusing it with `units.Occurrence`, any unit at any
 payload (every edge end).
 
+**Correction** (label lineage):
+A conversation queued to be derived again because another conversation's
+derivation added, removed or changed a **Holding** whose interval holds a leg it
+sent: queued at the end of that derivation's transaction, sorted
+(`label_lineage_dirty_traces`, read through `label_sends`), so the rows do not
+depend on which conversation was derived first. A derivation that changes no
+holding queues nothing. One worker at a time (a session lock), so no correction is
+missed by two deriving at once.
+
+**Cut** (label lineage):
+A leaving leg whose match a limit cut (holdings per entity, payload bytes,
+candidates per payload): a `label_crossings` row naming the limit. Over the
+holdings or candidates limit nothing is asserted there; it is marked, never
+silently partial, and a decision does not read it yet.
+
 **P-data-lineage**:
 The processor that derives **Data lineage**. A Layer-2 processor, sibling of
 `P-interactions` and **P-classification**; drains the `interaction_legs` stream

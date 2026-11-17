@@ -29,7 +29,7 @@ observed
 verdict at 27: expected off=[allow tier 0] / conv=[allow tier 1] / cross=[allow tier 1, block tier 2], observed off=? / conv=? / cross=?
 ```
 
-**Reasons.** pending: the verdict tiers and the gate's time limit are not on this branch; held, not run · held, not run: needs the verdict tiers and decision versions: read by verdict_at
+**Reasons.** pending: the verdict tiers and the gate's time limit are not on this branch; held, not run · held, not run: needs the verdict tiers: read by verdict_at
 
 **Notes.** K2 with the cross-conversation tier answering after the gate's time limit. Tiers 0 and 1 complete and allow: the gate answers allow, tier 1 reached. Then tier 2 blocks: a new decision version, one late finding; it does not reach back. Making tier 2 late needs a seam the verdict tiers provide.
 

@@ -23,11 +23,13 @@ def _types(case: Case, unit: str) -> str:
     return "|".join([case.units[unit]] + sorted(case.accepts[unit] - {case.units[unit]}))
 
 
-def premise(case: Case, on: Observation) -> list[str]:
+def premise(case: Case, on: Observation, cells=None) -> list[str]:
     """Where the model's findings break what the case states about the classifier (red: the case then tests
-    something other than it says)."""
+    something other than it says). The rows hold the last classification: a unit a reclassify step took from a
+    leg must be unlabelled there (``case.final_premise``); *cells*, (must see, must miss), checks another (the
+    engine checks the premise before each reclassify step on the rows as they stand)."""
     notes: list[str] = []
-    for want, cells in ((True, case.must_see), (False, case.must_miss)):
+    for want, cells in zip((True, False), cells or case.final_premise):
         for leg_index, units in sorted(cells.items()):
             c = on.legs[leg_index].classification if leg_index in on.legs else None
             if c is None:

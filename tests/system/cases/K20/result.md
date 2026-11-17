@@ -106,7 +106,7 @@ verdict at 35: expected off=allow / conv=allow / cross=allow, observed off=allow
 
 Marks (cross run): leg 32 [common 4]
 
-Risk observer calls: 48
+Risk observer calls: 52
 
 **Notes.** Four earlier conversations send V2 the SSN, the first of them three times (three calls in one call of T2); the fifth gets it back. Counted by distinct conversation the value is held from 4 > M = 3 conversations (R2): a common value, no edge, the count on the leg. Counted by leg it would be 6: the stated count tells the two apart.
 

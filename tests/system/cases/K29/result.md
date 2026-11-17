@@ -20,7 +20,7 @@ observed
 verdict at 5: expected off=[block tier 0] / conv=[block tier 0] / cross=[block tier 0], observed off=? / conv=? / cross=?
 ```
 
-**Reasons.** pending: the verdict tiers are not on this branch; held, not run · held, not run: needs the verdict tiers and decision versions: read by verdict_at
+**Reasons.** pending: the verdict tiers are not on this branch; held, not run · held, not run: needs the verdict tiers: read by verdict_at
 
 **Notes.** C2: the classifier labels the three on the flagged leg. The decision is block at tier 0, before any lineage is asked, in every mode.
 

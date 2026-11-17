@@ -247,14 +247,17 @@ def test_a_problem_reading_the_rows_is_red_even_for_a_pending_case():
     assert out.status == "RED" and out.reasons[0] == "cross: edge s1 1>None (MRN) has an end on no line leg"
 
 
+TIERED = {"off": ("allow tier 1",), "conv": ("allow tier 1",), "cross": ("allow tier 1", "block tier 2")}
+
+
 def test_a_held_case_is_pending_only_for_exactly_what_this_branch_lacks():
     from .report import judge_held
-    held = _case(config={"payload_bytes": 1}, pending=Pending("waits", held=frozenset({"config"})))
+    held = _case(verdict=TIERED, pending=Pending("waits", held=frozenset({"tiers"})))
     out = judge_held(held)
-    assert out.status == "PENDING" and out.runs == {} and out.reasons[1].startswith("held, not run: needs the limits")
-    assert judge_held(_case(scopes={"V1": "call"}, config={"payload_bytes": 1},
-                            pending=Pending("waits", held=frozenset({"scopes", "config"})))).status == "RED"
-    assert judge_held(_case(config={"payload_bytes": 1})).status == "RED"      # no pending block at all
+    assert out.status == "PENDING" and out.runs == {} and out.reasons[1].startswith("held, not run: needs the verdict")
+    assert judge_held(_case(scopes={"V1": "call"}, verdict=TIERED,
+                            pending=Pending("waits", held=frozenset({"scopes", "tiers"})))).status == "RED"
+    assert judge_held(_case(verdict=TIERED)).status == "RED"      # no pending block at all
     ran = _judge(_case(scopes={"V1": "call"}, pending=Pending("waits", held=frozenset({"scopes"}))))   # the branch has it
     assert ran.status == "RED" and ran.reasons[0].startswith("held for ['scopes'], which this branch has")
     unused = _judge(_case(pending=Pending("waits", held=frozenset({"switch"}))))   # lacked or not, the case uses none
@@ -443,12 +446,43 @@ def _record(version, legs, enforcement):
     ([_record(1, ["request"], "block")], "request", "block", None),
     ([_record(1, ["request"], "allow"), _record(2, ["request", "response"], "allow")], "request", "allow", None),
     ([_record(1, ["response"], "block")], "request", None, "no risk record evidences the flagged request leg"),
-    ([_record(1, ["request"], "allow"), _record(2, ["request", "response"], "block")], "request", None,
-     "risk records disagree at the flagged leg: v1 allow, v2 block"),
+    ([_record(1, ["request"], "allow"), _record(2, ["request", "response"], "block")], "request",
+     ("allow", "block"), None),
+    ([_record(1, ["request"], "allow"), _record(2, ["request"], "allow"), _record(3, ["request"], "block"),
+      _record(4, ["response"], "allow")], "request", ("allow", "allow", "block"), None),
 ])
-def test_the_verdict_is_the_record_that_evidences_the_flagged_leg(records, role, verdict, problem):
-    record, got = verdict_at(records, role)
-    assert (record["enforcement_type"] if record else None, got) == (verdict, problem)
+def test_the_verdict_is_the_decision_history_of_the_records_that_evidence_the_flagged_leg(records, role, verdict,
+                                                                                          problem):
+    _, got, why = verdict_at(records, role)
+    assert (got, why) == (verdict, problem)
+
+
+def test_a_single_verdict_stated_against_a_changed_decision_is_red():
+    out = _judge(_case(), verdicts={"cross": ("allow", "block")})
+    assert out.status == "RED" and "verdict cross: want block, got ('allow', 'block')" in out.reasons
+
+
+def test_a_decision_history_without_tiers_is_not_held():
+    case = _case(verdict={"off": "allow", "conv": "allow", "cross": ("allow", "block")})
+    assert "tiers" not in case.uses
+    runs = {"off": "allow", "conv": "allow"}
+    assert _judge(case, verdicts={**runs, "cross": ("allow", "block")}).status == "GREEN"
+    assert _judge(case, verdicts={**runs, "cross": ("allow", "block", "allow")}).status == "RED"
+
+
+def test_a_stated_history_is_every_version_repeats_included():
+    case = _case(verdict={"off": "allow", "conv": "allow", "cross": ("block", "allow")})
+    _, got, _ = verdict_at([_record(1, ["request"], "block"), _record(2, ["request"], "allow"),
+                            _record(3, ["request"], "allow")], "request")
+    out = _judge(case, verdicts={"off": "allow", "conv": "allow", "cross": got})
+    assert out.status == "RED" and "verdict cross: want ('block', 'allow'), got ('block', 'allow', 'allow')" in out.reasons
+
+
+def test_reclassify_takes_a_unit_only_where_the_premise_labels_it(tmp_path: Path):
+    body = ("steps: [{send: '1-6'}, drain, {reclassify: {%s: [s1]}}, drain]\nexpect:\n  edges: []\n"
+            "classifier:\n  must_see: {1: [s1]}\n  must_miss: {2: [s1], 3: [s1]}\n")
+    with pytest.raises(ValueError, match="reclassify takes a unit only from a leg the premise"):
+        load_case(_yaml(tmp_path, body % 2, line="U>A[s1 -], A>T1[s1 -], T1>V1[s1 -], V1>T1[-], T1>A[-], A>U[-]"))
 
 
 # --- the case states everything; the renderer refuses an ambiguous line ------------------------------------------
@@ -951,10 +985,23 @@ def test_every_shipped_case_agrees_with_its_calibration():
     for case in all_cases():
         found = recorded_findings(case, render(case.id, case.units, case.line))
         legs = {i: _at(i, *f) for i, f in found.items()}
-        wrong += [f"{case.id}: {n}" for n in premise(case, _obs("cross", set(), None, legs))]
+        wrong += [f"{case.id}: {n}" for n in premise(case, _obs("cross", set(), None, legs),
+                                                      (case.must_see, case.must_miss))]
         for i, cells in case.evidence.items():
             for unit, kinds in cells.items():
                 got = {f"classified {t}" for t, text in found[i] if text == case.values[unit]}
                 if got != {k for k in kinds if k.startswith("classified")}:
                     wrong.append(f"{case.id}: leg {i} {unit} states {sorted(kinds)}, the model gave {sorted(got)}")
     assert wrong == []
+
+
+def test_a_reclassified_cell_must_end_unlabelled_and_the_calibration_keeps_the_first_premise():
+    from .report import premise
+    case = _case(must_see={1: ["s1"]}, steps=(("send", (1,)), ("drain",), ("reclassify", ((1, ("s1",)),)),
+                                               ("drain",)))
+    value = case.values["s1"]
+    assert case.final_premise == ({}, {1: ["s1"]})
+    labelled, unlabelled = (_obs("cross", set(), None, {1: _at(1, *f)}) for f in ([("MRN", value)], []))
+    assert premise(case, unlabelled) == []
+    assert premise(case, labelled) == ["leg 1: the model DID label s1 (MRN); the case assumed it would not"]
+    assert premise(case, labelled, (case.must_see, case.must_miss)) == []

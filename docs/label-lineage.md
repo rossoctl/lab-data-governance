@@ -70,10 +70,11 @@ carries what reached it; the trace is `partial` until every payload-bearing leg 
 | `label_lineage_trace_status` | derived trace | `complete` / `partial`, unclassified legs, unanchored findings |
 | `risk_recompute_requests` | interaction | its inherited summary changed after it may have been decided |
 
-Across conversations (migration 0031, written only with `LABEL_CROSS_CONVERSATION=on`):
+Across conversations (migrations 0031 and 0032, written only with `LABEL_CROSS_CONVERSATION=on`):
 `label_occurrences` (what a persistent entity received), `label_crossings` (a crossing's rule level
-beside its edge, or a common value's count) and `label_crossed_edges` (per edge whose value rests on a
-crossing: its level and whether ambiguous at its to leg).
+beside its edge, a common value's count, or the limit that cut a leaving leg), `label_crossed_edges`
+(per edge whose value rests on a crossing: its level and whether ambiguous at its to leg) and
+`label_sends` (each leg a persistent entity sent, with its event time: what a correction reads).
 
 The processor (`python -m data_governance.processors.label_lineage`, `deploy/k8s/93-label-lineage.yaml`)
 drains `interaction_legs` readiness-gated on `dg_interaction_leg_ready` (a leg is delivered once its
@@ -97,7 +98,7 @@ the file lacks cannot be made an anchor. With it on, at each leg in wire order:
 1. **match** — a payload a `persistent` entity sends is searched for the values it received in
    other conversations (and in earlier calls of this one, R7): exact, the whole bounded value, an
    occurrence valid strictly inside `(received, received + LABEL_CROSS_RETENTION_SECONDS)` in event
-   time. A value held from more than `LABEL_CROSS_COMMON_LIMIT` (M, default 3) other conversations is
+   time (one received by way of a crossing from no earlier than that crossing). A value held from more than `LABEL_CROSS_COMMON_LIMIT` (M, default 3) other conversations is
    *common*: no edge, the count is written. The rest pass the rule table, per record of the leg
    that received them: no anchoring identifier (`LABEL_CROSS_ANCHORS`, the person identifiers by
    default) draws nothing; an identifier alone is `value_only`; an identifier and another value of
@@ -132,10 +133,42 @@ words among that sender's occurrences the load could return: other conversations
 loads by those hashes. K is read from an index on (entity, `valid_to`) that includes the columns it
 filters on, so its scan covers the sender's occurrences still valid at the window's start, not its
 history. The cost per payload is its words times K hashes and index probes, whatever the values look
-like; a long value that expired, or one held only in this conversation, does not count. The match then costs one lookup per start
-boundary and distinct held length. An occurrence row is deleted only when its conversation is derived
+like; a long value that expired, or one held only in this conversation, does not count. The match
+then costs one lookup per start boundary and distinct held length. An occurrence row is deleted only when its conversation is derived
 again: there is no expiry job, so `label_occurrences` keeps every value a persistent entity received
 (the index on `valid_to` keeps expired rows out of the load).
+
+**The correction.** A derivation that adds, removes or changes an occurrence (a late conversation, a
+late classification, a re-derivation with a label gone) queues, in its own transaction and through
+`dg_queue_label_trace`, every other conversation with a leg the entity sent strictly inside that
+occurrence's interval (`label_sends`); the dirty arm derives them again, re-reading the queue until it is
+empty or a batch is spent. Everything a match at such a leg reads from other conversations is the
+entity's occurrences valid at its time, so this is exactly the set of legs whose result can change, and
+the final rows do not depend on which conversation was derived first. A conversation is queued at most
+once at a time (the queue's key), and a changed summary or level reaches the decision through
+`risk_recompute_requests` as a new version. The correction runs with the switch off too: a derivation
+then deletes the trace's occurrences, and what rested on them is queued (with the switch always off, a
+read of an empty table and a delete per derivation). It terminates because a match reads only occurrences
+strictly earlier in event time, and an occurrence whose label arrived through a crossing begins no
+earlier than that crossing (its `valid_from` is the later of the leg that received it and the crossing),
+so a clock that stamps a received leg before the crossing that fed it cannot make the correction go
+round; a re-derivation that changes no occurrence queues nothing. The cursor arm, which derives
+several conversations in one transaction, queues their corrections once at its end, in sorted order. It needs one label-lineage worker at a time: the processor holds a session lock
+(`consumer:label_lineage`), so a second one, an evicted pod overlapping its replacement included, waits
+for it; without the lock a derivation could read the occurrences before another commits a change and
+miss its correction for good.
+
+**The limits**, each unset by default (no limit) and applied where a persistent entity sends a payload:
+`LABEL_CROSS_HOLDINGS_PER_ENTITY` (more occurrences valid at the payload's time, in every conversation,
+than the limit: nothing is searched or loaded for that leg, the count is its cost),
+`LABEL_CROSS_PAYLOAD_BYTES` (only the first bytes of the projected payload are searched: what is found in
+that prefix is asserted, at a level that may be lower than the whole text would give, and the leg is
+marked; with `LABEL_CROSS_CANDIDATES_PER_PAYLOAD` also set, the candidates counted are the prefix's, so
+the prefix can assert what the whole text, over that limit, would not, the leg marked `payload_bytes`), `LABEL_CROSS_CANDIDATES_PER_PAYLOAD` (more candidates than the limit: nothing is asserted). A leg a limit cut has a `label_crossings` row naming it (`cut`), whether or not the cut hid
+anything. None has a default number because none can be reasoned to without traffic: the producer
+already caps a payload (`max_payload_bytes`, 4096 by default), M bounds the conversations behind each
+value, and how many values an entity holds at once is its arrival rate times the retention. A cut result
+is marked on rows only: a decision downstream of the cut leg does not see it.
 
 The policy reads a crossed label when leg-ready has `LABEL_CROSS_CONVERSATION=on` too (its value must
 equal this processor's): the crossed edges into a leg are one more document-level data item of that
@@ -229,7 +262,9 @@ implements one (`docs/LIVE-E2E.md` numbers its live scenarios with an R too; tho
 
 - **R1** A holding is valid strictly after the time its value was received and strictly before that
   time plus the retention, in event time: `from < t < to`. A value cannot leave at the instant it
-  arrives, and whether it has expired does not depend on rounding.
+  arrives, and whether it has expired does not depend on rounding. A holding whose value arrived
+  through a crossing begins no earlier than that crossing; if that leaves no interval, nothing is
+  held.
 - **R2** A value held from more than M other conversations is a *common value*: it draws no
   crossing, only a count on the leg. The count is taken when the payload is matched, over the
   holdings valid at the payload's time, by distinct conversation (three holdings in one conversation
@@ -255,9 +290,9 @@ implements one (`docs/LIVE-E2E.md` numbers its live scenarios with an R too; tho
   shared agent mixes its users by definition, and declaring it is the acceptance.
 
 All ten are built, in `label_lineage/cross.py` and the fold (R5 through leg-ready, with
-`RISK_INHERITED_LABELS` and `LABEL_CROSS_CONVERSATION` on). Not yet: a conversation derived before a
-value it would cross arrived is not derived again, so R1 and R2 hold at the payload's time only when
-conversations are derived in event order.
+`RISK_INHERITED_LABELS` and `LABEL_CROSS_CONVERSATION` on). A conversation whose matches another
+derivation changes is derived again (the correction above), so R1 and R2 hold at the payload's time
+whatever order the conversations are derived in.
 
 ## What this does not do yet
 
@@ -265,8 +300,8 @@ conversations are derived in event order.
   spelled-out email is not the unit (structural transformations come next).
 - No fragments: a value split across fields or cut to its last four reaches nothing; `recombined`
   is always false.
-- A conversation derived before an earlier one arrived is not matched again (comes next). The
-  verdict does not yet ask in tiers (classification, in-conversation, cross-conversation).
+- The verdict does not yet ask in tiers (classification, in-conversation, cross-conversation), and a
+  leg cut by a limit is not part of the policy input.
 - No semantic judge. Data lineage keeps its own `SEMANTIC_MATCHER`; label lineage's finders are not offered there.
 - No floor on a unit's length: a short finding (a two-digit age, a misread word) is found wherever
   those bytes stand whole and bounded, so its labels travel as far as the bytes do.

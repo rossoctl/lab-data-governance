@@ -1,6 +1,6 @@
 """Writing a :class:`~data_governance.label_lineage.summary.Derivation` to the four
-tables of migration 0024 and the three of 0031, and reading back what risk needs to
-know changed.
+tables of migration 0024 and the four of 0031 and 0032, reading back what risk needs to know
+changed, and queueing the conversations a changed occurrence bears on (:func:`correct`).
 
 The rows mirror the dataclasses: an edge row is the edge's two occurrences
 flattened, a leg row is a :class:`LegSummary`, the status row is the trace's
@@ -8,12 +8,13 @@ flattened, a leg row is a :class:`LegSummary`, the status row is the trace's
 natural key, the leg row is keyed by its leg — so writing one derivation twice is
 the same rows, and the trace-scoped delete is by set membership, never by seq.
 
-A crossing edge is an edge row like any other; its level and the common values of
-a leaving leg are ``label_crossings`` rows, what the trace's persistent entities
-received ``label_occurrences`` rows, and every edge whose value rests on a crossing
-has a ``label_crossed_edges`` row with how surely it is the label's there. A
-derivation without the cross-conversation switch produces none, so writing it deletes
-the trace's rows there and writes none.
+A crossing edge is an edge row like any other; its level, the common values of a
+leaving leg and the limits that cut it are ``label_crossings`` rows, what the trace's
+persistent entities received ``label_occurrences`` rows, the legs they sent
+``label_sends`` rows, and every edge whose value rests on a crossing has a
+``label_crossed_edges`` row with how surely it is the label's there. A derivation
+without the cross-conversation switch produces none, so writing it deletes the trace's
+rows there and writes none.
 """
 
 from __future__ import annotations
@@ -161,8 +162,8 @@ ON CONFLICT (occurrence_id) DO UPDATE SET
 
 _CROSSING_SQL = """
 INSERT INTO label_crossings (
-    crossing_id, trace_id, interaction_id, leg_type, value_hash, conversations, edge_id, occurrence_id, level
-) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+    crossing_id, trace_id, interaction_id, leg_type, value_hash, conversations, edge_id, occurrence_id, level, cut
+) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
 ON CONFLICT (crossing_id) DO UPDATE SET
     conversations = EXCLUDED.conversations, occurrence_id = EXCLUDED.occurrence_id, level = EXCLUDED.level
 """
@@ -189,12 +190,78 @@ def _crossing_rows(derivation: Derivation) -> list[tuple]:
         if c is not None:
             eid = edge_id(e)
             rows.append((str(uuid.uuid5(NS_CROSSINGS, f"crossing/{eid}")), t, *e.to_key,
-                         value_hash(c.holding.value), c.conversations, eid, occurrence_id(c.holding), c.level))
+                         value_hash(c.holding.value), c.conversations, eid, occurrence_id(c.holding), c.level, None))
     for m in derivation.commons:
         vh = value_hash(m.value)
         rows.append((str(uuid.uuid5(NS_CROSSINGS, f"common/{t}/{':'.join(m.leg)}/{vh}")), t, *m.leg,
-                     vh, m.conversations, None, None, None))
+                     vh, m.conversations, None, None, None, None))
+    for leg, limit in derivation.cuts:
+        rows.append((str(uuid.uuid5(NS_CROSSINGS, f"cut/{t}/{':'.join(leg)}/{limit}")), t, *leg,
+                     None, None, None, None, None, limit))
     return rows
+
+
+_SEND_SQL = """
+INSERT INTO label_sends (interaction_id, leg_type, entity_id, trace_id, occurred_at) VALUES (%s, %s, %s, %s, %s)
+ON CONFLICT (interaction_id, leg_type) DO UPDATE SET
+    entity_id = EXCLUDED.entity_id, trace_id = EXCLUDED.trace_id, occurred_at = EXCLUDED.occurred_at
+"""
+
+
+def _write_sends(tx: db.Transaction, derivation: Derivation) -> None:
+    rows = [(*leg, entity_id, derivation.trace_id, t) for entity_id, leg, t in derivation.sends]
+    tx.execute_many(_SEND_SQL, rows)
+    tx.execute(
+        "DELETE FROM label_sends s WHERE s.trace_id = %s AND NOT EXISTS ("
+        "  SELECT 1 FROM unnest(%s::text[], %s::text[]) AS kept(interaction_id, leg_type)"
+        "  WHERE kept.interaction_id = s.interaction_id AND kept.leg_type = s.leg_type::text)",
+        (derivation.trace_id, [r[0] for r in rows], [r[1] for r in rows]),
+    )
+
+
+def occurrences(tx: db.Transaction, trace_id: str) -> set[tuple]:
+    """The trace's ``label_occurrences`` rows as (entity, valid from, valid to, the whole
+    row): what :func:`correct` compares before and after a derivation."""
+    return set(tx.fetch_all("SELECT entity_id, valid_from, valid_to, to_jsonb(o)::text FROM label_occurrences o "
+                            "WHERE trace_id = %s", (trace_id,)))
+
+
+_AFFECTED_SQL = """
+SELECT DISTINCT s.trace_id
+  FROM label_sends s
+  JOIN unnest(%s::text[], %s::timestamptz[], %s::timestamptz[]) AS c(entity_id, valid_from, valid_to)
+    ON s.entity_id = c.entity_id AND s.occurred_at > c.valid_from AND s.occurred_at < c.valid_to
+ WHERE s.trace_id <> %s
+ ORDER BY s.trace_id
+"""
+
+
+def correct(tx: db.Transaction, trace_id: str, before: set[tuple]) -> list[str]:
+    """Queue, in *tx*, what :func:`affected` returns. Returns the queued traces."""
+    traces = affected(tx, trace_id, before)
+    queue(tx, traces)
+    return traces
+
+
+def queue(tx: db.Transaction, traces) -> None:
+    """Queue *traces* for derivation again, in sorted order: one transaction that queues
+    several takes their queue rows in the order every other queue writer takes them."""
+    tx.execute_many("SELECT dg_queue_label_trace(%s)", [(t,) for t in sorted(set(traces))])
+
+
+def affected(tx: db.Transaction, trace_id: str, before: set[tuple]) -> list[str]:
+    """Every other conversation the derivation just written can change:
+    one with a leg sent by the entity of an occurrence that was added, removed or
+    changed (*before* against the rows now), strictly inside that occurrence's
+    interval (R1). Everything a match at such a leg reads from other conversations is
+    the entity's occurrences valid at its time, so this is every leg whose result can
+    differ, and no other. An unchanged derivation changes none."""
+    changed = before ^ occurrences(tx, trace_id)
+    if not changed:
+        return []
+    rows = sorted({r[:3] for r in changed})
+    return [r[0] for r in tx.fetch_all(_AFFECTED_SQL, ([r[0] for r in rows], [r[1] for r in rows],
+                                                       [r[2] for r in rows], trace_id))]
 
 
 _CARRIED_SQL = """
@@ -255,6 +322,7 @@ def write(tx: db.Transaction, derivation: Derivation, matcher: str) -> set[str]:
     _replace(tx, "label_occurrences", "occurrence_id", trace_id,
              [_occurrence_row(h) for h in derivation.holdings], _OCCURRENCE_SQL)
     _replace(tx, "label_crossings", "crossing_id", trace_id, _crossing_rows(derivation), _CROSSING_SQL)
+    _write_sends(tx, derivation)
     carried = _carried_rows(derivation)
     _replace(tx, "label_crossed_edges", "edge_id", trace_id, carried, _CARRIED_SQL)
     s = derivation.status

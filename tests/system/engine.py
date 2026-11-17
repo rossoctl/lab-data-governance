@@ -6,10 +6,12 @@ drain (replayed model output through the production seam) -> label-lineage drain
 
 A case runs its steps (by default: send every leg, then drain): ``send`` puts legs on
 the wire, ``drain`` runs every drain from where it stopped, ``derive`` queues a
-conversation for derivation again through the production correction queue, ``cross`` turns the
+conversation for derivation again through the production correction queue, ``reclassify`` classifies every
+payload again by ADR-0024's runbook with the stated findings taken away (:func:`reclassify`), ``cross`` turns the
 cross-conversation switch on or off for the drains after it (label lineage and leg-ready, as a
 restart would). A run is in one of three modes, set through the production switches (:func:`switches`). A case's
-``scopes:`` reach label lineage as the production declaration (:func:`declaration`).
+``scopes:`` reach label lineage as the production declaration (:func:`declaration`), its ``config:`` as the
+production limits (:data:`LIMIT_ENV`).
 
 A drain may stop early by design (leg-ready holds its cursor while OPA is down) and
 returns where it stopped: a run where a drain stopped short of its stream's end or
@@ -49,10 +51,12 @@ from .render import Renderer, Rendered, render
 # (``Case.uses``; its ``expect.pending.held`` names them). The change that builds a path removes its row here and
 # applies it in :func:`run_case`, where the comment of each row says.
 NOT_ON_BRANCH = {
-    "config": "the limits as configuration: set in run_case before the first send",
-    "reclassify": "a classification replaced and its conversation derived again: a reclassify step",
-    "tiers": "the verdict tiers and decision versions: read by verdict_at",
+    "tiers": "the verdict tiers: read by verdict_at",
 }
+
+# A case's ``config:`` key -> the environment variable the label-lineage processor reads it from.
+LIMIT_ENV = {cross.HOLDINGS_PER_ENTITY: cross.HOLDINGS_LIMIT_ENV_VAR, cross.PAYLOAD_BYTES: cross.PAYLOAD_BYTES_ENV_VAR,
+             cross.CANDIDATES_PER_PAYLOAD: cross.CANDIDATES_LIMIT_ENV_VAR}
 
 _KEEP = {"alembic_version"}
 
@@ -86,7 +90,7 @@ class Observation:
     legs: dict[int, LegRows]
     edges: set[Edge]                           # (unit, from_leg, to_leg, level) resolved to line legs
     raw_edges: list[dict[str, Any]]
-    verdict: str | None                        # at the sink: enforcement_type as the record writes it
+    verdict: str | tuple[str, ...] | None      # at the sink: enforcement_type as the records write it (verdict_at)
     timings: dict[str, float]
     observer_calls: int                        # risk-observer invocations (one per evidence state)
     problems: list[str] = dataclasses.field(default_factory=list)   # rows the judge cannot read: always red
@@ -114,19 +118,19 @@ def _wait_rows(dsn: str, n: int, timeout: float = 5.0) -> None:
     raise TimeoutError(f"receiver stored fewer than {n} spans")
 
 
-def verdict_at(records: list[dict[str, Any]], role: str) -> tuple[dict[str, Any] | None, str | None]:
-    """The risk record of the flagged exchange that evidences the flagged leg (*role* in its ``legs``), and a
-    problem when there is none or several that disagree. The verdict is its ``enforcement_type``, as written.
-    The harness sends every span before the processors run, so the record evidences the exchange's response
-    too; the renderer refuses a flagged exchange whose response carries a unit, and the judge one whose
-    response the model labelled."""
+def verdict_at(records: list[dict[str, Any]], role: str
+               ) -> tuple[dict[str, Any] | None, str | tuple[str, ...] | None, str | None]:
+    """The latest risk record of the flagged exchange that evidences the flagged leg (*role* in its ``legs``), the
+    decision, and a problem when there is none. The decision is the records' ``enforcement_type`` as written: a
+    string when every version agrees (a single stated verdict needs that), else every version in order, repeats
+    included, which a stated history must equal exactly. The harness sends every span before the processors run,
+    so the record evidences the exchange's response too; the renderer refuses a flagged exchange whose response
+    carries a unit, and the judge one whose response the model labelled."""
     mine = [r for r in records if role in r["legs"]]
     if not mine:
-        return None, f"no risk record evidences the flagged {role} leg"
-    if len({r["enforcement_type"] for r in mine}) > 1:
-        return None, ("risk records disagree at the flagged leg: "
-                      + ", ".join(f"v{r['version']} {r['enforcement_type']}" for r in mine))
-    return mine[-1], None
+        return None, None, f"no risk record evidences the flagged {role} leg"
+    history = tuple(r["enforcement_type"] for r in mine)
+    return mine[-1], history[0] if len(set(history)) == 1 else history, None
 
 
 def flagged_response_problems(rendered: list[Rendered], legs: dict[int, "LegRows"], sink: int) -> list[str]:
@@ -280,6 +284,17 @@ def undeclared(declared: Mapping[str, str], derived: set[str]) -> list[str]:
             for key in sorted(declared) if key not in derived]
 
 
+def reclassify(dsn: str, detector: classify.ReplayDetector, case: Case, renderer: Renderer,
+               cells: tuple[tuple[int, tuple[str, ...]], ...]) -> classify.ReplayDetector:
+    """ADR-0024's runbook, the model now reading the stated legs without the stated units: every classification
+    deleted (the classification cursor is reset by the caller), to be written again by the next drain. Returns
+    the detector that drain classifies with: the case's own, its findings on those values at those legs' texts
+    taken away."""
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        conn.execute("TRUNCATE payload_classifications")
+    return classify.without(detector, renderer, {leg: [renderer.values[u] for u in units] for leg, units in cells})
+
+
 @contextlib.contextmanager
 def switches(mode: str):
     """The production switches of *mode*, through the environment the processors read: inherited labels off in
@@ -333,11 +348,14 @@ def run_case(case: Case, *, dsn: str, grpc_endpoint: str, opa_client, mode: str)
 
     cursors = {s: 0 for s in STREAMS}
     sent = 0
+    early: list[str] = []          # problems found before the last step (read at a reclassify step)
     # the suite runs the exact finder; the case's scopes, or none, through the processor's own configuration
-    with switches(mode), environment({"LABEL_MATCHER": "exact", memory.SCOPES_ENV_VAR: declaration(case, renderer)}):
+    limits = {env: str(case.config.get(key, "")) for key, env in LIMIT_ENV.items()}    # "": no limit
+    with switches(mode), environment({"LABEL_MATCHER": "exact", memory.SCOPES_ENV_VAR: declaration(case, renderer),
+                                      **limits}):
         config = label_lineage.configured()
         try:
-            for step in case.steps:
+            for n, step in enumerate(case.steps):
                 if step[0] == "send":
                     rows = renderer.rows_of(step[1])
                     _send(rows, grpc_endpoint)
@@ -347,6 +365,13 @@ def run_case(case: Case, *, dsn: str, grpc_endpoint: str, opa_client, mode: str)
                 elif step[0] == "derive":
                     with psycopg.connect(dsn, autocommit=True) as conn:
                         conn.execute("SELECT dg_queue_label_trace(%s)", (renderer.trace_of(step[1]),))
+                elif step[0] == "reclassify":
+                    # the premise must hold on the production rows before findings are taken away
+                    from .report import premise
+                    early += [f"before step {n + 1} (reclassify): {p}" for p in premise(
+                        case, _read(case, renderer.rendered, dsn, mode), case.premise_before(n))]
+                    detector = reclassify(dsn, detector, case, renderer, step[1])
+                    cursors["classification"] = 0
                 elif step[0] == "cross":
                     os.environ[cross.SWITCH_ENV_VAR] = step[1]     # restored by switches()
                     config = label_lineage.configured()
@@ -371,7 +396,7 @@ def run_case(case: Case, *, dsn: str, grpc_endpoint: str, opa_client, mode: str)
             leg_ready._label_hold[:] = saved_hold
 
     obs = _read(case, renderer.rendered, dsn, mode)
-    obs.problems[:0] = unfinished(cursors, *backlog(dsn, mode)) + undeclared(config.scopes, derived_keys(dsn))
+    obs.problems[:0] = early + unfinished(cursors, *backlog(dsn, mode)) + undeclared(config.scopes, derived_keys(dsn))
     obs.observer_calls = calls["n"]
     lap("read")
     obs.timings = {**timings, "total": round(sum(timings.values()), 4)}
@@ -405,7 +430,9 @@ def _read(case: Case, rendered: list[Rendered], dsn: str, mode: str) -> Observat
         edges = [(*r[:8], _LEVELS[r[8]] if r[8] else None, r[9],
                   f"crossed {_LEVELS[r[10]]}{' ambiguous' if r[11] else ''}" if r[10] else None) for r in edges]
         commons = conn.execute("SELECT interaction_id, leg_type::text, conversations FROM label_crossings "
-                               "WHERE edge_id IS NULL").fetchall()
+                               "WHERE edge_id IS NULL AND cut IS NULL").fetchall()
+        cuts = conn.execute("SELECT interaction_id, leg_type::text, cut FROM label_crossings "
+                            "WHERE cut IS NOT NULL").fetchall()
         doubled = conn.execute(
             "SELECT entity_id, interaction_id, leg_type::text, entity_type, value_text, count(*) "
             "FROM label_occurrences GROUP BY entity_id, interaction_id, leg_type, origin_trace_id, "
@@ -429,10 +456,9 @@ def _read(case: Case, rendered: list[Rendered], dsn: str, mode: str) -> Observat
     if sink:
         key = key_of_leg.get(sink.index)
         if key is not None:
-            sink_record, problem = verdict_at(records.get(key[0], []), key[1])
+            sink_record, verdict, problem = verdict_at(records.get(key[0], []), key[1])
             if problem:
                 problems.append(problem)
-            verdict = sink_record["enforcement_type"] if sink_record else None
 
     legs: dict[int, LegRows] = {}
     for r in rendered:
@@ -450,13 +476,14 @@ def _read(case: Case, rendered: list[Rendered], dsn: str, mode: str) -> Observat
 
     if sink:
         problems += flagged_response_problems(rendered, legs, sink.index)
-    # marks: the common-value count, read from its crossing row; the incomplete mark is not written yet
+    # marks: the common-value count and the limit that cut a leg, read from their crossing rows
     marks: dict[int, set[str]] = defaultdict(set)
-    for iid, lt, n in commons:
+    for iid, lt, mark in [(i, lt, f"common {n}") for i, lt, n in commons] + [
+            (i, lt, f"incomplete {c}") for i, lt, c in cuts]:
         if (iid, lt) in leg_of_key:
-            marks[leg_of_key[(iid, lt)]].add(f"common {n}")
+            marks[leg_of_key[(iid, lt)]].add(mark)
         else:
-            problems.append(f"a common-value mark sits on no line leg ({iid} {lt})")
+            problems.append(f"a mark ({mark}) sits on no line leg ({iid} {lt})")
     # an occurrence is registered once per derivation of its conversation, never doubled (K21, K27)
     value_unit = {v: u for u, v in case.values.items()}
     problems += [f"occurrence of {value_unit.get(value, '?' + value)} ({etype}) at leg "

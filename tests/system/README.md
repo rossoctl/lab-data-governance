@@ -64,8 +64,8 @@ The keys of a case across conversations (`cases.py` shows each; R1–R10 are the
   origin; a fabricated extra origin from the same carrier leg at a cell already stated ambiguous is not seen
   (a known limit).
 - **`expect.marks`**: at a leg, `common 4` (a common value and its count) or `incomplete payload_bytes`
-  (a limit that cut the result). Every mark drawn must be stated. `common N` is read from its crossing
-  row; no row writes `incomplete` on this branch.
+  (a limit that cut the result), read from `label_crossings` (its count, or its `cut`). Every mark drawn
+  must be stated.
 - **`steps`**: `send: 17-32` (legs, a range in its own direction: `32-1` is reversed), `drain` (every
   drain on from where it stopped), `derive: 2` (the conversation queued again through the production
   correction queue, `dg_queue_label_trace`), `reclassify: {7: [s1]}`, `cross: 'on'`. By default: send
@@ -76,15 +76,25 @@ The keys of a case across conversations (`cases.py` shows each; R1–R10 are the
   (`Renderer.natural_key`: `agent:lab/a`, `tool:lab/t2`, `service:api.v2.partner.example:8000`,
   `llm:host.containers.internal:11434/qwen2.5:7b`). A declared party whose key is no derived entity is red.
   Every run sets the variable, `{}` for a case without `scopes`, so the shell's own value never leaks in.
-- **`config`** (`{payload_bytes: 16}`): a limit, applied through the production configuration.
-- **`expect.verdict`** per mode, or a decision history per mode: `[allow tier 1, block tier 2]`.
+- **`config`** (`{payload_bytes: 16}`): a limit, applied through the production configuration
+  (`LABEL_CROSS_PAYLOAD_BYTES` and its two siblings, `engine.LIMIT_ENV`); every run sets all three, empty
+  for none.
+- **`reclassify: {7: [s1]}`**: ADR-0024's runbook — every classification truncated, the classification
+  cursor reset, the next drain classifying again with the model's findings on those units at those legs
+  taken away. The runbook re-derives nothing by itself; a `derive` step queues the conversation. The
+  classifier premise states the first classification; a step takes a unit only from a leg the premise says
+  the model labels, and the premise as it stands is checked on the rows before each such step (red if it
+  does not hold); the final rows are judged with the reclassified cells unlabelled.
+- **`expect.verdict`** per mode, or a decision history per mode: the decisions of every record that
+  evidences the flagged leg, in version order, repeats included (`[allow, block]`: a correction reached
+  the decision, once); a single verdict needs every version to agree. With tiers,
+  `[allow tier 1, block tier 2]` (held until the tiers are built).
 
-A case that needs a production path this branch lacks (a limit, a reclassification, the tiers:
-`engine.NOT_ON_BRANCH`, one row each naming the path and where the engine applies it) is **held**: not
-run, and PENDING only when `expect.pending.held` names exactly those paths; here that is K23a-c (limits),
-K25 (reclassify), K29 and K30 (tiers). The change that builds a path removes its row and the case runs
-from then on. `engine.switches` sets the cross-conversation switch per run (on in `off` and `cross`, off
-in `conv`), and a `cross` step switches it inside a run.
+A case that needs a production path this branch lacks (the tiers: `engine.NOT_ON_BRANCH`, one row each
+naming the path and where the engine applies it) is **held**: not run, and PENDING only when
+`expect.pending.held` names exactly those paths; here that is K29 and K30. The change that builds a path
+removes its row and the case runs from then on. `engine.switches` sets the cross-conversation switch per
+run (on in `off` and `cross`, off in `conv`), and a `cross` step switches it inside a run.
 
 ## Run
 
