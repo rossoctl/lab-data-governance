@@ -1,0 +1,150 @@
+id: K14
+title: two patients, two records
+cell: across/rule/same-record
+line: U>A[-], A>L[-], L>A[-], A>T1[-], ..V1.., T1>A[{s1 s3} {s5 s6} -], A>L[{s1 s3} {s5 s6} -], L>A[{s1 s3} {s5 s6} -], A>T2[{s1
+  s3} {s5 s6} -], T2>V2[{s1 s3} {s5 s6} -], V2>T2[-], T2>A[-], A>L[-], L>A[-], A>U[-] ~10min> U>A[-], A>L[-], L>A[-], A>T2[-],
+  T2>V2[-], V2>T2[s1@subject s6@since -], T2>A[s1@subject s6@since -], A>L[s1@subject s6@since -], L>A[s1@subject s6@since
+  -], A>T3[s1@subject s6@since -], T3>V3[s1@subject s6@since -]⚑, V3>T3[-], T3>A[-], A>L[-], L>A[-], A>U[-]
+units:
+  s1: SSN
+  s3: DOB
+  s5: SSN
+  s6: DOB
+expect:
+  verdict:
+    'off': allow
+    conv: allow
+    cross: block
+  edges:
+  - s1 7>8
+  - s1 8>9
+  - s1 9>10
+  - s1 10>11
+  - s3 7>8
+  - s3 8>9
+  - s3 9>10
+  - s3 10>11
+  - s5 7>8
+  - s5 8>9
+  - s5 9>10
+  - s5 10>11
+  - s6 7>8
+  - s6 8>9
+  - s6 9>10
+  - s6 10>11
+  - s1 7>10
+  - s3 7>10
+  - s5 7>10
+  - s6 7>10
+  cross:
+  - s1 11>22 vo
+  - s1 22>23
+  - s1 23>24
+  - s1 24>25
+  - s1 25>26
+  - s1 26>27
+  - s1 23>26
+  evidence:
+    '11':
+      s1:
+      - classified SSN
+      - inherited
+      s3:
+      - classified DOB
+      - inherited
+      s5:
+      - classified SSN
+      - inherited
+      s6:
+      - classified DOB
+      - inherited
+    '22':
+      s1:
+      - crossed vo
+      s6: []
+    '23':
+      s1:
+      - crossed vo
+    '24':
+      s1:
+      - crossed vo
+    '25':
+      s1:
+      - crossed vo
+    '26':
+      s1:
+      - crossed vo
+    '27':
+      s1:
+      - crossed vo
+  pending:
+    reason: 'no crossing on this branch: the crossing core draws the crossing and the edges that rest on it; the level on
+      its way carries crossed and its level to every later leg and into the policy input, so the cross run blocks at the flagged
+      leg. The off and conv runs already match'
+    missing:
+    - s1 11>22 vo
+    - s1 22>23
+    - s1 23>24
+    - s1 24>25
+    - s1 25>26
+    - s1 26>27
+    - s1 23>26
+    verdict:
+    - cross
+    evidence:
+    - 22
+    - 23
+    - 24
+    - 25
+    - 26
+    - 27
+classifier:
+  must_see:
+    '7':
+    - s1
+    - s3
+    - s5
+    - s6
+    '8':
+    - s1
+    - s3
+    - s5
+    - s6
+    '9':
+    - s1
+    - s3
+    - s5
+    - s6
+    '10':
+    - s1
+    - s3
+    - s5
+    - s6
+    '11':
+    - s1
+    - s3
+    - s5
+    - s6
+  must_miss:
+    '22':
+    - s1
+    - s6
+    '23':
+    - s1
+    - s6
+    '24':
+    - s1
+    - s6
+    '25':
+    - s1
+    - s6
+    '26':
+    - s1
+    - s6
+    '27':
+    - s1
+    - s6
+  authored: true
+notes: 'Conversation 1 sends V2 a listing of two patients, one record each: {SSN A, birthdate A} and {SSN B, birthdate B}.
+  V2 returns A''s SSN and B''s birthdate. They left in different records, so they do not corroborate (R4): A''s SSN crosses
+  value-only, B''s birthdate has no anchor in its record and draws nothing. Never corroborated; it blocks on the SSN (R5).'

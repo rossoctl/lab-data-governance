@@ -1,0 +1,173 @@
+{
+ "model_dir": "classification/model/20260304",
+ "model_version": 2,
+ "calibrated_at": "2026-11-13T07:30:26+00:00",
+ "by_text": {
+  "{\"note\": \"please process at the usual priority\"}": [],
+  "{\"note\": \"no further action needed\"}": [],
+  "{\"note\": \"forwarded for fulfilment\"}": [],
+  "{\"note\": \"acknowledged\"}": [],
+  "{\"note\": \"please process at the usual priority\", \"records\": [{\"dob\": \"1961-03-14\", \"ssn\": \"123-45-6789\"}, {\"dob\": \"1978-11-02\", \"ssn\": \"987-65-4321\"}]}": [
+   [
+    70,
+    80,
+    "DOB"
+   ],
+   [
+    91,
+    102,
+    "SSN"
+   ],
+   [
+    115,
+    125,
+    "DOB"
+   ],
+   [
+    136,
+    147,
+    "SSN"
+   ]
+  ],
+  "{\"note\": \"no further action needed\", \"records\": [{\"dob\": \"1961-03-14\", \"ssn\": \"123-45-6789\"}, {\"dob\": \"1978-11-02\", \"ssn\": \"987-65-4321\"}]}": [
+   [
+    58,
+    68,
+    "DOB"
+   ],
+   [
+    79,
+    90,
+    "SSN"
+   ],
+   [
+    103,
+    113,
+    "DOB"
+   ],
+   [
+    124,
+    135,
+    "SSN"
+   ]
+  ],
+  "{\"note\": \"forwarded for fulfilment\", \"records\": [{\"dob\": \"1961-03-14\", \"ssn\": \"123-45-6789\"}, {\"dob\": \"1978-11-02\", \"ssn\": \"987-65-4321\"}]}": [
+   [
+    58,
+    68,
+    "DOB"
+   ],
+   [
+    79,
+    90,
+    "SSN"
+   ],
+   [
+    103,
+    113,
+    "DOB"
+   ],
+   [
+    124,
+    135,
+    "SSN"
+   ]
+  ],
+  "{\"note\": \"acknowledged\", \"records\": [{\"dob\": \"1961-03-14\", \"ssn\": \"123-45-6789\"}, {\"dob\": \"1978-11-02\", \"ssn\": \"987-65-4321\"}]}": [
+   [
+    46,
+    56,
+    "DOB"
+   ],
+   [
+    67,
+    78,
+    "SSN"
+   ],
+   [
+    91,
+    101,
+    "DOB"
+   ],
+   [
+    112,
+    123,
+    "SSN"
+   ]
+  ],
+  "{\"note\": \"batch job window 02:00\", \"records\": [{\"dob\": \"1961-03-14\", \"ssn\": \"123-45-6789\"}, {\"dob\": \"1978-11-02\", \"ssn\": \"987-65-4321\"}]}": [
+   [
+    56,
+    66,
+    "DOB"
+   ],
+   [
+    77,
+    88,
+    "SSN"
+   ],
+   [
+    101,
+    111,
+    "DOB"
+   ],
+   [
+    122,
+    133,
+    "SSN"
+   ]
+  ],
+  "{\"note\": \"routine refill request received\"}": [],
+  "{\"note\": \"batch job window 02:00\"}": [],
+  "{\"note\": \"acknowledged\", \"since\": \"1978-11-02\", \"subject\": \"123-45-6789\"}": [],
+  "{\"note\": \"batch job window 02:00\", \"since\": \"1978-11-02\", \"subject\": \"123-45-6789\"}": [],
+  "{\"note\": \"routine refill request received\", \"since\": \"1978-11-02\", \"subject\": \"123-45-6789\"}": [],
+  "{\"note\": \"please process at the usual priority\", \"since\": \"1978-11-02\", \"subject\": \"123-45-6789\"}": [],
+  "{\"note\": \"no further action needed\", \"since\": \"1978-11-02\", \"subject\": \"123-45-6789\"}": [],
+  "{\"note\": \"forwarded for fulfilment\", \"since\": \"1978-11-02\", \"subject\": \"123-45-6789\"}": []
+ },
+ "authored": {
+  "{\"note\": \"acknowledged\", \"since\": \"1978-11-02\", \"subject\": \"123-45-6789\"}": {
+   "values": [
+    "123-45-6789",
+    "1978-11-02"
+   ],
+   "removed": 2
+  },
+  "{\"note\": \"batch job window 02:00\", \"since\": \"1978-11-02\", \"subject\": \"123-45-6789\"}": {
+   "values": [
+    "123-45-6789",
+    "1978-11-02"
+   ],
+   "removed": 2
+  },
+  "{\"note\": \"routine refill request received\", \"since\": \"1978-11-02\", \"subject\": \"123-45-6789\"}": {
+   "values": [
+    "123-45-6789",
+    "1978-11-02"
+   ],
+   "removed": 2
+  },
+  "{\"note\": \"please process at the usual priority\", \"since\": \"1978-11-02\", \"subject\": \"123-45-6789\"}": {
+   "values": [
+    "123-45-6789",
+    "1978-11-02"
+   ],
+   "removed": 2
+  },
+  "{\"note\": \"no further action needed\", \"since\": \"1978-11-02\", \"subject\": \"123-45-6789\"}": {
+   "values": [
+    "123-45-6789",
+    "1978-11-02"
+   ],
+   "removed": 2
+  },
+  "{\"note\": \"forwarded for fulfilment\", \"since\": \"1978-11-02\", \"subject\": \"123-45-6789\"}": {
+   "values": [
+    "123-45-6789",
+    "1978-11-02"
+   ],
+   "removed": 2
+  }
+ }
+}

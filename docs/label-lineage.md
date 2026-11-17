@@ -127,6 +127,43 @@ sets). A banner names what is tracked, each removable; hops in other traces are 
 Tracking is per trace and per page visit. With edges per interaction the graphs draw request legs
 only, and a value's response-leg hop lights its interaction's one arrow.
 
+## The crossing rules
+
+A *holding* is one time a persistent entity received a labelled value; a *crossing* is an edge from a
+holding of one conversation to a payload the entity sends in another. The system cases that cross
+conversations (`tests/system`, K1–K30) cite these rules by number, and so does the code that
+implements one (`docs/LIVE-E2E.md` numbers its live scenarios with an R too; those are not these).
+
+- **R1** A holding is valid strictly after the time its value was received and strictly before that
+  time plus the retention, in event time: `from < t < to`. A value cannot leave at the instant it
+  arrives, and whether it has expired does not depend on rounding.
+- **R2** A value held from more than M other conversations is a *common value*: it draws no
+  crossing, only a count on the leg. The count is taken when the payload is matched, over the
+  holdings valid at the payload's time, by distinct conversation (three holdings in one conversation
+  count once); a stored count is only a cache.
+- **R3** A value with several origins carries the strongest of their levels and is marked
+  *ambiguous*; along one path the weakest step holds.
+- **R4** A value's record is the innermost object of a structured payload that holds the value as
+  the whole of one member. A payload with no structure, or a value inside a longer string, has no
+  record: its crossings are value-only at most.
+- **R5** One anchoring identifier alone is a value-only crossing, and its label reaches the policy
+  like any other: lineage states the level, the policy decides, and a rule that blocks the label
+  (the suite's T-SENS does) blocks it. What is uncertain is which earlier conversation the value came
+  from, and when several gave it, *ambiguous* says so.
+- **R6** Holdings are written only while the cross-conversation switch is on. Switching it on does
+  not look back.
+- **R7** When a persistent entity returns, in a later call of the same conversation, a value it
+  received earlier in it, the crossing mechanism draws that edge, once. Inside one call the
+  conversation's own edge stands alone.
+- **R8** Whether a value anchors follows the label type the classifier gave it at the leg where the
+  entity received it; a case states that type.
+- **R9** The defaults, each a setting: M = 3, and a retention of 15 minutes.
+- **R10** A persistent entity needs nothing beyond its scope (its kind's, or declared) to cross: a
+  shared agent mixes its users by definition, and declaring it is the acceptance.
+
+None of them is built yet: every case that cites a rule is pending, or green only because nothing
+crosses.
+
 ## What this does not do yet
 
 - No comparison other than byte equality: a re-spaced number (`123 45 6789`), a re-cased name or a

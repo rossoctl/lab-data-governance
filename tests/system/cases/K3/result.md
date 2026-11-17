@@ -20,7 +20,7 @@ conversation 2
               17     18     19     20     21     22     23     24     25     26     27     28     29     30     31     32     
               U>A    A>L    L>A    A>T2   T2>V2  V2>T2  T2>A   A>L    L>A    A>T3   T3>V3⚑ V3>T3  T3>A   A>L    L>A    A>U    
 SSN     s1    ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      
-MRN     s2    ·      ·      ·      ·      ·      ┈┈┈┈┈┈○━━━━━━○━━━━━━○━━━━━━○━━━━━━○━━━━━━○·      ·      ·      ·      ·      
+MRN     s2    ·      ·      ·      ·      ·      ━━━━━━○━━━━━━○━━━━━━○━━━━━━○━━━━━━○━━━━━━○·      ·      ·      ·      ·      
 DOB     s3    ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      
 DIS     s4    ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      
 
@@ -40,12 +40,12 @@ SSN     s1    ·      ·      ·      ·      ·      ·      ·      ·      ·
 MRN     s2    ·      ·      ·      ·      ·      ┈┈┈┈┈┈○┈┈┈┈┈┈○┈┈┈┈┈┈○┈┈┈┈┈┈○┈┈┈┈┈┈○┈┈┈┈┈┈○·      ·      ·      ·      ·      
 DOB     s3    ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      
 DIS     s4    ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      
-verdict at 27: expected on=block / off=allow, observed on=allow / off=allow
+verdict at 27: expected off=allow / conv=allow / cross=block, observed off=allow / conv=allow / cross=allow
 ```
 
-**Reasons.** pending: cross-conversation lineage not on this branch: the cross-trace fold (#273), and the risk engine forwarding a cross-trace origin (labels.forwarded keeps same-trace origins only); the conversation-2 edges stated here are a proposal that work will settle · verdict on: want block, got allow · edges missing: s2 11>23, s2 22>23, s2 23>24, s2 24>25, s2 25>26, s2 26>27
+**Reasons.** pending: no crossing on this branch: the crossing core draws the crossing and the edges that rest on it; the level on its way carries crossed and its level to every later leg and into the policy input, so the cross run blocks at the flagged leg. The off and conv runs already match · verdict cross: want block, got allow · edges missing: s2 11>22 vo, s2 22>23, s2 23>24, s2 23>26, s2 24>25, s2 25>26, s2 26>27 · evidence at 22 s2: want [crossed vo], got [] · evidence at 23 s2: want [crossed vo], got [] · evidence at 24 s2: want [crossed vo], got [] · evidence at 25 s2: want [crossed vo], got [] · evidence at 26 s2: want [crossed vo], got [] · evidence at 27 s2: want [crossed vo], got []
 
-**Rows (inherited labels on).**
+**Rows (cross run).**
 
 | leg | who | classification | inherited labels (from leg) | risk |
 |---|---|---|---|---|
@@ -83,5 +83,5 @@ verdict at 27: expected on=block / off=allow, observed on=allow / off=allow
 
 Risk observer calls: 33
 
-**Notes.** K0 with V2 returning s2 in conversation 2. The classifier labels nothing in conversation 2, so only a crossing from conversation 1 can produce the alert at V3. Wanted under person-anchored: block.
+**Notes.** K0 with V2 returning s2 in conversation 2. The classifier labels nothing in conversation 2, so only a crossing from conversation 1 can produce the alert at V3. V2 received s2 at leg 11 labelled MRN (R8); one numbered identifier alone: value-only, and it blocks (R5).
 

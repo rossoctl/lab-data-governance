@@ -1,0 +1,148 @@
+id: K18
+title: classified and crossed
+cell: across/level/both
+line: U>A[-], A>L[-], L>A[-], A>T1[-], ..V1.., T1>A[s1 s2 s3 -], A>L[s1 s2 s3 -], L>A[s1 s2 s3 -], A>T2[s1 s2 s3 -], T2>V2[s1
+  s2 s3 -], V2>T2[-], T2>A[-], A>L[-], L>A[-], A>U[-] ~10min> U>A[-], A>L[-], L>A[-], A>T2[-], T2>V2[-], V2>T2[s1 s2 s3 -],
+  T2>A[s1@subject s2@account s3@ref -], A>L[s1@subject s2@account s3@ref -], L>A[s1@subject s2@account s3@ref -], A>T3[s1@subject
+  s2@account s3@ref -], T3>V3[s1@subject s2@account s3@ref -]⚑, V3>T3[-], T3>A[-], A>L[-], L>A[-], A>U[-]
+units:
+  s1: SSN
+  s2: MRN
+  s3: DOB
+  s4: DIS
+expect:
+  verdict:
+    'off': allow
+    conv: block
+    cross: block
+  edges:
+  - s1 7>8
+  - s1 8>9
+  - s1 9>10
+  - s1 10>11
+  - s2 7>8
+  - s2 8>9
+  - s2 9>10
+  - s2 10>11
+  - s3 7>8
+  - s3 8>9
+  - s3 9>10
+  - s3 10>11
+  - s1 7>10
+  - s2 7>10
+  - s3 7>10
+  - s1 22>23
+  - s1 23>24
+  - s1 24>25
+  - s1 25>26
+  - s1 26>27
+  - s2 22>23
+  - s2 23>24
+  - s2 24>25
+  - s2 25>26
+  - s2 26>27
+  - s3 22>23
+  - s3 23>24
+  - s3 24>25
+  - s3 25>26
+  - s3 26>27
+  - s1 23>26
+  - s2 23>26
+  - s3 23>26
+  cross:
+  - s1 11>22 co
+  - s2 11>22 co
+  - s3 11>22 co
+  evidence:
+    '11':
+      s1:
+      - classified SSN
+      - inherited
+      s2:
+      - classified MRN
+      - inherited
+      s3:
+      - classified DOB
+      - inherited
+    '22':
+      s1:
+      - classified SSN
+      - crossed co
+      s2:
+      - classified MRN
+      - crossed co
+      s3:
+      - classified DOB
+      - crossed co
+    '27':
+      s1:
+      - inherited
+      - crossed co
+      s2:
+      - inherited
+      - crossed co
+      s3:
+      - inherited
+      - crossed co
+  pending:
+    reason: 'no crossing on this branch: the crossing core draws the crossing and the edges that rest on it; the level on
+      its way carries crossed and its level to every later leg and into the policy input. The verdicts and the conversation''s
+      own edges already match'
+    missing:
+    - s1 11>22 co
+    - s2 11>22 co
+    - s3 11>22 co
+    evidence:
+    - 22
+    - 27
+classifier:
+  must_see:
+    '7':
+    - s1
+    - s2
+    - s3
+    '8':
+    - s1
+    - s2
+    - s3
+    '9':
+    - s1
+    - s2
+    - s3
+    '10':
+    - s1
+    - s2
+    - s3
+    '11':
+    - s1
+    - s2
+    - s3
+    '22':
+    - s1
+    - s2
+    - s3
+  must_miss:
+    '23':
+    - s1
+    - s2
+    - s3
+    '24':
+    - s1
+    - s2
+    - s3
+    '25':
+    - s1
+    - s2
+    - s3
+    '26':
+    - s1
+    - s2
+    - s3
+    '27':
+    - s1
+    - s2
+    - s3
+  authored: true
+notes: 'K1 with V2''s answer under the keys the model recognises: the classifier labels the three at leg 22 too. The leg shows
+  both, classified and crossed, corroborated; neither changes the other. At the flagged leg both reach it: inherited (the
+  label classified at 22) and crossed. The conversation''s own edges from 22 are drawn in every mode, so conv already blocks.'

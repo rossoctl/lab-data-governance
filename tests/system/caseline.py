@@ -8,6 +8,8 @@
 - Inside ``[...]``: ``s1`` a sensitive unit (its label is declared once per case),
   ``-`` some content nobody cares about, ``s1@key`` the JSON key the value travels
   under (by default the label's own key: ``ssn``, ``mrn``, ``dob`` ...).
+  ``{s1 s3}`` is one record: ``[{s1 s3} {s5 s6} -]`` is a payload holding an array of
+  two objects (under the key ``records``) beside its filler.
 - ``T1(A1)>V1[...]``: the request T1 sends belongs to the call A1 opened on T1 (the wire
   parent). Without it the sender must be serving exactly one call; the renderer refuses the line otherwise.
 - ``,`` the next payload in the same conversation; ``..V1..`` an invisible hop
@@ -27,6 +29,7 @@ PARTY_KINDS = {"U": "user", "A": "agent", "T": "tool", "L": "llm", "V": "externa
 class Element:
     name: str            # "s1", "-"
     key: str | None      # JSON key override
+    record: int | None = None   # "{s1 s3}": the record (object of the payload's array) it sits in
 
     @property
     def is_unit(self) -> bool:
@@ -108,6 +111,31 @@ def _element(token: str) -> Element:
     return Element(token, key)
 
 
+def _elements(body: str) -> tuple[Element, ...]:
+    """The elements of one payload; ``{`` opens a record and ``}`` closes it (records do not nest)."""
+    out: list[Element] = []
+    record: int | None = None
+    opened = 0
+    for token in body.split():
+        if token.startswith("{"):
+            if record is not None:
+                raise ValueError(f"a record inside a record in [{body}]")
+            record, opened, token = opened, opened + 1, token[1:]
+        close = token.endswith("}")
+        if close:
+            if record is None:
+                raise ValueError(f"'}}' closes no record in [{body}]")
+            token = token[:-1]
+        if not token:
+            raise ValueError(f"an empty element in [{body}]")
+        out.append(dataclasses.replace(_element(token), record=record))
+        if close:
+            record = None
+    if record is not None:
+        raise ValueError(f"a record never closed in [{body}]")
+    return tuple(out)
+
+
 def _split_legs(text: str) -> list[str]:
     # commas inside [...] never occur (elements are space-separated), so a plain split is safe
     return [part for part in (p.strip() for p in text.split(",")) if part]
@@ -139,7 +167,7 @@ def parse(line: str) -> CaseLine:
             if frm is None or to is None:
                 raise ValueError(f"leg needs parties: {raw!r}")
             index += 1
-            elements = tuple(_element(t) for t in body.split())
+            elements = _elements(body)
             legs.append(Leg(index, frm, to, elements, sink=flag is not None, for_call=for_call))
             last_to = to
         gap = 0 if c == 0 else _gap_seconds(*gaps[c - 1])

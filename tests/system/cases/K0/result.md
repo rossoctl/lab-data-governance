@@ -40,10 +40,10 @@ SSN     s1    ·      ·      ·      ·      ·      ·      ·      ·      ·
 MRN     s2    ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      
 DOB     s3    ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      
 DIS     s4    ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      
-verdict at 27: expected on=allow / off=allow, observed on=allow / off=allow
+verdict at 27: expected off=allow / conv=allow / cross=allow, observed off=allow / conv=allow / cross=allow
 ```
 
-**Rows (inherited labels on).**
+**Rows (cross run).**
 
 | leg | who | classification | inherited labels (from leg) | risk |
 |---|---|---|---|---|

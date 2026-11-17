@@ -1,0 +1,101 @@
+id: K8
+title: no identifier among the returned values
+cell: across/rule/no-anchor
+line: U>A[-], A>L[-], L>A[-], A>T1[-], ..V1.., T1>A[s1 s2 s3 s4 -], A>L[s1 s2 s3 s4 -], L>A[s1 s2 s3 s4 -], A>T2[s1 s2 s3
+  s4 -], T2>V2[s1 s2 s3 s4 -], V2>T2[-], T2>A[-], A>L[-], L>A[-], A>U[-] ~10min> U>A[-], A>L[-], L>A[-], A>T2[-], T2>V2[-],
+  V2>T2[s3@ref s4@code -], T2>A[s3@ref s4@code -], A>L[s3@ref s4@code -], L>A[s3@ref s4@code -], A>T3[s3@ref s4@code -], T3>V3[s3@ref
+  s4@code -]⚑, V3>T3[-], T3>A[-], A>L[-], L>A[-], A>U[-]
+units:
+  s1: SSN
+  s2: MRN
+  s3: DOB
+  s4: DIS
+expect:
+  verdict:
+    'off': allow
+    conv: allow
+    cross: allow
+  edges:
+  - s1 7>8
+  - s1 8>9
+  - s1 9>10
+  - s1 10>11
+  - s2 7>8
+  - s2 8>9
+  - s2 9>10
+  - s2 10>11
+  - s3 7>8
+  - s3 8>9
+  - s3 9>10
+  - s3 10>11
+  - s4 7>8
+  - s4 8>9
+  - s4 9>10
+  - s4 10>11
+  - s1 7>10
+  - s2 7>10
+  - s3 7>10
+  - s4 7>10
+  evidence:
+    '11':
+      s3:
+      - classified DOB
+      - inherited
+      s4:
+      - classified DIS
+      - inherited
+    '22':
+      s3: []
+      s4: []
+classifier:
+  must_see:
+    '7':
+    - s1
+    - s2
+    - s3
+    - s4
+    '8':
+    - s1
+    - s2
+    - s3
+    - s4
+    '9':
+    - s1
+    - s2
+    - s3
+    - s4
+    '10':
+    - s1
+    - s2
+    - s3
+    - s4
+    '11':
+    - s1
+    - s2
+    - s3
+    - s4
+  must_miss:
+    '22':
+    - s3
+    - s4
+    '23':
+    - s3
+    - s4
+    '24':
+    - s3
+    - s4
+    '25':
+    - s3
+    - s4
+    '26':
+    - s3
+    - s4
+    '27':
+    - s3
+    - s4
+  authored: true
+notes: 'Conversation 1 sends the whole record (SSN, MRN, birthdate, diagnosis) to V2; V2 returns the birthdate and the diagnosis.
+  Two plain values of one record corroborate each other, but neither is an anchoring identifier: no crossing, allow (twins
+  and households share exactly such pairs). Both labels are PI, so T-SENS would allow even if they crossed: the edges carry
+  the claim. Green on this branch only because nothing crosses at all here; the case means something once the crossing core
+  exists, and its deliberate break (the anchor rule off) must turn it red.'

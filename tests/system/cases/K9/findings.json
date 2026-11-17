@@ -1,0 +1,117 @@
+{
+ "model_dir": "classification/model/20260304",
+ "model_version": 2,
+ "calibrated_at": "2026-11-13T07:30:24+00:00",
+ "by_text": {
+  "{\"note\": \"please process at the usual priority\"}": [],
+  "{\"note\": \"no further action needed\"}": [],
+  "{\"note\": \"forwarded for fulfilment\"}": [],
+  "{\"note\": \"acknowledged\"}": [],
+  "{\"name\": \"Rosa Alvarez\", \"note\": \"please process at the usual priority\", \"ssn\": \"123-45-6789\"}": [
+   [
+    10,
+    22,
+    "PN"
+   ],
+   [
+    81,
+    92,
+    "SSN"
+   ]
+  ],
+  "{\"name\": \"Rosa Alvarez\", \"note\": \"no further action needed\", \"ssn\": \"123-45-6789\"}": [
+   [
+    10,
+    22,
+    "PN"
+   ],
+   [
+    69,
+    80,
+    "SSN"
+   ]
+  ],
+  "{\"name\": \"Rosa Alvarez\", \"note\": \"forwarded for fulfilment\", \"ssn\": \"123-45-6789\"}": [
+   [
+    10,
+    22,
+    "PN"
+   ],
+   [
+    69,
+    80,
+    "SSN"
+   ]
+  ],
+  "{\"name\": \"Rosa Alvarez\", \"note\": \"acknowledged\", \"ssn\": \"123-45-6789\"}": [
+   [
+    10,
+    22,
+    "PN"
+   ],
+   [
+    57,
+    68,
+    "SSN"
+   ]
+  ],
+  "{\"name\": \"Rosa Alvarez\", \"note\": \"batch job window 02:00\", \"ssn\": \"123-45-6789\"}": [
+   [
+    10,
+    22,
+    "PN"
+   ],
+   [
+    67,
+    78,
+    "SSN"
+   ]
+  ],
+  "{\"note\": \"routine refill request received\"}": [],
+  "{\"note\": \"batch job window 02:00\"}": [],
+  "{\"note\": \"acknowledged\", \"who\": \"Rosa Alvarez\"}": [],
+  "{\"note\": \"batch job window 02:00\", \"who\": \"Rosa Alvarez\"}": [],
+  "{\"note\": \"routine refill request received\", \"who\": \"Rosa Alvarez\"}": [],
+  "{\"note\": \"please process at the usual priority\", \"who\": \"Rosa Alvarez\"}": [],
+  "{\"note\": \"no further action needed\", \"who\": \"Rosa Alvarez\"}": [],
+  "{\"note\": \"forwarded for fulfilment\", \"who\": \"Rosa Alvarez\"}": []
+ },
+ "authored": {
+  "{\"note\": \"acknowledged\", \"who\": \"Rosa Alvarez\"}": {
+   "values": [
+    "Rosa Alvarez"
+   ],
+   "removed": 1
+  },
+  "{\"note\": \"batch job window 02:00\", \"who\": \"Rosa Alvarez\"}": {
+   "values": [
+    "Rosa Alvarez"
+   ],
+   "removed": 1
+  },
+  "{\"note\": \"routine refill request received\", \"who\": \"Rosa Alvarez\"}": {
+   "values": [
+    "Rosa Alvarez"
+   ],
+   "removed": 1
+  },
+  "{\"note\": \"please process at the usual priority\", \"who\": \"Rosa Alvarez\"}": {
+   "values": [
+    "Rosa Alvarez"
+   ],
+   "removed": 1
+  },
+  "{\"note\": \"no further action needed\", \"who\": \"Rosa Alvarez\"}": {
+   "values": [
+    "Rosa Alvarez"
+   ],
+   "removed": 1
+  },
+  "{\"note\": \"forwarded for fulfilment\", \"who\": \"Rosa Alvarez\"}": {
+   "values": [
+    "Rosa Alvarez"
+   ],
+   "removed": 1
+  }
+ }
+}

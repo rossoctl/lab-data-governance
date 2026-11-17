@@ -4,6 +4,11 @@ receiver (OTLP gRPC) -> interactions drain -> data-lineage drain -> classificati
 drain (replayed model output through the production seam) -> label-lineage drain
 -> leg-ready drain with the risk observer against a real OPA -> rows.
 
+A case runs its steps (by default: send every leg, then drain): ``send`` puts legs on
+the wire, ``drain`` runs every drain from where it stopped, ``derive`` queues a
+conversation for derivation again through the production correction queue. A run is
+in one of three modes, set through the production switches (:func:`switches`).
+
 A drain may stop early by design (leg-ready holds its cursor while OPA is down) and
 returns where it stopped: a run where a drain stopped short of its stream's end or
 left work in its queue is red (:func:`unfinished`), whatever the rows say.
@@ -11,10 +16,12 @@ left work in its queue is red (:func:`unfinished`), whatever the rows say.
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import json
+import os
 import time
-from collections import defaultdict
+from collections import Counter, defaultdict
 from typing import Any
 
 import psycopg
@@ -31,8 +38,19 @@ from data_governance.risk.engine.observer import make_risk_observer
 from tools.load_trace import rows_to_request
 
 from . import classify
-from .cases import Case
+from .cases import Case, Edge, fmt_edges
 from .render import Rendered, render
+
+# The production paths a case can need that this branch does not have yet: a case that uses one is held, not run
+# (``Case.uses``; its ``expect.pending.held`` names them). The change that builds a path removes its row here and
+# applies it in :func:`run_case`, where the comment of each row says.
+NOT_ON_BRANCH = {
+    "scopes": "the memory scope declared per entity: applied in run_case before the first send",
+    "switch": "the cross-conversation switch: set by switches() per mode, and by a cross step",
+    "config": "the limits as configuration: set in run_case before the first send",
+    "reclassify": "a classification replaced and its conversation derived again: a reclassify step",
+    "tiers": "the verdict tiers and decision versions: read by verdict_at",
+}
 
 _KEEP = {"alembic_version"}
 
@@ -53,20 +71,22 @@ class LegRows:
     leg_type: str
     payload_hash: str | None
     classification: dict[str, Any] | None      # sensitivity, tags, findings [(tag, text)]
-    inherited: list[dict[str, Any]]            # edges INTO this leg: unit, value, from_leg
+    inherited: list[dict[str, Any]]            # edges INTO this leg: unit, value, from_leg, level
     risk: dict[str, Any] | None                # the risk record that evidences this leg (sink only)
 
 
 @dataclasses.dataclass
 class Observation:
-    mode: str                                  # "on" | "off"
+    mode: str                                  # "off" | "conv" | "cross"
     legs: dict[int, LegRows]
-    edges: set[tuple[str, int, int]]           # (unit, from_leg, to_leg) resolved to line legs
+    edges: set[Edge]                           # (unit, from_leg, to_leg, level) resolved to line legs
     raw_edges: list[dict[str, Any]]
     verdict: str | None                        # at the sink: enforcement_type as the record writes it
     timings: dict[str, float]
     observer_calls: int                        # risk-observer invocations (one per evidence state)
     problems: list[str] = dataclasses.field(default_factory=list)   # rows the judge cannot read: always red
+    evidence: dict[int, dict[str, frozenset[str]]] = dataclasses.field(default_factory=dict)  # leg -> unit -> kinds
+    marks: dict[int, frozenset[str]] = dataclasses.field(default_factory=dict)              # leg -> marks
 
 
 def _send(rows: list[dict[str, Any]], grpc_endpoint: str) -> None:
@@ -147,17 +167,19 @@ def resolve_edges(case: Case, rows, leg_of_key: dict[tuple[str, str], int]):
     """Edges as (unit, from_leg, to_leg). A unit is found by its bytes (``assign_values`` refuses twins); an
     edge whose value is no unit's is kept as ``?value`` (an extra, so red). An edge with an end on no line leg,
     carrying a label that is not one of its unit's types, or whose evidence is not a whole match of the value's
-    own bytes (the suite runs the exact finder), is a problem."""
+    own bytes (the suite runs the exact finder), is a problem; so is an edge drawn by more than one row of one label
+    type, which the edge set would hide (two origins of one value under two types are two rows by right). A row's level is a crossing's (``None`` for an edge inside one conversation): the crossing
+    core writes it, and its row is read here beside the conversation's own."""
     value_unit = {v: u for u, v in case.values.items()}
-    resolved: set[tuple[str, int, int]] = set()
+    rows_of: Counter[tuple[Edge, str]] = Counter()
     raw: list[dict[str, Any]] = []
     inherited: dict[int, list[dict[str, Any]]] = defaultdict(list)
     problems: list[str] = []
-    for fi, flt, ti, tlt, etype, value, matched, kind in rows:
+    for fi, flt, ti, tlt, etype, value, matched, kind, level in rows:
         f = leg_of_key.get((fi, flt))
         to = leg_of_key.get((ti, tlt))
         unit = value_unit.get(value, f"?{value}")
-        raw.append({"from": f, "to": to, "unit": unit, "label": etype, "value": value, "kind": kind})
+        raw.append({"from": f, "to": to, "unit": unit, "label": etype, "value": value, "kind": kind, "level": level})
         if f is None or to is None:
             problems.append(f"edge {unit} {f}>{to} ({etype}) has an end on no line leg")
             continue
@@ -165,9 +187,28 @@ def resolve_edges(case: Case, rows, leg_of_key: dict[tuple[str, str], int]):
             problems.append(f"edge {unit} {f}>{to} carries {etype}, not one of {sorted(case.accepts[unit])}")
         if kind != "whole" or matched != value:
             problems.append(f"edge {unit} {f}>{to} matched {matched!r} as {kind!r}, not the whole value")
-        resolved.add((unit, f, to))
-        inherited[to].append({"unit": unit, "label": etype, "value": value, "from": f})
-    return resolved, raw, inherited, problems
+        rows_of[((unit, f, to, level), etype)] += 1
+        inherited[to].append({"unit": unit, "label": etype, "value": value, "from": f, "level": level})
+    problems += [f"edge {fmt_edges([e])} ({etype}) drawn by {n} rows"
+                 for (e, etype), n in sorted(rows_of.items(), key=str) if n > 1]
+    return {e for e, _ in rows_of}, raw, inherited, problems
+
+
+def evidence_at(case: Case, legs: dict[int, "LegRows"]) -> dict[int, dict[str, frozenset[str]]]:
+    """leg -> unit -> how the unit is known there, read from the rows: ``classified TYPE`` for every type the model
+    gave the unit's own bytes at the leg, and one kind per edge row into it: ``inherited`` for an edge inside the
+    conversation, ``crossed L`` for a crossing. A crossed label carried on inside a conversation and
+    an ambiguous result are read from the rows that write them; until then they are never observed."""
+    out: dict[int, dict[str, frozenset[str]]] = {}
+    for i, r in legs.items():
+        cells: dict[str, set[str]] = defaultdict(set)
+        findings = (r.classification or {}).get("findings") or []
+        for unit, value in case.values.items():
+            cells[unit] |= {f"classified {t}" for t, text in findings if text == value}
+        for e in r.inherited:
+            cells[e["unit"]].add(f"crossed {e['level']}" if e["level"] else "inherited")
+        out[i] = {u: frozenset(k) for u, k in cells.items() if k}
+    return out
 
 
 # Each drain the run calls and the table whose ``seq`` its cursor walks; the work queues the drains own. With
@@ -176,7 +217,8 @@ STREAMS = {"interactions": "spans", "data_lineage": "interaction_legs", "classif
            "label_lineage": "interaction_legs", "leg_ready": "interaction_legs"}
 QUEUES = {"data_lineage": "data_lineage_dirty_traces", "label_lineage": "label_lineage_dirty_traces",
           "leg_ready": "risk_recompute_requests"}
-_RECOMPUTE_WORK = {"on": "base_recompute OR labels_pending", "off": "base_recompute"}
+_RECOMPUTE_WORK = {"off": "base_recompute", "conv": "base_recompute OR labels_pending",
+                   "cross": "base_recompute OR labels_pending"}
 
 
 def unfinished(cursors: dict[str, int], heads: dict[str, int], queued: dict[str, int]) -> list[str]:
@@ -196,14 +238,36 @@ def backlog(dsn: str, mode: str) -> tuple[dict[str, int], dict[str, int]]:
     return heads, queued
 
 
+@contextlib.contextmanager
+def switches(mode: str):
+    """The production switches of *mode*, through the environment the processors read: inherited labels off in
+    ``off``, on in ``conv`` and ``cross``. The cross-conversation switch arrives with the crossing core, which
+    sets it here: on in ``off`` (inherited labels off must stop it) and ``cross``, off in ``conv``. Until
+    then ``cross`` runs the branch as ``conv`` does."""
+    saved = os.environ.get("RISK_INHERITED_LABELS")
+    os.environ["RISK_INHERITED_LABELS"] = "off" if mode == "off" else "on"
+    risk_config.inherited_labels_mode.cache_clear()
+    try:
+        yield
+    finally:
+        if saved is None:
+            os.environ.pop("RISK_INHERITED_LABELS")
+        else:
+            os.environ["RISK_INHERITED_LABELS"] = saved
+        risk_config.inherited_labels_mode.cache_clear()
+
+
 def run_case(case: Case, *, dsn: str, grpc_endpoint: str, opa_client, mode: str) -> Observation:
-    timings: dict[str, float] = {}
+    held = case.uses & set(NOT_ON_BRANCH)
+    if held:
+        raise ValueError(f"{case.id} needs what this branch lacks: {sorted(held)}; it is held, not run")
+    timings: dict[str, float] = defaultdict(float)
     t = time.perf_counter()
 
     def lap(name: str) -> None:
         nonlocal t
         now = time.perf_counter()
-        timings[name] = round(now - t, 4)
+        timings[name] = round(timings[name] + now - t, 4)
         t = now
 
     reset(dsn)
@@ -212,46 +276,57 @@ def run_case(case: Case, *, dsn: str, grpc_endpoint: str, opa_client, mode: str)
     lap("reset")
 
     renderer = render(case.id, case.units, case.line)
-    rows = renderer.rows
-    _send(rows, grpc_endpoint)
-    _wait_rows(dsn, len(rows))
-    lap("receiver")
-
-    cursors = {"interactions": interactions.drain(0)}
-    lap("interactions")
-    cursors["data_lineage"] = data_lineage.drain(0)
-    lap("data_lineage")
     detector = classify.load(case.dir)
     classify.check_authored(case, renderer, detector.authored)
-    cursors["classification"] = classification.drain(0, detector=detector, model_version=detector.model_version)
-    lap("classification")
-    cursors["label_lineage"] = label_lineage.drain(0, label_lineage.Config(find.exact, "exact"))
-    lap("label_lineage")
-
-    saved = risk_config.inherited_labels_mode
     saved_hold = list(leg_ready._label_hold)
-    risk_config.inherited_labels_mode = lambda: mode  # the production switch, set for this run
     leg_ready._label_hold[:] = [None, 0.0]
     calls = {"n": 0}
-    inner = make_risk_observer(opa_client)
 
-    def counting(*a, **k):
-        calls["n"] += 1
-        return inner(*a, **k)
+    def counting(observe):
+        def observer(*a, **k):
+            calls["n"] += 1
+            return observe(*a, **k)
+        return observer
 
-    try:
-        cursors["leg_ready"] = leg_ready.drain(0, observer=counting)
-    finally:
-        risk_config.inherited_labels_mode = saved
-        leg_ready._label_hold[:] = saved_hold
-    lap("leg_ready+risk")
+    cursors = {s: 0 for s in STREAMS}
+    sent = 0
+    with switches(mode):
+        try:
+            for step in case.steps:
+                if step[0] == "send":
+                    rows = renderer.rows_of(step[1])
+                    _send(rows, grpc_endpoint)
+                    sent += len(rows)
+                    _wait_rows(dsn, sent)
+                    lap("receiver")
+                elif step[0] == "derive":
+                    with psycopg.connect(dsn, autocommit=True) as conn:
+                        conn.execute("SELECT dg_queue_label_trace(%s)", (renderer.trace_of(step[1]),))
+                elif step[0] == "drain":
+                    cursors["interactions"] = interactions.drain(cursors["interactions"])
+                    lap("interactions")
+                    cursors["data_lineage"] = data_lineage.drain(cursors["data_lineage"])
+                    lap("data_lineage")
+                    cursors["classification"] = classification.drain(
+                        cursors["classification"], detector=detector, model_version=detector.model_version)
+                    lap("classification")
+                    cursors["label_lineage"] = label_lineage.drain(cursors["label_lineage"],
+                                                                   label_lineage.Config(find.exact, "exact"))
+                    lap("label_lineage")
+                    # made at each drain, once the legs it judges are in (the outage test reads the last leg then)
+                    cursors["leg_ready"] = leg_ready.drain(cursors["leg_ready"],
+                                                           observer=counting(make_risk_observer(opa_client)))
+                    lap("leg_ready+risk")
+                else:
+                    raise ValueError(f"{case.id}: no {step[0]} step on this branch")   # held above
+        finally:
+            leg_ready._label_hold[:] = saved_hold
 
     obs = _read(case, renderer.rendered, dsn, mode)
     obs.problems[:0] = unfinished(cursors, *backlog(dsn, mode))
-    obs.timings = timings
     obs.observer_calls = calls["n"]
     lap("read")
-    obs.timings["total"] = round(sum(timings.values()), 4)
+    obs.timings = {**timings, "total": round(sum(timings.values()), 4)}
     return obs
 
 
@@ -273,7 +348,8 @@ def _read(case: Case, rendered: list[Rendered], dsn: str, mode: str) -> Observat
             payload_text[h] = projection.project(content)
         edges = conn.execute(
             "SELECT from_interaction_id, from_leg_type::text, to_interaction_id, to_leg_type::text, "
-            "entity_type, unit_value, matched_text, match_kind FROM payload_label_edges").fetchall()
+            "entity_type, unit_value, matched_text, match_kind, NULL FROM payload_label_edges").fetchall()
+        # NULL: no crossing on this branch; the crossing core adds its rows and their level here
         risk_rows = conn.execute(
             "SELECT interaction_id, version, risk_level, enforcement_type, triggered_rule_ids, legs_evidenced, "
             "classification_summary FROM interaction_risk_records ORDER BY interaction_id, version").fetchall()
@@ -313,6 +389,8 @@ def _read(case: Case, rendered: list[Rendered], dsn: str, mode: str) -> Observat
 
     if sink:
         problems += flagged_response_problems(rendered, legs, sink.index)
+    # marks: the common-value count and the incomplete mark are read here from the
+    # rows that write them; this branch writes none, so a stated mark is never observed.
     return Observation(mode=mode, legs=legs, edges=resolved, raw_edges=raw, verdict=verdict, timings={},
-                       observer_calls=0, problems=problems)
+                       observer_calls=0, problems=problems, evidence=evidence_at(case, legs), marks={})
 
