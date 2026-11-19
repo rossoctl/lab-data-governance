@@ -97,18 +97,28 @@ the value took from the payload where the classifier found it to this leg, one h
 callee, the span at that payload (the unit on the origin) and its `trace_id`. The walk follows the
 edges' `from_*` back from the leg, each next hop read at the payload the edge was derived from
 (`from_payload_hash`), so a chain is a chain of payloads; only the leg read is pinned to its current
-payload. A value that reached the leg two ways (the edges form a DAG) has two chains, every complete
-route, shortest first. The walk crosses into other traces through `from_trace_id` / `origin_trace_id`
-(no finder writes them yet; the read already follows them). A cycle stops at the repeated edge, the
-depth is capped (`MAX_CHAIN_DEPTH`, logged when hit), and a walk that ends before the origin is kept
-as a chain whose first hop is a `hop`, never shown as the origin. The origin hop carries an `excerpt`
-of its payload's projected text around the unit.
+payload. A value reaches a leg along many routes (the edges form a DAG with fan-in: an agent keeps
+every earlier holding, every LLM round trip echoes the value back), and their number multiplies along
+the fan-in while the number of edges does not; so the read never lists them. It reads the sub-graph of
+edges behind the leg once (a set union, linear in edges: the edges into each payload are found through
+the index on (to leg, payload), migration 0030; through the index on the origin unit, which the planner
+would otherwise prefer, every hop reads every edge of the value) and derives one shortest route per edge into
+the leg, shortest first, `route_count`, how many routes there are in all (saturating at 2^53 − 1,
+JavaScript's largest safe integer: a count at the cap means at least that many), and `carriers`, every
+leg on any of them (the origin and this leg included). The walk crosses into
+other traces through `from_trace_id` / `origin_trace_id` (no finder writes them yet; the read already
+follows them). A route that cannot reach the origin ends at the nearest edge with no edge of its own
+(where the walk meets itself only when every route circles; on such data, a fault, the count and the
+carriers are not exact) and is kept as a chain whose first hop is
+a `hop`, never shown as the origin. The origin hop carries an
+`excerpt` of its payload's projected text around the unit.
 
 The UI keeps the Classification tab the classifier's (label lineage there is one more source of labels)
 and adds a tab per leg titled **Data lineage** (`LabelLineageTable`): one block per carried-in value with
 its **origin** (where the classifier found it) and the **previous** hop(s) at distance 1, each a
-link to that interaction, and "Show chains" for the full routes (`LabelLineage`: origin, then each
-carrier, then the **current** leg; the first chain open, the rest folded under a count). The
+link to that interaction, and "Show chains" for the routes the read lists, one shortest per previous hop
+(`LabelLineage`: origin, then each carrier, then the **current** leg; the first chain open, the rest
+folded under a count). The
 risk layer's decision card opens the same view from its "Carried in" row, under the fired rules'
 criteria. A hop links to its interaction on the trace page (`?iid=`), a hop in
 another trace is marked and links to that trace's flow view, and a hop under the pointer lights its
@@ -120,9 +130,9 @@ carries the labels the rules name.
 decision is on that payload; label lineage is per value. So a value's chain is not "the path of an
 edge": the reader ticks the values to track (in the Data lineage tab, or by a right-click on a leg,
 which tracks that leg's carried-in values; with the risk layer on the default is the carried-in values whose
-labels the fired rules name), and the union of their routes is painted over the graph that is already
-there: the legs those values sat on lit, every other leg dimmed, on the execution-flow graph, the
-sequence diagram and the Tree and Flat tables alike (`lib/labelTrack`, pure; the pages only paint the
+labels the fired rules name), and the union of their carriers (every leg on any route, not only the
+shortest ones the chains show) is painted over the graph that is already there: the legs those values
+sat on lit, every other leg dimmed, on the execution-flow graph, the sequence diagram and the Tree and Flat tables alike (`lib/labelTrack`, pure; the pages only paint the
 sets). A banner names what is tracked, each removable; hops in other traces are counted, not drawn.
 Tracking is per trace and per page visit. With edges per interaction the graphs draw request legs
 only, and a value's response-leg hop lights its interaction's one arrow.
