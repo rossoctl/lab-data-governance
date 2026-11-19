@@ -901,3 +901,11 @@ def test_every_shipped_case_agrees_with_its_calibration():
                 if got != {k for k in kinds if k.startswith("classified")}:
                     wrong.append(f"{case.id}: leg {i} {unit} states {sorted(kinds)}, the model gave {sorted(got)}")
     assert wrong == []
+
+
+def test_a_payload_missing_from_the_calibration_is_refused_not_read_as_found_nothing(tmp_path: Path):
+    from .classify import UncalibratedPayload, recorded_findings
+    case = _case(dir=tmp_path)
+    (tmp_path / "findings.json").write_text('{"by_text": {}}')
+    with pytest.raises(UncalibratedPayload):
+        recorded_findings(case, render(case.id, case.units, case.line))

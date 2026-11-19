@@ -88,11 +88,11 @@ def recorded_findings(case, renderer) -> dict[int, list[tuple[str, str]]]:
     without a run, so a held case's premise and its stated types (R8) are checked too."""
     from data_governance.processors.classification import projection
 
-    by_text = load(case.dir)._by_text
+    detector = load(case.dir)
     out: dict[int, list[tuple[str, str]]] = {}
     for r in renderer.rendered:
         text = projection.project(r.content)
-        out[r.leg.index] = [(t, text[a:b]) for a, b, t in by_text.get(text, [])]
+        out[r.leg.index] = [(t, text[a:b]) for a, b, t in detector.detect(text)]
     return out
 
 
