@@ -169,7 +169,7 @@ model labelled, so the verdict rests on the request alone.
   `incomplete run: leg_ready stopped at cursor 8 of 16`), when the rows cannot be read (a leg not derived, an
   edge with an end on no line leg, an edge carrying a type its unit does not list or evidence that is not a
   whole match of its value, no risk record or disagreeing ones at the flagged leg, a labelled response in the
-  flagged exchange), when an edge is drawn by two rows of one label type (the edge set would hide it),
+  flagged exchange), when an edge is drawn by two rows of one label type and origin (the edge set would hide it),
   when the classifier premise is broken in any run, or when the `off` or `conv` run drew other edges than
   `expect.edges`.
 
