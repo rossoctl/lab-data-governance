@@ -121,21 +121,3 @@ def test_a_route_that_cannot_reach_the_origin_ends_at_the_nearest_dead_end() -> 
             _row("a2-a3", "a2", "a3", False), _row("x-b", "x", "b", False)]
     sub = labels._sub_graph(rows)
     assert labels._shortest_routes(["z-x"], sub) == {"z-x": (["z-x", "x-b"], False)}
-
-
-class _Tx:
-    """A transaction whose edges are deleted between the sub-graph read and the hops read."""
-
-    def __init__(self, rows: list[tuple]) -> None:
-        self.rows = rows
-
-    def fetch_all(self, sql: str, params) -> list[tuple]:
-        return self.rows if sql == labels._SUBGRAPH_SQL else []
-
-
-def test_an_edge_deleted_between_the_reads_keeps_its_count_and_carriers() -> None:
-    # A re-derivation in flight deletes the edges after the sub-graph was read:
-    # the chain cannot be built, the count and the carriers still stand.
-    lineage = labels._read_lineage(_Tx([_row("y-x", "y", "x", False), _row("x-o", "x", "o", True)]), ["y-x"])
-    (edge,) = lineage.values()
-    assert (edge.chain, edge.route_count, len(edge.carriers)) == (None, 1, 3)

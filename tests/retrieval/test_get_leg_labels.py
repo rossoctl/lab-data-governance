@@ -504,6 +504,43 @@ def test_converging_branches_do_not_end_a_route_that_cannot_reach_the_origin(con
     assert {c.interaction_id for c in origin.carriers} == {f"ix-{n}" for n in names}
 
 
+class _DeletingAfterTheSubGraphRead:
+    """A transaction that runs every read on Postgres and, once the sub-graph
+    has been read, lets a second connection delete the trace's edges and commit:
+    a re-derivation landing between the two reads."""
+
+    def __init__(self, tx: db.Transaction, dsn: str, trace: str) -> None:
+        self.tx, self.dsn, self.trace = tx, dsn, trace
+
+    def fetch_all(self, sql: str, params=None) -> list[tuple]:
+        rows = self.tx.fetch_all(sql, params)
+        if sql == labels._SUBGRAPH_SQL:
+            with psycopg.connect(self.dsn) as other:
+                other.execute("DELETE FROM payload_label_edges WHERE trace_id = %s", (self.trace,))
+        return rows
+
+
+def test_an_edge_deleted_between_the_reads_keeps_its_count_and_carriers(configured_db: str) -> None:
+    # y took the value from x, x from the origin o. The sub-graph read sees both
+    # edges; before the hops read another transaction deletes them. The chain
+    # cannot be built; the count and the carriers still stand.
+    with psycopg.connect(configured_db) as conn:
+        legs = [(f"ix-{n}", "request", n) for n in ("o", "x", "y")]
+        for i, (ix, lt, h) in enumerate(legs):
+            _interaction(conn, ix, "t-gone", "e-a", "e-b", [(lt, h, 10 + i)])
+        o, x, y = legs
+        k = dict(origin=o, unit=(0, 9), entity_type="PID", tags=["PII"], level="RESTRICTED")
+        _edge2(conn, eid="y-x", trace="t-gone", to=y, frm=x, span=(0, 9), **k)
+        _edge2(conn, eid="x-o", trace="t-gone", to=x, frm=o, span=(0, 9), **k)
+        conn.commit()
+    with db.transaction() as tx:
+        lineage = labels._read_lineage(_DeletingAfterTheSubGraphRead(tx, configured_db, "t-gone"), ["y-x"])
+        assert tx.fetch_all("SELECT count(*) FROM payload_label_edges WHERE trace_id = %s", ("t-gone",)) == [(0,)]
+    (edge,) = lineage.values()
+    assert (edge.chain, edge.route_count) == (None, 1)
+    assert {c.interaction_id for c in edge.carriers} == {"ix-o", "ix-x", "ix-y"}
+
+
 def test_the_walk_stops_at_the_origin_whatever_leads_into_it(configured_db: str) -> None:
     # A data fault: two edges of the unit lead INTO the origin leg itself. The
     # walk ends at the origin and counts one route, never what lies behind it.
