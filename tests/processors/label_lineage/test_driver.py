@@ -470,6 +470,40 @@ def test_one_run_derives_its_conversations_in_event_order(configured_db: str) ->
     assert _crossings(configured_db) == [("DOB", "Z1", "corroborated"), ("SSN", "Z1", "corroborated")]
 
 
+# ("Z2", "A2"): the destination sorts first, so the trigger queues it first and the replay derives it first.
+@pytest.mark.parametrize("old, new", [("Z2", "A2"), ("A2", "Z2")], ids=["destination-first", "source-first"])
+def test_holdings_follow_their_receiving_interactions_to_a_new_trace(configured_db: str, old: str, new: str) -> None:
+    """The membership correction queues both traces; in either order the holdings end under the trace that now
+    owns the receiving leg, and a later conversation still crosses with them."""
+    import dataclasses
+    import datetime as dt
+
+    from data_governance.label_lineage import cross
+    from data_governance.processors.data_lineage.traversal import Entity
+    from tests.label_lineage.test_cross import DOB, ENTITIES, SSN, T0, _first, _second, _trace
+    config = driver.Config(find.exact, "exact", {"agent:lab/a": "persistent"}, crossing=cross.Crossing())
+    _seed_input(configured_db, dataclasses.replace(_first(), trace_id="Z1"))
+    cursor = driver.drain(0, config)
+    _seed_input(configured_db, dataclasses.replace(_second(), trace_id=old))   # v returns SSN and DOB to a
+    cursor = driver.drain(cursor, config)
+    with psycopg.connect(configured_db) as conn:
+        conn.execute("UPDATE interactions SET trace_id = %s WHERE trace_id = %s", (new, old))
+    assert [r[0] for r in _q(configured_db, "SELECT trace_id FROM label_lineage_dirty_traces "
+                                            "ORDER BY generation")] == sorted([old, new])
+    driver.drain(cursor, config)
+    assert _q(configured_db, "SELECT trace_id, value_text, evidence FROM label_occurrences "
+                             "WHERE entity_id = 'a' ORDER BY value_text") == [(new, SSN, "crossed"),
+                                                                             (new, DOB, "crossed")]
+    _seed_input(configured_db, _trace("X3", [("4", "request", "u", "a", {"q": "again"}, []),
+                                             ("5", "request", "a", "t", {"subject": SSN, "since": DOB}, [])],
+                                      T0 + dt.timedelta(minutes=8),
+                                      {**ENTITIES, "u": Entity("u", "user:alice", "user")}))
+    driver.drain(cursor, config)
+    assert _q(configured_db, "SELECT e.entity_type, e.from_trace_id, c.level FROM payload_label_edges e JOIN "
+                             "label_crossings c ON c.edge_id = e.edge_id WHERE e.trace_id = 'X3' ORDER BY 1") == [
+        ("DOB", new, "corroborated"), ("SSN", new, "corroborated")]
+
+
 CROSS_TABLES = ("label_occurrences", "label_crossings", "label_crossed_edges")
 
 
