@@ -142,7 +142,11 @@ def config() -> dict[str, Any]:
         return merged
 
 
-def components_for(agent_id: str, agent_name: str) -> dict[str, bool]:
+def components_for(agent_id: str, agent_name: str, from_path: set[str] | None) -> dict[str, bool]:
+    """Which of Sentry's components apply: the owner's switches in DAM, as the gateway names them
+    in the check path; a path without them (an older gateway) falls back to the config here."""
+    if from_path is not None:
+        return {c: c in from_path for c in ("aiac", "dg")}
     cfg = config()
     chosen = {**cfg["default"], **cfg["agents"].get(agent_id, {}), **cfg["agents"].get(agent_name, {})}
     return {c: str(chosen.get(c, "on")).lower() != "off" for c in ("aiac", "dg")}
@@ -160,12 +164,22 @@ def agent_name(agent_id: str) -> str:
         return agent_id
 
 
-def split_check_path(raw: str) -> tuple[str, str]:
-    """``/check/<agent id>/<original path>`` -> (agent id, original path)."""
+def split_check_path(raw: str) -> tuple[str, set[str] | None, str]:
+    """``/check/<agent id>/<checks>/<original path>`` -> (agent id, checks, original path).
+
+    The gateway's controller writes the agent id and the checks that apply to it (``aiac,dg``,
+    or ``none``), the owner's switches in DAM; the agent's own path only follows them. ``None``
+    for the checks means a path without the segment, from a gateway rendered before it existed.
+    """
     if not raw.startswith(CHECK_PREFIX + "/"):
-        return "", raw
+        return "", None, raw
     agent, _, rest = raw[len(CHECK_PREFIX) + 1:].partition("/")
-    return agent, "/" + rest
+    segment, _, after = rest.partition("/")
+    if segment == "none":
+        return agent, set(), "/" + after
+    if segment and all(c and c.replace("-", "").isalnum() and c.islower() for c in segment.split(",")):
+        return agent, set(segment.split(",")), "/" + after
+    return agent, None, "/" + rest
 
 
 def opa_decision(agent: str, host: str, message: dict[str, Any]) -> dict[str, Any]:
@@ -203,7 +217,7 @@ class Handler(BaseHTTPRequestHandler):
     def _check(self) -> None:
         length = int(self.headers.get("content-length") or 0)
         body = self.rfile.read(length) if length else b""
-        agent, path = split_check_path(self.path)
+        agent, path_checks, path = split_check_path(self.path)
         host = self.headers.get("host", "")
         unreadable = ""
         try:
@@ -219,7 +233,7 @@ class Handler(BaseHTTPRequestHandler):
             reasons.append(denied[1])
         calls = [m for m in messages if m.get("method") == "tools/call"]
         name = agent_name(agent) if calls else agent
-        components = components_for(agent, name)
+        components = components_for(agent, name, path_checks)
         connection = config()["connections"].get(host.split(":")[0].lower(), host)
         checked: list[dict[str, Any]] = []
         for message in [] if unreadable else calls:

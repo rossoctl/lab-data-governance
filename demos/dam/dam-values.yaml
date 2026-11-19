@@ -6,6 +6,14 @@ controller:
     host: mcp-policy.sentry-dam.svc.cluster.local
     port: 9191
     timeoutSeconds: 10
+    # Sentry's two components, each a switch in the agent's MCP policy enforcement card.
+    checks:
+      - id: aiac
+        label: Automated access control management (aiac)
+        description: Which tools the agent may use, decided from its description and the organisation policy.
+      - id: dg
+        label: Data governance (dg)
+        description: Which data may go where. Blocks personal or restricted data sent to an untrusted destination.
   gatewayEgress:
     peers:
       - namespace: sentry-dam

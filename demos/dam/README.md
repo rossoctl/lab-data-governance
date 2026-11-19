@@ -7,7 +7,7 @@ Sentry has two components:
 - **aiac (automated access control).** It decides which tools an agent may use, from the agent's own description and the organisation's policy.
 - **dg (data governance).** It decides which data may go where, from Sentry's classifier and risk rules.
 
-Each component is on or off per agent, live.
+Each component is on or off per agent, live, with switches in the agent's DAM settings.
 
 ## Why this exists
 
@@ -30,8 +30,12 @@ agent ─▶ DAM gateway ─▶ DAM ext_authz (owner's rules, holds)
   It shows only to an owner who turned on the `mcp-policy-enforcement` experimental feature.
 - **What the PEP does.** The agent's gateway adds a second ext_authz in Envoy HTTP mode.
   It runs on every credentialed, non-model chain, after DAM's own check and before the credential is injected.
-- **What the PDP receives.** The whole body, as `POST /check/<agent id><path>`.
-  The controller sets the agent id, and the agent cannot.
+- **The check switches.** While enforcement is on, the card shows one switch per check that the install declares (Helm `controller.mcpPolicy.checks`).
+  Here those are **Automated access control (aiac)** and **Data governance (dg)**.
+  Each is on until the owner turns it off (Agent spec `mcpPolicyDisabledChecks`).
+  DAM gives the ids no meaning of its own.
+- **What the PDP receives.** The whole body, as `POST /check/<agent id>/<aiac,dg|none><path>`.
+  The controller sets the agent id and the checks that apply, and the agent cannot change either.
 - **The answer.** A 2xx response allows the request.
   Any other status denies it, and the agent receives the reason.
 
@@ -72,16 +76,13 @@ Everything fails closed. A component that cannot be reached denies.
 
 ## Turn components on and off
 
-```sh
-demos/dam/sentry-components.sh                              # show
-demos/dam/sentry-components.sh issue-triage-test aiac=off   # one agent
-demos/dam/sentry-components.sh default dg=off               # every agent
-demos/dam/sentry-components.sh issue-triage-test reset
-```
+1. Open the agent's settings, then **Network access**.
+2. Under **MCP policy enforcement**, switch **Automated access control (aiac)** or **Data governance (dg)**.
 
-A change takes effect in about 5 seconds.
+Each change restarts the agent's network access for 5 to 15 seconds.
 With aiac off, any tool is allowed, subject to dg.
 With dg off, no data is checked.
+With aiac off, the onboarder stops deriving decisions for the agent.
 
 ## Deploy on a local DAM install
 
@@ -140,5 +141,4 @@ kubectl -n sentry-dam logs deploy/mcp-policy -c server -f      # each decision
 | `opa/build_data.py`, `decisions/` | the seed of `mcp-policy-data` |
 | `k8s/policy-service.yaml` | the pod, RBAC and Service |
 | `deploy.sh`, `deploy-dg.sh` | deploy the policy service, deploy dg |
-| `dam-values.yaml` | DAM Helm values: where the PDP is, and gateway egress to it |
-| `sentry-components.sh` | aiac and dg on or off per agent |
+| `dam-values.yaml` | DAM Helm values: where the PDP is, its checks (aiac, dg), and gateway egress to it |
