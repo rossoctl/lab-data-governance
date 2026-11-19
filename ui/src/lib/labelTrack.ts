@@ -34,10 +34,15 @@ export function trackKey(interactionId: string, legType: string, label: Pick<Leg
   return `${interactionId}/${legType}/${label.entity_type}/${label.start ?? 'x'}-${label.end ?? 'x'}/${label.text}`;
 }
 
-/** The tracked shape of one carried-in value of a leg; `null` for a value with nothing carried in (nothing to track). */
+/**
+ * The tracked shape of one carried-in value of a leg; `null` for a value with no
+ * carriers (nothing to light). Carriers can come without a chain: the preview's
+ * route was rewritten between the server's two reads.
+ */
 export function trackedValueOf(interactionId: string, leg: LegLabels, label: LegLabel): TrackedValue | null {
   const chains = label.carried_in.flatMap((o) => o.chains ?? []);
-  if (chains.length === 0) return null;
+  const carriers = label.carried_in.flatMap((o) => o.carriers ?? (o.chains ?? []).flat());
+  if (carriers.length === 0) return null;
   return {
     key: trackKey(interactionId, leg.leg_type, label),
     interactionId,
@@ -45,7 +50,7 @@ export function trackedValueOf(interactionId: string, leg: LegLabels, label: Leg
     text: label.text,
     entityType: label.entity_type,
     chains,
-    carriers: label.carried_in.flatMap((o) => o.carriers ?? (o.chains ?? []).flat()),
+    carriers,
   };
 }
 

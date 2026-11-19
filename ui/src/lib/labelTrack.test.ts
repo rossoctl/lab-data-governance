@@ -37,7 +37,7 @@ describe('labelTrack', () => {
     expect(trackKey('x', 'request', label({ start: null, end: null }))).toBe('x/request/PID/x-x/BK-1');
   });
 
-  it('tracks a value only when some origin carries chains; found-here-only and chainless origins are nothing to track', () => {
+  it('tracks a value only when some origin has carriers or, from an older server, chains; found-here-only and chainless origins are nothing to track', () => {
     expect(trackedValueOf('x', leg([]), label({ carried_in: [] }))).toBeNull();
     expect(trackedValueOf('x', leg([]), label({ carried_in: [origin(undefined)] }))).toBeNull();
     expect(trackedValueOf('x', leg([]), label({ carried_in: [origin([])] }))).toBeNull();
@@ -74,6 +74,20 @@ describe('labelTrack', () => {
     const h = deriveLabelTrackHighlight([v], [ix('o', 'e1', 'e2'), ix('llm', 'e2', 'e9'), ix('p', 'e2', 'e3'), ix('x', 'e3', 'e6')], T);
     expect(h.edgeIds).toEqual(['llm:request', 'llm:response', 'o:response', 'p:request', 'x:request']);
     expect(h.nodeIds).toEqual(['e1', 'e2', 'e3', 'e6', 'e9']);
+  });
+
+  it('tracks a value whose carriers came without a chain preview (the route was rewritten between the reads)', () => {
+    const carrier = (iid: string, leg: 'request' | 'response') => ({ trace_id: T, interaction_id: iid, leg_type: leg });
+    const carriers = [carrier('o', 'response'), carrier('p', 'request'), carrier('x', 'request')];
+    const l = label({ carried_in: [{ ...origin([]), carriers }] });
+    const v = trackedValueOf('x', leg([]), l)!;
+    expect(v).not.toBeNull();
+    expect([v.chains, v.carriers]).toEqual([[], carriers]);
+    expect(trackableValues('x', [leg([l])]).map((t) => t.key)).toEqual(['x/request/PID/16-25/BK-1']);
+    expect(deriveLabelTrackHighlight([v], [ix('o', 'e1', 'e2'), ix('p', 'e2', 'e3'), ix('x', 'e3', 'e6')], T).edgeIds)
+      .toEqual(['o:response', 'p:request', 'x:request']);
+    // A read without the walk (no chains, no carriers) is still nothing to track.
+    expect(trackedValueOf('x', leg([]), label({ carried_in: [{ ...origin([]), carriers: [] }] }))).toBeNull();
   });
 
   it('names a value by a rule\'s tag or level criteria, and by nothing when a rule has no data-item criteria', () => {

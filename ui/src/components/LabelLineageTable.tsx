@@ -133,7 +133,7 @@ function Row({
   label: LegLabel;
   traceId: string;
   links: HopLinks;
-  /** The value's tracked shape and the page's tracking, when offered; `value` is null for a value with no chains. */
+  /** The value's tracked shape and the page's tracking, when offered; `value` is null for a value with no carriers. */
   tracking: { value: ReturnType<typeof trackedValueOf>; track: ReturnType<typeof useLabelTrack> } | null;
 }) {
   const [open, setOpen] = useState(false);
