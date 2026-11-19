@@ -1,0 +1,241 @@
+{
+ "agent": {
+  "id": "agent-847182000cebdccd",
+  "name": "issue-triage-test"
+ },
+ "connection": "github-mcp",
+ "generated_at": "2026-11-19T12:03:21+00:00",
+ "host": "api.githubcopilot.com",
+ "tools": {
+  "add_comment_to_pending_review": {
+   "basis": "rule",
+   "effect": "deny",
+   "reason": "github-mcp.add_comment_to_pending_review for agent issue-triage-test is denied: the policy prohibits it, agent specifically states that it reports on issues and never changes repositories or issues."
+  },
+  "add_issue_comment": {
+   "basis": "rule",
+   "effect": "deny",
+   "reason": "github-mcp.add_issue_comment for agent issue-triage-test is denied: the policy prohibits it, agent specifically states that it reports on issues and never changes repositories or issues."
+  },
+  "add_reply_to_pull_request_comment": {
+   "basis": "rule",
+   "effect": "deny",
+   "reason": "github-mcp.add_reply_to_pull_request_comment for agent issue-triage-test is denied: the policy prohibits it, agent specifically states that it reports on issues and never changes repositories or issues."
+  },
+  "create_branch": {
+   "basis": "rule",
+   "effect": "deny",
+   "reason": "github-mcp.create_branch for agent issue-triage-test is denied: the policy prohibits it, agent specifically states that it reports on issues and never changes repositories or issues."
+  },
+  "create_or_update_file": {
+   "basis": "rule",
+   "effect": "deny",
+   "reason": "github-mcp.create_or_update_file for agent issue-triage-test is denied: the policy prohibits it, agent specifically states that it reports on issues and never changes repositories or issues."
+  },
+  "create_pull_request": {
+   "basis": "rule",
+   "effect": "deny",
+   "reason": "github-mcp.create_pull_request for agent issue-triage-test is denied: the policy prohibits it, agent specifically states that it reports on issues and never changes repositories or issues."
+  },
+  "create_repository": {
+   "basis": "rule",
+   "effect": "deny",
+   "reason": "github-mcp.create_repository for agent issue-triage-test is denied: the policy prohibits it, agent specifically states that it reports on issues and never changes repositories or issues."
+  },
+  "delete_file": {
+   "basis": "rule",
+   "effect": "deny",
+   "reason": "github-mcp.delete_file for agent issue-triage-test is denied: the policy prohibits it, agent specifically states that it reports on issues and never changes repositories or issues."
+  },
+  "delete_repository": {
+   "basis": "rule",
+   "effect": "deny",
+   "reason": "github-mcp.delete_repository for agent issue-triage-test is denied: the policy prohibits it, agent specifically states that it reports on issues and never changes repositories or issues."
+  },
+  "fork_repository": {
+   "basis": "rule",
+   "effect": "deny",
+   "reason": "github-mcp.fork_repository for agent issue-triage-test is denied: the policy prohibits it, agent specifically states that it reports on issues and never changes repositories or issues."
+  },
+  "get_commit": {
+   "basis": "no rule grants it",
+   "effect": "deny",
+   "reason": "github-mcp.get_commit for agent issue-triage-test is denied: no rule grants it, agent states only that it is an issue triage test assistant and it reads and summarizes open issues in the s-and-p-team demo repositories so the owner can prioritize them."
+  },
+  "get_file_contents": {
+   "basis": "no rule grants it",
+   "effect": "deny",
+   "reason": "github-mcp.get_file_contents for agent issue-triage-test is denied: no rule grants it, agent states only that it is an issue triage test assistant and it reads and summarizes open issues in the s-and-p-team demo repositories so the owner can prioritize them."
+  },
+  "get_label": {
+   "basis": "no rule grants it",
+   "effect": "deny",
+   "reason": "github-mcp.get_label for agent issue-triage-test is denied: no rule grants it, agent states only that it is an issue triage test assistant and it reads and summarizes open issues in the s-and-p-team demo repositories so the owner can prioritize them."
+  },
+  "get_latest_release": {
+   "basis": "no rule grants it",
+   "effect": "deny",
+   "reason": "github-mcp.get_latest_release for agent issue-triage-test is denied: no rule grants it, agent states only that it is an issue triage test assistant and it reads and summarizes open issues in the s-and-p-team demo repositories so the owner can prioritize them."
+  },
+  "get_me": {
+   "basis": "no rule grants it",
+   "effect": "deny",
+   "reason": "github-mcp.get_me for agent issue-triage-test is denied: no rule grants it, agent states only that it is an issue triage test assistant and it reads and summarizes open issues in the s-and-p-team demo repositories so the owner can prioritize them."
+  },
+  "get_release_by_tag": {
+   "basis": "no rule grants it",
+   "effect": "deny",
+   "reason": "github-mcp.get_release_by_tag for agent issue-triage-test is denied: no rule grants it, agent states only that it is an issue triage test assistant and it reads and summarizes open issues in the s-and-p-team demo repositories so the owner can prioritize them."
+  },
+  "get_tag": {
+   "basis": "no rule grants it",
+   "effect": "deny",
+   "reason": "github-mcp.get_tag for agent issue-triage-test is denied: no rule grants it, agent states only that it is an issue triage test assistant and it reads and summarizes open issues in the s-and-p-team demo repositories so the owner can prioritize them."
+  },
+  "get_team_members": {
+   "basis": "no rule grants it",
+   "effect": "deny",
+   "reason": "github-mcp.get_team_members for agent issue-triage-test is denied: no rule grants it, agent states only that it is an issue triage test assistant and it reads and summarizes open issues in the s-and-p-team demo repositories so the owner can prioritize them."
+  },
+  "get_teams": {
+   "basis": "no rule grants it",
+   "effect": "deny",
+   "reason": "github-mcp.get_teams for agent issue-triage-test is denied: no rule grants it, agent states only that it is an issue triage test assistant and it reads and summarizes open issues in the s-and-p-team demo repositories so the owner can prioritize them."
+  },
+  "issue_read": {
+   "basis": "rule",
+   "effect": "allow",
+   "reason": "github-mcp.issue_read for agent issue-triage-test is allowed: agent states that it is an issue triage test assistant and it reads and summarizes open issues in the s-and-p-team demo repositories so the owner can prioritize them."
+  },
+  "issue_write": {
+   "basis": "rule",
+   "effect": "deny",
+   "reason": "github-mcp.issue_write for agent issue-triage-test is denied: the policy prohibits it, agent specifically states that it reports on issues and never changes repositories or issues."
+  },
+  "list_branches": {
+   "basis": "no rule grants it",
+   "effect": "deny",
+   "reason": "github-mcp.list_branches for agent issue-triage-test is denied: no rule grants it, agent states only that it is an issue triage test assistant and it reads and summarizes open issues in the s-and-p-team demo repositories so the owner can prioritize them."
+  },
+  "list_commits": {
+   "basis": "no rule grants it",
+   "effect": "deny",
+   "reason": "github-mcp.list_commits for agent issue-triage-test is denied: no rule grants it, agent states only that it is an issue triage test assistant and it reads and summarizes open issues in the s-and-p-team demo repositories so the owner can prioritize them."
+  },
+  "list_issue_fields": {
+   "basis": "no rule grants it",
+   "effect": "deny",
+   "reason": "github-mcp.list_issue_fields for agent issue-triage-test is denied: no rule grants it, agent states only that it is an issue triage test assistant and it reads and summarizes open issues in the s-and-p-team demo repositories so the owner can prioritize them."
+  },
+  "list_issue_types": {
+   "basis": "no rule grants it",
+   "effect": "deny",
+   "reason": "github-mcp.list_issue_types for agent issue-triage-test is denied: no rule grants it, agent states only that it is an issue triage test assistant and it reads and summarizes open issues in the s-and-p-team demo repositories so the owner can prioritize them."
+  },
+  "list_issues": {
+   "basis": "rule",
+   "effect": "allow",
+   "reason": "github-mcp.list_issues for agent issue-triage-test is allowed: agent states that it is an issue triage test assistant and it reads and summarizes open issues in the s-and-p-team demo repositories so the owner can prioritize them."
+  },
+  "list_pull_requests": {
+   "basis": "no rule grants it",
+   "effect": "deny",
+   "reason": "github-mcp.list_pull_requests for agent issue-triage-test is denied: no rule grants it, agent states only that it is an issue triage test assistant and it reads and summarizes open issues in the s-and-p-team demo repositories so the owner can prioritize them."
+  },
+  "list_releases": {
+   "basis": "no rule grants it",
+   "effect": "deny",
+   "reason": "github-mcp.list_releases for agent issue-triage-test is denied: no rule grants it, agent states only that it is an issue triage test assistant and it reads and summarizes open issues in the s-and-p-team demo repositories so the owner can prioritize them."
+  },
+  "list_repository_collaborators": {
+   "basis": "no rule grants it",
+   "effect": "deny",
+   "reason": "github-mcp.list_repository_collaborators for agent issue-triage-test is denied: no rule grants it, agent states only that it is an issue triage test assistant and it reads and summarizes open issues in the s-and-p-team demo repositories so the owner can prioritize them."
+  },
+  "list_tags": {
+   "basis": "no rule grants it",
+   "effect": "deny",
+   "reason": "github-mcp.list_tags for agent issue-triage-test is denied: no rule grants it, agent states only that it is an issue triage test assistant and it reads and summarizes open issues in the s-and-p-team demo repositories so the owner can prioritize them."
+  },
+  "merge_pull_request": {
+   "basis": "rule",
+   "effect": "deny",
+   "reason": "github-mcp.merge_pull_request for agent issue-triage-test is denied: the policy prohibits it, agent specifically states that it reports on issues and never changes repositories or issues."
+  },
+  "pull_request_read": {
+   "basis": "no rule grants it",
+   "effect": "deny",
+   "reason": "github-mcp.pull_request_read for agent issue-triage-test is denied: no rule grants it, agent states only that it is an issue triage test assistant and it reads and summarizes open issues in the s-and-p-team demo repositories so the owner can prioritize them."
+  },
+  "pull_request_review_write": {
+   "basis": "rule",
+   "effect": "deny",
+   "reason": "github-mcp.pull_request_review_write for agent issue-triage-test is denied: the policy prohibits it, agent specifically states that it reports on issues and never changes repositories or issues."
+  },
+  "push_files": {
+   "basis": "rule",
+   "effect": "deny",
+   "reason": "github-mcp.push_files for agent issue-triage-test is denied: the policy prohibits it, agent specifically states that it reports on issues and never changes repositories or issues."
+  },
+  "request_copilot_review": {
+   "basis": "rule",
+   "effect": "deny",
+   "reason": "github-mcp.request_copilot_review for agent issue-triage-test is denied: the policy prohibits it, agent specifically states that it reports on issues and never changes repositories or issues."
+  },
+  "run_secret_scanning": {
+   "basis": "rule",
+   "effect": "deny",
+   "reason": "github-mcp.run_secret_scanning for agent issue-triage-test is denied: the policy prohibits it, agent specifically states that it reports on issues and never changes repositories or issues."
+  },
+  "search_code": {
+   "basis": "no rule grants it",
+   "effect": "deny",
+   "reason": "github-mcp.search_code for agent issue-triage-test is denied: no rule grants it, agent states only that it is an issue triage test assistant and it reads and summarizes open issues in the s-and-p-team demo repositories so the owner can prioritize them."
+  },
+  "search_commits": {
+   "basis": "no rule grants it",
+   "effect": "deny",
+   "reason": "github-mcp.search_commits for agent issue-triage-test is denied: no rule grants it, agent states only that it is an issue triage test assistant and it reads and summarizes open issues in the s-and-p-team demo repositories so the owner can prioritize them."
+  },
+  "search_issues": {
+   "basis": "rule",
+   "effect": "allow",
+   "reason": "github-mcp.search_issues for agent issue-triage-test is allowed: agent states that it is an issue triage test assistant and it reads and summarizes open issues in the s-and-p-team demo repositories so the owner can prioritize them."
+  },
+  "search_pull_requests": {
+   "basis": "no rule grants it",
+   "effect": "deny",
+   "reason": "github-mcp.search_pull_requests for agent issue-triage-test is denied: no rule grants it, agent states only that it is an issue triage test assistant and it reads and summarizes open issues in the s-and-p-team demo repositories so the owner can prioritize them."
+  },
+  "search_repositories": {
+   "basis": "no rule grants it",
+   "effect": "deny",
+   "reason": "github-mcp.search_repositories for agent issue-triage-test is denied: no rule grants it, agent states only that it is an issue triage test assistant and it reads and summarizes open issues in the s-and-p-team demo repositories so the owner can prioritize them."
+  },
+  "search_users": {
+   "basis": "no rule grants it",
+   "effect": "deny",
+   "reason": "github-mcp.search_users for agent issue-triage-test is denied: no rule grants it, agent states only that it is an issue triage test assistant and it reads and summarizes open issues in the s-and-p-team demo repositories so the owner can prioritize them."
+  },
+  "sub_issue_write": {
+   "basis": "rule",
+   "effect": "deny",
+   "reason": "github-mcp.sub_issue_write for agent issue-triage-test is denied: the policy prohibits it, agent specifically states that it reports on issues and never changes repositories or issues."
+  },
+  "update_issue_comment": {
+   "basis": "rule",
+   "effect": "deny",
+   "reason": "github-mcp.update_issue_comment for agent issue-triage-test is denied: the policy prohibits it, agent specifically states that it reports on issues and never changes repositories or issues."
+  },
+  "update_pull_request": {
+   "basis": "rule",
+   "effect": "deny",
+   "reason": "github-mcp.update_pull_request for agent issue-triage-test is denied: the policy prohibits it, agent specifically states that it reports on issues and never changes repositories or issues."
+  },
+  "update_pull_request_branch": {
+   "basis": "rule",
+   "effect": "deny",
+   "reason": "github-mcp.update_pull_request_branch for agent issue-triage-test is denied: the policy prohibits it, agent specifically states that it reports on issues and never changes repositories or issues."
+  }
+ }
+}

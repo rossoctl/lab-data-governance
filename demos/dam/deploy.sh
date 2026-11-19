@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+# Deploy (or update) the MCP policy service, its OPA and the aiac onboarder
+# into a local DAM cluster.
+#
+# Usage: demos/dam/deploy.sh [DAM checkout, default ~/development/dam] [aiac checkout, default ~/development/sentry/aiac]
+#
+# - The onboarder's code, tool catalogue and organisation policy come from the
+#   aiac checkout's demo/dam/. Its image is localhost/aiac-agent:local, which
+#   must already be imported into the cluster (see README).
+# - The LLM Secret is made once, from the key of the DAM install's ibm-litellm
+#   connection; the key is copied, never printed. LLM_MODEL and LLM_BASE_URL
+#   may be overridden in the environment.
+# - The decisions ConfigMap is seeded from decisions/ only when it does not
+#   exist yet: after that, the onboarder owns it.
+set -euo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DAM="${1:-$HOME/development/dam}"
+AIAC="${2:-$HOME/development/sentry/aiac}"
+LLM_MODEL="${LLM_MODEL:-aws/claude-sonnet-5-5}"
+LLM_BASE_URL="${LLM_BASE_URL:-https://ete-litellm.ai-models.vpc.res.ibm.com/v1}"
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
+kc() { (cd "$DAM" && mise run -q cluster:kubectl -- "$@") 2>&1 | grep -v '^→'; }
+apply_cm() { # name, then --from-file arguments
+  local name=$1; shift
+  kc create configmap "$name" -n sentry-dam "$@" --dry-run=client -o yaml > "$TMP/cm.yaml"
+  kc apply -f - < "$TMP/cm.yaml"
+}
+
+kc apply -f - < "$HERE/k8s/policy-service.yaml"
+
+apply_cm mcp-policy-server --from-file=server.py="$HERE/policy-service/server.py" \
+  --from-file=dg_check.py="$HERE/policy-service/dg_check.py"
+apply_cm mcp-policy-rego --from-file=mcp.rego="$HERE/opa/mcp.rego"
+apply_cm aiac-dam-onboarder \
+  --from-file=controller.py="$AIAC/demo/dam/controller.py" \
+  --from-file=onboard_dam_agent.py="$AIAC/demo/dam/onboard_dam_agent.py" \
+  --from-file=github-mcp-tools.json="$AIAC/demo/dam/github-mcp-tools.json" \
+  --from-file=policy.md="$AIAC/demo/dam/policy.md"
+
+if ! kc get configmap mcp-policy-data -n sentry-dam -o name | grep -q configmap; then
+  python3 -I "$HERE/opa/build_data.py" "$HERE/decisions" > "$TMP/data.json"
+  apply_cm mcp-policy-data --from-file=data.json="$TMP/data.json"
+  echo "seeded mcp-policy-data from decisions/"
+fi
+
+if ! kc get configmap mcp-policy-config -n sentry-dam -o name | grep -q configmap; then
+  printf '%s\n' '{"default": {"aiac": "on", "dg": "on"}, "agents": {}, "connections": {"api.githubcopilot.com": "github-mcp"}}' > "$TMP/config.json"
+  apply_cm mcp-policy-config --from-file=config.json="$TMP/config.json"
+  echo "seeded mcp-policy-config (aiac and dg on for every agent)"
+fi
+
+# dg's verdict service secret, copied from namespace data-governance (deploy-dg.sh makes it).
+if ! kc get secret dg-verdict-secret -n sentry-dam -o name | grep -q secret; then
+  kc get secret dg-verdict-secret -n data-governance -o jsonpath='{.data.secret}' | base64 -d > "$TMP/dg"
+  [ -s "$TMP/dg" ] || { echo "no dg-verdict-secret in data-governance: run deploy-dg.sh first" >&2; exit 1; }
+  kc create secret generic dg-verdict-secret -n sentry-dam --from-file=secret="$TMP/dg" --dry-run=client -o yaml > "$TMP/s.yaml"
+  kc apply -f - < "$TMP/s.yaml" >/dev/null
+  echo "copied dg-verdict-secret into sentry-dam"
+fi
+
+if ! kc get secret aiac-dam-llm -n sentry-dam -o name | grep -q secret; then
+  src="$(kc get secrets -n platform-agents -o name | grep -m1 'secret/platform-secret-connection-ibm-litellm-')"
+  [ -n "$src" ] || { echo "no ibm-litellm connection Secret in platform-agents" >&2; exit 1; }
+  kc get "$src" -n platform-agents -o jsonpath='{.data.value}' | base64 -d > "$TMP/key"
+  kc create secret generic aiac-dam-llm -n sentry-dam \
+    --from-file=LLM_API_KEY="$TMP/key" \
+    --from-literal=LLM_MODEL="$LLM_MODEL" \
+    --from-literal=LLM_BASE_URL="$LLM_BASE_URL" --dry-run=client -o yaml > "$TMP/secret.yaml"
+  kc apply -f - < "$TMP/secret.yaml" >/dev/null
+  echo "created Secret aiac-dam-llm from ${src#secret/}"
+fi
+
+SHA="$(cat "$HERE/policy-service/server.py" "$HERE/policy-service/dg_check.py" "$HERE/opa/mcp.rego" "$AIAC/demo/dam/"{controller.py,onboard_dam_agent.py,github-mcp-tools.json,policy.md} | shasum -a 256 | cut -c1-12)"
+kc patch deployment mcp-policy -n sentry-dam --type merge \
+  -p "{\"spec\":{\"template\":{\"metadata\":{\"annotations\":{\"sentry-dam/server-sha\":\"$SHA\"}}}}}"
+kc rollout status deployment/mcp-policy -n sentry-dam --timeout=180s

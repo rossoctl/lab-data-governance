@@ -1,0 +1,18 @@
+# Extra Helm values for a local DAM install (branch sentry-dam) that uses the
+# MCP policy service in k8s/policy-service.yaml. Pass it to DAM's install:
+#   mise run cluster:install -- --helm-values <path to this file>
+controller:
+  mcpPolicy:
+    host: mcp-policy.sentry-dam.svc.cluster.local
+    port: 9191
+    timeoutSeconds: 10
+  gatewayEgress:
+    peers:
+      - namespace: sentry-dam
+        podLabels:
+          app: mcp-policy
+        ports: [9191]
+# Show the feature's switch in the Experimental features tab (the default),
+# so the demo can turn it on and off per user.
+features:
+  mcp-policy-enforcement: experimental

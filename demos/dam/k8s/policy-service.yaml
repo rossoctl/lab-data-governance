@@ -1,0 +1,205 @@
+# Sentry's MCP policy service (the PDP) for DAM's experimental MCP policy
+# enforcement. Sentry has two components, each on or off per agent
+# (ConfigMap mcp-policy-config): aiac (which tools an agent may use) and dg
+# (which data may go where). One pod, three containers:
+# - server: server.py and dg_check.py (from a ConfigMap, stock python image).
+#   For each MCP tool call it asks OPA for aiac's decision, then dg's verdict
+#   service (namespace data-governance) about the call's data.
+# - opa: evaluates opa/mcp.rego; it holds no data of its own.
+# - onboarder: aiac's demo/dam/controller.py on the aiac image. It watches
+#   DAM's Agent resources and writes each enforcing agent's decisions, derived
+#   from its description, into OPA, and keeps them in ConfigMap mcp-policy-data.
+# deploy.sh creates the ConfigMaps and the LLM Secret. Outside the mesh: an
+# agent gateway reaches it through the `controller.gatewayEgress.peers` entry
+# in dam-values.yaml.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: sentry-dam
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mcp-policy
+  namespace: sentry-dam
+  labels:
+    app: mcp-policy
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mcp-policy
+  template:
+    metadata:
+      labels:
+        app: mcp-policy
+      annotations:
+        # deploy.sh stamps the server's hash here so a code change rolls the pod.
+        sentry-dam/server-sha: "unset"
+    spec:
+      serviceAccountName: aiac-dam-onboarder
+      containers:
+        - name: server
+          image: mirror.gcr.io/library/python:3.12-slim
+          command: ["python", "-u", "/app/server.py"]
+          env:
+            - name: PORT
+              value: "9191"
+            - name: OPA_URL
+              value: "http://127.0.0.1:8181"
+            - name: DG_VERDICT_SECRET
+              valueFrom: {secretKeyRef: {name: dg-verdict-secret, key: secret}}
+          ports:
+            - name: http
+              containerPort: 9191
+          readinessProbe:
+            tcpSocket:
+              port: 9191
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 20m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+          volumeMounts:
+            - name: app
+              mountPath: /app
+        - name: opa
+          image: mirror.gcr.io/openpolicyagent/opa:1.20.2-static
+          args:
+            - run
+            - --server
+            - --addr=127.0.0.1:8181
+            - --watch
+            - /policy/mcp.rego
+          readinessProbe:
+            exec:
+              command: ["/opa", "eval", "--fail", "--data", "/policy/mcp.rego", "data.dam.mcp"]
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 20m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+          volumeMounts:
+            - name: policy
+              mountPath: /policy
+        - name: onboarder
+          image: localhost/aiac-agent:local
+          imagePullPolicy: Never
+          command: ["python", "-u", "/dam/controller.py"]
+          env:
+            - name: PYTHONPATH
+              value: /app/src
+            - name: AGENT_NAMESPACE
+              value: platform-agents
+            - name: DATA_NAMESPACE
+              value: sentry-dam
+            - name: DATA_CONFIGMAP
+              value: mcp-policy-data
+            - name: OPA_URL
+              value: "http://127.0.0.1:8181"
+            - name: TOOLS_FILE
+              value: /dam/github-mcp-tools.json
+            - name: AIAC_POLICY_FILE
+              value: /dam/policy.md
+            - name: CONNECTION
+              value: github-mcp
+            - name: MCP_HOST
+              value: api.githubcopilot.com
+            - name: LLM_BASE_URL
+              valueFrom: {secretKeyRef: {name: aiac-dam-llm, key: LLM_BASE_URL}}
+            - name: LLM_MODEL
+              valueFrom: {secretKeyRef: {name: aiac-dam-llm, key: LLM_MODEL}}
+            - name: LLM_API_KEY
+              valueFrom: {secretKeyRef: {name: aiac-dam-llm, key: LLM_API_KEY}}
+          resources:
+            requests:
+              cpu: 50m
+              memory: 256Mi
+            limits:
+              memory: 1Gi
+          volumeMounts:
+            - name: onboarder
+              mountPath: /dam
+      volumes:
+        - name: app
+          configMap:
+            name: mcp-policy-server
+        - name: policy
+          configMap:
+            name: mcp-policy-rego
+        - name: onboarder
+          configMap:
+            name: aiac-dam-onboarder
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mcp-policy
+  namespace: sentry-dam
+spec:
+  selector:
+    app: mcp-policy
+  ports:
+    - name: http
+      port: 9191
+      targetPort: 9191
+---
+# The onboarder reads DAM's Agent resources and keeps its decisions in a ConfigMap.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: aiac-dam-onboarder
+  namespace: sentry-dam
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: aiac-dam-agent-reader
+  namespace: platform-agents
+rules:
+  - apiGroups: ["agent-platform.ai"]
+    resources: ["agents"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: aiac-dam-agent-reader
+  namespace: platform-agents
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: aiac-dam-agent-reader
+subjects:
+  - kind: ServiceAccount
+    name: aiac-dam-onboarder
+    namespace: sentry-dam
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: aiac-dam-decisions
+  namespace: sentry-dam
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["mcp-policy-data", "mcp-policy-config"]
+    verbs: ["get", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: aiac-dam-decisions
+  namespace: sentry-dam
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: aiac-dam-decisions
+subjects:
+  - kind: ServiceAccount
+    name: aiac-dam-onboarder
+    namespace: sentry-dam
