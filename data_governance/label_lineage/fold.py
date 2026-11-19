@@ -128,7 +128,10 @@ def derive(trace_input: TraceInput, finder: Finder,
         elif known is not None and persistent(sender):
             found, common = cross.leaving(known, crossing, sender, output, leg.occurred_at, inbound.get(key, ()))
             commons += common
-        crossed = {Edge(to=dataclasses.replace(o, source=None), came_from=o.source).key: c for o, c in found}
+        by_edge: dict[tuple, list[cross.Crossed]] = {}
+        for o, c in found:
+            by_edge.setdefault(Edge(to=dataclasses.replace(o, source=None), came_from=o.source).key, []).append(c)
+        crossed = {k: _strongest(cs) for k, cs in by_edge.items()}
         # a crossed occurrence carried on claims no finding of a later leg either
         on = [level_of.get(c.source.key, cross.CERTAIN) != cross.CERTAIN for c in candidates]
         held[key], leg_edges = attribute([c for c, x in zip(candidates, on) if not x], own,
@@ -170,6 +173,14 @@ def _structured(content: object) -> bool:
     return isinstance(content, (dict, list)) and not is_projectable(content)
 
 
+def _strongest(crossings: Sequence[cross.Crossed]) -> cross.Crossed:
+    """Of the crossings onto one edge (one origin held more than once on one received
+    leg), the one whose step is strongest (R3); of equal steps, the holding first by its
+    occurrence, so the choice never follows the order the priors were loaded in."""
+    top = cross.strongest(cross.step(c.level, c.holding) for c in crossings)
+    return min((c for c in crossings if cross.step(c.level, c.holding) == top), key=lambda c: c.holding.occurrence.key)
+
+
 def carry(edges: Sequence[Edge], crossed: Mapping[tuple, cross.Crossed],
           level_of: dict[tuple, str]) -> dict[tuple, cross.Carried]:
     """How surely each value these *edges* (into one leg) reach is its unit's, and the
@@ -188,8 +199,7 @@ def carry(edges: Sequence[Edge], crossed: Mapping[tuple, cross.Crossed],
     such an occurrence maps to that."""
     for e in edges:
         if e.key in crossed:
-            c = crossed[e.key]
-            step = cross.weakest(c.level, c.holding.level if c.holding.evidence == "crossed" else cross.CERTAIN)
+            step = cross.step(crossed[e.key].level, crossed[e.key].holding)
         else:
             step = level_of.get(e.came_from.key, cross.CERTAIN)
         level_of[e.to.key] = cross.strongest((level_of.get(e.to.key, step), step))

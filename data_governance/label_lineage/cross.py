@@ -190,6 +190,12 @@ class Crossed:
     conversations: int
 
 
+def step(level: str, h: Holding) -> str:
+    """The level a crossing carries: the weakest of its rule *level* and the level its
+    holding was registered with (a holding that was itself crossed)."""
+    return weakest(level, h.level if h.evidence == "crossed" else CERTAIN)
+
+
 @dataclasses.dataclass(frozen=True, slots=True)
 class Carried:
     """How a value is known at a leg it reached by a crossing, here or on its way: the

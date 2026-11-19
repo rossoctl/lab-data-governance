@@ -435,6 +435,37 @@ def test_one_origin_through_two_carriers_is_not_ambiguous():
     assert [row[4:] for row in at_return] == [(cross.VALUE_ONLY, (cross.VALUE_ONLY, False))] * 2
 
 
+WITH_DOB, ALONE = {"ssn": SSN, "dob": DOB}, {"ssn": SSN}
+
+
+# The projection sorts keys: {"since": .., "subject": ..} returns the DOB first, {"id": .., "since": ..} the SSN.
+@pytest.mark.parametrize("priors", [list, lambda h: h[::-1]], ids=["as-registered", "reversed"])
+@pytest.mark.parametrize("returned", [{"subject": SSN, "since": DOB}, {"id": SSN, "since": DOB}],
+                         ids=["dob-first-in-return", "ssn-first-in-return"])
+@pytest.mark.parametrize("records, level", [([WITH_DOB, ALONE], cross.CORROBORATED),
+                                            ([ALONE, WITH_DOB], cross.CORROBORATED),
+                                            ([ALONE, ALONE], cross.VALUE_ONLY)],
+                         ids=["dob-record-first", "alone-first", "both-alone"])
+def test_one_origin_held_twice_on_one_leg_crosses_at_its_strongest(records, level, returned, priors):
+    """The SSN held twice on one received leg, in a record with its DOB and alone: both holdings cross onto one
+    edge, and whatever the order, the strongest holds; of equal ones, the one first in the received payload."""
+    first = _trace("Z1", [("0", "request", "u", "a", {"ssn": SSN}, [("SSN", SSN)]),
+                          ("1", "request", "a", "v", records, [("DOB", DOB)] if WITH_DOB in records else []),
+                          ("1", "response", "a", "v", {"ok": 1}, [])], T0, USER)
+    held = fold.derive(first, find.exact, crossing=ON).holdings
+    ssn = [h for h in held if h.value == SSN]
+    assert len(ssn) == 2 and len({h.occurrence.unit.key for h in ssn}) == 1
+    kept = next((h for h in ssn if any(x.value == DOB and x.record == h.record for x in held)),
+                min(ssn, key=lambda h: h.occurrence.span))
+    second = _trace("A2", [("2", "request", "a", "v", {"q": "lookup"}, []),
+                           ("2", "response", "a", "v", returned, []),
+                           ("3", "request", "a", "t", returned, [])], T0 + dt.timedelta(minutes=5), USER)
+    d = fold.derive(dataclasses.replace(second, priors=tuple(priors(held))), find.exact, crossing=ON)
+    (edge,) = [e for e in d.edges if e.unit.entity_type == "SSN" and e.key in d.levels]
+    assert (d.levels[edge.key].level, d.levels[edge.key].holding) == (level, kept)
+    assert sorted(d.carried[e.key].level for e in d.edges if e.unit.entity_type == "SSN") == [level, level]
+
+
 def test_a_value_known_inside_the_conversation_too_is_certain_and_reads_inherited():
     """The same origin reaches a's request both inside the conversation (from the user) and by a crossing in a later
     call (R7): of the paths of one origin the best holds. The edge before the crossing is ordinary (K21's leg 6)."""
