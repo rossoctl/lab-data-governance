@@ -11,11 +11,11 @@ from __future__ import annotations
 import psycopg
 
 
-def test_head_is_0029(migrated_dsn: str) -> None:
+def test_head_is_0030(migrated_dsn: str) -> None:
     """Both migration branches converge on one head. Other migration tests assert
     their schema and reachability without duplicating this head assertion."""
     with psycopg.connect(migrated_dsn) as conn:
         (version,) = conn.execute(
             "SELECT version_num FROM alembic_version"
         ).fetchone()
-    assert version == "0029_hash_evidence_fingerprints"
+    assert version == "0030_label_edges_holding_index"
