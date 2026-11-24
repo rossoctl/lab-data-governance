@@ -871,9 +871,11 @@ def test_a_duplicate_row_is_red():
     resolved, _, _, problems = resolve_edges(_case(), [row, row], leg_of_key)
     assert resolved == {("s1", 1, 2, None)} and problems == ["edge s1 1>2 (MRN) drawn by 2 rows"]
     assert _judge(_case(), problems=problems).status == "RED"
-    other_type = ("i1", "request", "i2", "request", "OPID", MRN, MRN, "whole", None, "o2")   # a second origin, by right
+    other_type = ("i1", "request", "i2", "request", "OPID", MRN, MRN, "whole", None, "o2")   # a second type, by right
     case = _case(accepts={"s1": frozenset({"MRN", "OPID"})})
     assert resolve_edges(case, [row, other_type], leg_of_key)[3] == []
+    second_copy = row[:-1] + ("o1/30/37",)                       # the same origin at a second place in the payload
+    assert resolve_edges(_case(), [row, second_copy], leg_of_key)[3] == []
     crossing = ("i1", "request", "i2", "request", "MRN", MRN, MRN, "whole", "vo", "o3")      # beside the conversation's
     assert resolve_edges(_case(), [row, crossing], leg_of_key)[0] == {("s1", 1, 2, None), ("s1", 1, 2, "vo")}
 

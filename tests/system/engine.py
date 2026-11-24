@@ -169,15 +169,15 @@ def resolve_edges(case: Case, rows, leg_of_key: dict[tuple[str, str], int]):
     edge whose value is no unit's is kept as ``?value`` (an extra, so red). An edge with an end on no line leg,
     carrying a label that is not one of its unit's types, or whose evidence is not a whole match of the value's
     own bytes (the suite runs the exact finder), is a problem; so is an edge drawn by more than one row of one label
-    type and origin, which the edge set would hide (two origins of one value are two rows by right, under one type or
-    two). A row's level is a crossing's (``None`` for an edge inside one conversation): the crossing core writes it,
-    and its row is read here beside the conversation's own."""
+    type, origin and place in the receiving payload, which the edge set would hide (two origins of one value, or two
+    copies of it in one payload, are two rows by right). A row's level is a crossing's (``None`` for an edge inside
+    one conversation): the crossing core writes it, and its row is read here beside the conversation's own."""
     value_unit = {v: u for u, v in case.values.items()}
-    rows_of: Counter[tuple[Edge, str]] = Counter()
+    rows_of: Counter[tuple[Edge, str, str]] = Counter()
     raw: list[dict[str, Any]] = []
     inherited: dict[int, list[dict[str, Any]]] = defaultdict(list)
     problems: list[str] = []
-    for fi, flt, ti, tlt, etype, value, matched, kind, level, origin in rows:
+    for fi, flt, ti, tlt, etype, value, matched, kind, level, occurrence in rows:
         f = leg_of_key.get((fi, flt))
         to = leg_of_key.get((ti, tlt))
         unit = value_unit.get(value, f"?{value}")
@@ -189,7 +189,7 @@ def resolve_edges(case: Case, rows, leg_of_key: dict[tuple[str, str], int]):
             problems.append(f"edge {unit} {f}>{to} carries {etype}, not one of {sorted(case.accepts[unit])}")
         if kind != "whole" or matched != value:
             problems.append(f"edge {unit} {f}>{to} matched {matched!r} as {kind!r}, not the whole value")
-        rows_of[((unit, f, to, level), etype, origin)] += 1
+        rows_of[((unit, f, to, level), etype, occurrence)] += 1
         inherited[to].append({"unit": unit, "label": etype, "value": value, "from": f, "level": level})
     problems += [f"edge {fmt_edges([e])} ({etype}) drawn by {n} rows"
                  for (e, etype, _), n in sorted(rows_of.items(), key=str) if n > 1]
@@ -387,7 +387,8 @@ def _read(case: Case, rendered: list[Rendered], dsn: str, mode: str) -> Observat
             "SELECT from_interaction_id, from_leg_type::text, to_interaction_id, to_leg_type::text, "
             "entity_type, unit_value, matched_text, match_kind, NULL, "
             "concat_ws('/', coalesce(origin_trace_id, trace_id), origin_interaction_id, origin_leg_type, "
-            "          unit_start, unit_end) FROM payload_label_edges").fetchall()
+            "          unit_start, unit_end, coalesce(matched_start::text, '-'), coalesce(matched_end::text, '-')) "
+            "FROM payload_label_edges").fetchall()
         # NULL: no crossing on this branch; the crossing core adds its rows and their level here
         risk_rows = conn.execute(
             "SELECT interaction_id, version, risk_level, enforcement_type, triggered_rule_ids, legs_evidenced, "
