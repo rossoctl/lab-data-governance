@@ -102,7 +102,7 @@ def upgrade() -> None:
     )
     op.execute("CREATE INDEX label_occurrences_load_idx ON label_occurrences (entity_id, core_hash, valid_to)")
     op.execute("CREATE INDEX label_occurrences_valid_idx ON label_occurrences (entity_id, valid_to) "
-               "INCLUDE (word_count, valid_from, trace_id)")
+               "INCLUDE (word_count, valid_from, interaction_id)")
     op.execute("CREATE INDEX label_occurrences_trace_idx ON label_occurrences (trace_id)")
     op.execute(
         """

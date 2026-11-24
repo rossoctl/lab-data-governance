@@ -126,7 +126,9 @@ the file lacks cannot be made an anchor. With it on, at each leg in wire order:
    applies to values registered after the change, and to a conversation derived again after it.
 
 A derivation loads only the occurrences of its persistent senders, from other conversations, valid in
-its time window, whose value is in a payload they send. A value found bounded
+its time window, whose value is in a payload they send. Whose conversation an occurrence is, is read
+from its receiving interaction (`interactions.trace_id`), not from the trace its row was written under:
+when interactions move to another trace, the rows follow only once that trace is derived. A value found bounded
 begins and ends at word boundaries of the payload, so its core (first letter or digit to last) is a run
 of its own number of consecutive payload words; each occurrence stores the hash of its core and its word
 count, and the derivation hashes every run of 1..K words of each payload a sender sends (K the most

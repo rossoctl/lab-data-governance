@@ -80,7 +80,7 @@ def test_the_load_and_the_replace_are_indexed(migrated_dsn: str) -> None:
     with psycopg.connect(migrated_dsn) as conn:
         defs = " ".join(r[0] for r in conn.execute(
             "SELECT indexdef FROM pg_indexes WHERE tablename = ANY(%s)", (list(TABLES),)).fetchall())
-    for cols in ("(entity_id, core_hash, valid_to)", "(entity_id, valid_to) INCLUDE (word_count, valid_from, trace_id)",
+    for cols in ("(entity_id, core_hash, valid_to)", "(entity_id, valid_to) INCLUDE (word_count, valid_from, interaction_id)",
                  "(trace_id)"):
         assert cols in defs, cols
     assert "value_hash)" not in defs and "first_word" not in defs
