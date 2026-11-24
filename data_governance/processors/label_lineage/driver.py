@@ -45,12 +45,15 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import os
 import threading
+from collections.abc import Mapping
 
 from data_governance import db
 from data_governance.label_lineage import find, fold
 from data_governance.processors import _driver
 from data_governance.processors import readiness_cursor as rc
+from data_governance.processors.data_lineage import memory
 from data_governance.processors.data_lineage.traversal import Entity
 from data_governance.processors.trace_lock import lock_trace
 
@@ -74,16 +77,19 @@ class ReadyLeg:
 
 @dataclasses.dataclass(frozen=True)
 class Config:
-    """What one run derives with: the finder and its name."""
+    """What one run derives with: the finder and its name, and the memory scope
+    declared per entity natural key (``LABEL_MEMORY_SCOPES``)."""
 
     finder: find.Finder
     matcher: str
+    scopes: Mapping[str, str] = dataclasses.field(default_factory=dict)
 
 
 def configured() -> Config:
-    """The configuration from the environment; raises on an unknown finder."""
+    """The configuration from the environment; raises on an unknown finder or an
+    invalid scope declaration."""
     name = find.configured_name()
-    return Config(find.get_finder(name), name)
+    return Config(find.get_finder(name), name, memory.parse_scopes(os.environ.get(memory.SCOPES_ENV_VAR)))
 
 
 _FETCH_SQL = """
@@ -145,7 +151,7 @@ def derive_and_persist(tx: db.Transaction, trace_id: str, config: Config) -> set
         tx.execute("DELETE FROM label_lineage_trace_status WHERE trace_id = %s", (trace_id,))
         tx.execute("SELECT pg_notify(%s, '')", (NOTIFY_CHANNEL,))
         return set()
-    changed = store.write(tx, fold.derive(trace, config.finder), config.matcher)
+    changed = store.write(tx, fold.derive(trace, config.finder, config.scopes), config.matcher)
     # The rows just written are what leg-ready's readiness waits for with the risk
     # flag on: wake it at commit instead of leaving it to its poll backstop.
     tx.execute("SELECT pg_notify(%s, '')", (NOTIFY_CHANNEL,))

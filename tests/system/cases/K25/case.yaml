@@ -1,0 +1,95 @@
+id: K25
+title: the identifier's label removed from conversation 1
+cell: across/order
+line: U>A[-], A>L[-], L>A[-], A>T1[-], ..V1.., T1>A[s1 s2 s3 -], A>L[s1 s2 s3 -], L>A[s1 s2 s3 -], A>T2[s1 s2 s3 -], T2>V2[s1
+  s2 s3 -], V2>T2[-], T2>A[-], A>L[-], L>A[-], A>U[-] ~10min> U>A[-], A>L[-], L>A[-], A>T2[-], T2>V2[-], V2>T2[s1@subject
+  -], T2>A[s1@subject -], A>L[s1@subject -], L>A[s1@subject -], A>T3[s1@subject -], T3>V3[s1@subject -]⚑, V3>T3[-], T3>A[-],
+  A>L[-], L>A[-], A>U[-]
+units:
+  s1: SSN
+  s2: MRN
+  s3: DOB
+  s4: DIS
+steps:
+- send: 1-32
+- drain
+- reclassify:
+    7:
+    - s1
+    8:
+    - s1
+    9:
+    - s1
+    10:
+    - s1
+    11:
+    - s1
+- derive: 1
+- drain
+- derive: 1
+- drain
+expect:
+  verdict:
+    'off': allow
+    conv: allow
+    cross: allow
+  edges:
+  - s2 7>8
+  - s2 8>9
+  - s2 9>10
+  - s2 10>11
+  - s3 7>8
+  - s3 8>9
+  - s3 9>10
+  - s3 10>11
+  - s2 7>10
+  - s3 7>10
+  evidence:
+    '22':
+      s1: []
+    '27':
+      s1: []
+  pending:
+    reason: a classification replaced and its conversation derived again is not on this branch; held, not run
+    held:
+    - reclassify
+classifier:
+  must_see:
+    '7':
+    - s1
+    - s2
+    - s3
+    '8':
+    - s1
+    - s2
+    - s3
+    '9':
+    - s1
+    - s2
+    - s3
+    '10':
+    - s1
+    - s2
+    - s3
+    '11':
+    - s1
+    - s2
+    - s3
+  must_miss:
+    '22':
+    - s1
+    '23':
+    - s1
+    '24':
+    - s1
+    '25':
+    - s1
+    '26':
+    - s1
+    '27':
+    - s1
+  authored: true
+notes: 'K2, then conversation 1 is classified again without the SSN''s findings (the truncate-and-reclassify of ADR-0024)
+  and derived again. Conversation 2 loses the crossing and every label that rested on it: the expected rows are the final
+  state, with no SSN edge in conversation 1 either. Deriving once more changes nothing. The classifier premise states the
+  first classification.'

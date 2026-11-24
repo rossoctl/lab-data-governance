@@ -1,0 +1,55 @@
+{
+ "model_dir": "classification/model/20260304",
+ "model_version": 2,
+ "calibrated_at": "2026-11-13T07:30:28+00:00",
+ "by_text": {
+  "{\"note\": \"please process at the usual priority\"}": [],
+  "{\"note\": \"no further action needed\"}": [],
+  "{\"note\": \"forwarded for fulfilment\"}": [],
+  "{\"note\": \"acknowledged\", \"ssn\": \"123-45-6789\"}": [
+   [
+    33,
+    44,
+    "SSN"
+   ]
+  ],
+  "{\"note\": \"batch job window 02:00\", \"ssn\": \"123-45-6789\"}": [
+   [
+    43,
+    54,
+    "SSN"
+   ]
+  ],
+  "{\"note\": \"routine refill request received\", \"subject\": \"123-45-6789\"}": [],
+  "{\"note\": \"acknowledged\", \"subject\": \"123-45-6789\"}": [],
+  "{\"note\": \"batch job window 02:00\", \"subject\": \"123-45-6789\"}": [],
+  "{\"note\": \"please process at the usual priority\", \"subject\": \"123-45-6789\"}": [],
+  "{\"note\": \"acknowledged\"}": []
+ },
+ "authored": {
+  "{\"note\": \"routine refill request received\", \"subject\": \"123-45-6789\"}": {
+   "values": [
+    "123-45-6789"
+   ],
+   "removed": 1
+  },
+  "{\"note\": \"acknowledged\", \"subject\": \"123-45-6789\"}": {
+   "values": [
+    "123-45-6789"
+   ],
+   "removed": 1
+  },
+  "{\"note\": \"batch job window 02:00\", \"subject\": \"123-45-6789\"}": {
+   "values": [
+    "123-45-6789"
+   ],
+   "removed": 1
+  },
+  "{\"note\": \"please process at the usual priority\", \"subject\": \"123-45-6789\"}": {
+   "values": [
+    "123-45-6789"
+   ],
+   "removed": 1
+  }
+ }
+}

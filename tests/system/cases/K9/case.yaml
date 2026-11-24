@@ -1,0 +1,70 @@
+id: K9
+title: a name alone
+cell: across/rule/no-anchor
+line: U>A[-], A>L[-], L>A[-], A>T1[-], ..V1.., T1>A[s1 s5 -], A>L[s1 s5 -], L>A[s1 s5 -], A>T2[s1 s5 -], T2>V2[s1 s5 -], V2>T2[-],
+  T2>A[-], A>L[-], L>A[-], A>U[-] ~10min> U>A[-], A>L[-], L>A[-], A>T2[-], T2>V2[-], V2>T2[s5@who -], T2>A[s5@who -], A>L[s5@who
+  -], L>A[s5@who -], A>T3[s5@who -], T3>V3[s5@who -]⚑, V3>T3[-], T3>A[-], A>L[-], L>A[-], A>U[-]
+units:
+  s1: SSN
+  s2: MRN
+  s3: DOB
+  s4: DIS
+  s5: PN
+expect:
+  verdict:
+    'off': allow
+    conv: allow
+    cross: allow
+  edges:
+  - s1 7>8
+  - s1 8>9
+  - s1 9>10
+  - s1 10>11
+  - s5 7>8
+  - s5 8>9
+  - s5 9>10
+  - s5 10>11
+  - s1 7>10
+  - s5 7>10
+  evidence:
+    '11':
+      s5:
+      - classified PN
+      - inherited
+    '22':
+      s5: []
+classifier:
+  must_see:
+    '7':
+    - s1
+    - s5
+    '8':
+    - s1
+    - s5
+    '9':
+    - s1
+    - s5
+    '10':
+    - s1
+    - s5
+    '11':
+    - s1
+    - s5
+  must_miss:
+    '22':
+    - s5
+    '23':
+    - s5
+    '24':
+    - s5
+    '25':
+    - s5
+    '26':
+    - s5
+    '27':
+    - s5
+  authored: true
+notes: 'Conversation 1 sends the SSN and the patient''s name; V2 returns the name alone. A person''s name does not anchor:
+  no crossing, allow. The name is PII, so a wrong crossing would block. Green on this branch only because nothing crosses
+  at all here; the case means something once the crossing core exists, and its deliberate break (the anchor rule off) must
+  turn it red.'

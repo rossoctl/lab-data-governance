@@ -1,0 +1,37 @@
+id: K22b
+title: the same tool, not declared
+cell: across/scope/declared-store
+line: U>A[-], A>T2[-], T2>V1[-], V1>T2[s1 s2 -], T2>A[-], A>T2[-], T2>A[s1@subject s2@account -], A>T3[s1@subject s2@account
+  -], T3>V3[s1@subject s2@account -]⚑, V3>T3[-], T3>A[-], A>U[-]
+units:
+  s1: SSN
+  s2: MRN
+expect:
+  verdict:
+    'off': allow
+    conv: allow
+    cross: allow
+  edges: []
+  evidence:
+    '7':
+      s1: []
+      s2: []
+classifier:
+  must_see:
+    '4':
+    - s1
+    - s2
+  must_miss:
+    '7':
+    - s1
+    - s2
+    '8':
+    - s1
+    - s2
+    '9':
+    - s1
+    - s2
+  authored: true
+notes: 'K22a without the declaration: a tool is call scope by default and keeps nothing between its two calls. No edge, allow.
+  Green on this branch only because nothing crosses at all here; the case means something once the crossing core exists, and
+  its deliberate break (a tool persistent by default) must turn it red.'

@@ -22,10 +22,10 @@ SSN     s1    ●      ━━━━━━●━━━━━━●━━━━━
 MRN     s2    ●      ━━━━━━●━━━━━━●━━━━━━●━━━━━━●·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      
 DOB     s3    ●      ━━━━━━●━━━━━━●━━━━━━●━━━━━━●·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      
 DIS     s4    ●      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      ·      
-verdict at 5: expected on=block / off=block, observed on=block / off=block
+verdict at 5: expected off=block / conv=block / cross=block, observed off=block / conv=block / cross=block
 ```
 
-**Rows (inherited labels on).**
+**Rows (cross run).**
 
 | leg | who | classification | inherited labels (from leg) | risk |
 |---|---|---|---|---|

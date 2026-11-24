@@ -1,0 +1,79 @@
+id: K20
+title: M+1 earlier conversations
+cell: across/common/beyond-M
+line: U>A[s1 -], A>T2[s1 -], T2>V2[s1 -], V2>T2[-], T2>V2[s1 -], V2>T2[-], T2>V2[s1 -], V2>T2[-], T2>A[-], A>U[-] ~2min> U>A[s1
+  -], A>T2[s1 -], T2>V2[s1 -], V2>T2[-], T2>A[-], A>U[-] ~2min> U>A[s1 -], A>T2[s1 -], T2>V2[s1 -], V2>T2[-], T2>A[-], A>U[-]
+  ~2min> U>A[s1 -], A>T2[s1 -], T2>V2[s1 -], V2>T2[-], T2>A[-], A>U[-] ~2min> U>A[-], A>T2[-], T2>V2[-], V2>T2[s1@subject
+  -], T2>A[s1@subject -], A>T3[s1@subject -], T3>V3[s1@subject -]⚑, V3>T3[-], T3>A[-], A>U[-]
+units:
+  s1: SSN
+expect:
+  verdict:
+    'off': allow
+    conv: allow
+    cross: allow
+  edges:
+  - s1 1>2
+  - s1 2>3
+  - s1 2>5
+  - s1 2>7
+  - s1 11>12
+  - s1 12>13
+  - s1 17>18
+  - s1 18>19
+  - s1 23>24
+  - s1 24>25
+  evidence:
+    '32':
+      s1: []
+  marks:
+    '32':
+    - common 4
+  pending:
+    reason: 'the common-value count is not on this branch: the crossing core draws the crossing and the edges that rest on
+      it, with the count by distinct earlier conversation valid at the payload''s time (R2) and its mark on the leg'
+    marks:
+    - 32
+classifier:
+  must_see:
+    '1':
+    - s1
+    '2':
+    - s1
+    '3':
+    - s1
+    '5':
+    - s1
+    '7':
+    - s1
+    '11':
+    - s1
+    '12':
+    - s1
+    '13':
+    - s1
+    '17':
+    - s1
+    '18':
+    - s1
+    '19':
+    - s1
+    '23':
+    - s1
+    '24':
+    - s1
+    '25':
+    - s1
+  must_miss:
+    '32':
+    - s1
+    '33':
+    - s1
+    '34':
+    - s1
+    '35':
+    - s1
+  authored: true
+notes: 'Four earlier conversations send V2 the SSN, the first of them three times (three calls in one call of T2); the fifth
+  gets it back. Counted by distinct conversation the value is held from 4 > M = 3 conversations (R2): a common value, no edge,
+  the count on the leg. Counted by leg it would be 6: the stated count tells the two apart.'

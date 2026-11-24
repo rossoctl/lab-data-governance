@@ -1,0 +1,199 @@
+id: K27
+title: conversation 2 derived twice
+cell: across/order
+line: U>A[-], A>L[-], L>A[-], A>T1[-], ..V1.., T1>A[s1 s2 s3 -], A>L[s1 s2 s3 -], L>A[s1 s2 s3 -], A>T2[s1 s2 s3 -], T2>V2[s1
+  s2 s3 -], V2>T2[-], T2>A[-], A>L[-], L>A[-], A>U[-] ~10min> U>A[-], A>L[-], L>A[-], A>T2[-], T2>V2[-], V2>T2[s1@subject
+  s2@account s3@ref -], T2>A[s1@subject s2@account s3@ref -], A>L[s1@subject s2@account s3@ref -], L>A[s1@subject s2@account
+  s3@ref -], A>T3[s1@subject s2@account s3@ref -], T3>V3[s1@subject s2@account s3@ref -]⚑, V3>T3[-], T3>A[-], A>L[-], L>A[-],
+  A>U[-]
+units:
+  s1: SSN
+  s2: MRN
+  s3: DOB
+  s4: DIS
+steps:
+- send: 1-32
+- drain
+- derive: 2
+- drain
+expect:
+  verdict:
+    'off': allow
+    conv: allow
+    cross: block
+  edges:
+  - s1 7>8
+  - s1 8>9
+  - s1 9>10
+  - s1 10>11
+  - s2 7>8
+  - s2 8>9
+  - s2 9>10
+  - s2 10>11
+  - s3 7>8
+  - s3 8>9
+  - s3 9>10
+  - s3 10>11
+  - s1 7>10
+  - s2 7>10
+  - s3 7>10
+  cross:
+  - s1 11>22 co
+  - s2 11>22 co
+  - s3 11>22 co
+  - s1 22>23
+  - s1 23>24
+  - s1 24>25
+  - s1 25>26
+  - s1 26>27
+  - s2 22>23
+  - s2 23>24
+  - s2 24>25
+  - s2 25>26
+  - s2 26>27
+  - s3 22>23
+  - s3 23>24
+  - s3 24>25
+  - s3 25>26
+  - s3 26>27
+  - s1 23>26
+  - s2 23>26
+  - s3 23>26
+  evidence:
+    '11':
+      s1:
+      - classified SSN
+      - inherited
+      s2:
+      - classified MRN
+      - inherited
+      s3:
+      - classified DOB
+      - inherited
+    '22':
+      s1:
+      - crossed co
+      s2:
+      - crossed co
+      s3:
+      - crossed co
+    '23':
+      s1:
+      - crossed co
+      s2:
+      - crossed co
+      s3:
+      - crossed co
+    '24':
+      s1:
+      - crossed co
+      s2:
+      - crossed co
+      s3:
+      - crossed co
+    '25':
+      s1:
+      - crossed co
+      s2:
+      - crossed co
+      s3:
+      - crossed co
+    '26':
+      s1:
+      - crossed co
+      s2:
+      - crossed co
+      s3:
+      - crossed co
+    '27':
+      s1:
+      - crossed co
+      s2:
+      - crossed co
+      s3:
+      - crossed co
+  pending:
+    reason: 'no crossing on this branch: the crossing core draws the crossing and the edges that rest on it; the level on
+      its way carries crossed and its level to every later leg and into the policy input, so the cross run blocks at the flagged
+      leg. The off and conv runs already match'
+    missing:
+    - s1 11>22 co
+    - s2 11>22 co
+    - s3 11>22 co
+    - s1 22>23
+    - s1 23>24
+    - s1 24>25
+    - s1 25>26
+    - s1 26>27
+    - s2 22>23
+    - s2 23>24
+    - s2 24>25
+    - s2 25>26
+    - s2 26>27
+    - s3 22>23
+    - s3 23>24
+    - s3 24>25
+    - s3 25>26
+    - s3 26>27
+    - s1 23>26
+    - s2 23>26
+    - s3 23>26
+    verdict:
+    - cross
+    evidence:
+    - 22
+    - 23
+    - 24
+    - 25
+    - 26
+    - 27
+classifier:
+  must_see:
+    '7':
+    - s1
+    - s2
+    - s3
+    '8':
+    - s1
+    - s2
+    - s3
+    '9':
+    - s1
+    - s2
+    - s3
+    '10':
+    - s1
+    - s2
+    - s3
+    '11':
+    - s1
+    - s2
+    - s3
+  must_miss:
+    '22':
+    - s1
+    - s2
+    - s3
+    '23':
+    - s1
+    - s2
+    - s3
+    '24':
+    - s1
+    - s2
+    - s3
+    '25':
+    - s1
+    - s2
+    - s3
+    '26':
+    - s1
+    - s2
+    - s3
+    '27':
+    - s1
+    - s2
+    - s3
+  authored: true
+notes: 'K1, then conversation 2 is queued for derivation again (the production correction queue) and drained: identical rows,
+  each edge one row; the occurrences it registered are replaced, not doubled.'

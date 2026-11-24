@@ -1,0 +1,50 @@
+id: K23a
+title: 'a limit fires: holdings per entity'
+cell: across/limits/holdings
+line: U>A[-], A>L[-], L>A[-], A>T1[-], ..V1.., T1>A[s1 s3 -], A>L[s1 s3 -], L>A[s1 s3 -], A>T2[s1 s3 -], T2>V2[s1 s3 -], V2>T2[-],
+  T2>A[-], A>L[-], L>A[-], A>U[-]
+units:
+  s1: SSN
+  s3: DOB
+config:
+  holdings_per_entity: 1
+expect:
+  edges:
+  - s1 7>8
+  - s1 8>9
+  - s1 9>10
+  - s1 10>11
+  - s3 7>8
+  - s3 8>9
+  - s3 9>10
+  - s3 10>11
+  - s1 7>10
+  - s3 7>10
+  marks:
+    '11':
+    - incomplete holdings_per_entity
+  pending:
+    reason: the limits are not configuration on this branch; held, not run
+    held:
+    - config
+classifier:
+  must_see:
+    '7':
+    - s1
+    - s3
+    '8':
+    - s1
+    - s3
+    '9':
+    - s1
+    - s3
+    '10':
+    - s1
+    - s3
+    '11':
+    - s1
+    - s3
+  must_miss: {}
+  authored: false
+notes: 'V2 may hold one value; at leg 11 it receives two. Its holdings are cut, and the leg that would have registered the
+  second is marked incomplete, naming the limit. Which value is kept is not stated: no later leg depends on it here.'
