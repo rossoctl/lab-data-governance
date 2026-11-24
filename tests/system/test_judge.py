@@ -3,6 +3,8 @@ no shipped case exercises."""
 
 from __future__ import annotations
 
+import dataclasses
+import json
 import re
 from pathlib import Path
 
@@ -234,12 +236,14 @@ def test_a_problem_reading_the_rows_is_red_even_for_a_pending_case():
 
 def _calibrated(tmp_path: Path, case: Case, authored: dict | None = None) -> Case:
     """*case* with a findings.json in which the model found nothing in any payload."""
-    import dataclasses
-    import json
-    from data_governance.processors.classification import projection
-    texts = {projection.project(r.content) for r in render(case.id, case.units, case.line).rendered}
-    (tmp_path / "findings.json").write_text(json.dumps({"by_text": {t: [] for t in texts}, "authored": authored}))
+    (tmp_path / "findings.json").write_text(json.dumps({"by_text": {t: [] for t in _texts(case)},
+                                                        "authored": authored}))
     return dataclasses.replace(case, dir=tmp_path)
+
+
+def _texts(case: Case) -> set[str]:
+    from data_governance.processors.classification import projection
+    return {projection.project(r.content) for r in render(case.id, case.units, case.line).rendered}
 
 
 def test_a_held_case_is_pending_only_for_exactly_what_this_branch_lacks(tmp_path: Path):
@@ -273,6 +277,15 @@ def test_a_held_case_is_red_when_its_files_disagree(tmp_path: Path):
     seen = _calibrated(tmp_path, _case(config={"payload_bytes": 1}, pending=waits, must_see={1: ["s1"]}))
     out = judge_held(seen)
     assert out.status == "RED" and out.reasons == ["leg 1: the model did NOT label s1 (MRN); found []"]
+    t4 = projection.project(render(case.id, case.units, case.line).rendered[3].content)   # the flagged response
+    by_text = {**{t: [] for t in _texts(case)}, t4: [[0, 1, "SSN"]]}
+    (tmp_path / "findings.json").write_text(json.dumps({"by_text": by_text}))
+    out = judge_held(dataclasses.replace(case, dir=tmp_path))
+    assert out.status == "RED" and out.reasons[0].startswith("the flagged exchange's response (leg 4) was labelled")
+    (tmp_path / "findings.json").write_text('{"authored": null}')
+    assert judge_held(stale).reasons == ["calibration: findings.json has no 'by_text'"]
+    (tmp_path / "findings.json").unlink()
+    assert "No such file" in judge_held(stale).reasons[0] and "findings.json" in judge_held(stale).reasons[0]
     ran = _judge(_case(scopes={"V1": "call"}, pending=Pending("waits", held=frozenset({"scopes"}))))   # the branch has it
     assert ran.status == "RED" and ran.reasons[0].startswith("held for ['scopes'], which this branch has")
     unused = _judge(_case(pending=Pending("waits", held=frozenset({"switch"}))))   # lacked or not, the case uses none
