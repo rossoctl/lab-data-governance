@@ -277,6 +277,11 @@ conversations are derived in event order.
 Nor is a conversation derived again when the interactions of a conversation it crossed from move to
 another trace: its crossing edges name the old trace (`from_trace_id`) and its chain ends at the
 crossing, until it is derived again.
+Nor when a correction changes what another conversation holds (a receiver, a time, a deleted leg): a
+conversation derived before the correction is replayed matched the holdings as they were before it
+(it can cross with one the correction removes, or miss one it adds) and keeps that until it is
+derived again. The processor derives the legs that are ready before it replays corrections, so this
+includes a conversation that arrives together with the correction.
 
 ## What this does not do yet
 
