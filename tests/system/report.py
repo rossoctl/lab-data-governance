@@ -47,8 +47,9 @@ def premise(case: Case, on: Observation) -> list[str]:
 def calibration_problems(case: Case) -> list[str]:
     """What the case's files say against each other, read without a run: every payload calibrated and the authored
     record the one the case states now (:func:`classify.recorded_findings`), the classifier premise, the types
-    the evidence states (R8), and nothing labelled in the flagged exchange's response. A held case is judged on
-    this and on its ``pending.held``."""
+    the evidence states (R8), a kind stated wherever a crossing reaches (a run draws one there, and is red on a
+    crossed label at a cell the case does not state), and nothing labelled in the flagged exchange's response. A
+    held case is judged on this and on its ``pending.held``."""
     renderer = render(case.id, case.units, case.line)
     try:
         found = recorded_findings(case, renderer)
@@ -67,6 +68,9 @@ def calibration_problems(case: Case) -> list[str]:
             got = {f"classified {t}" for t, text in found[i] if text == case.values[unit]}
             if got != {k for k in kinds if k.startswith("classified")}:
                 notes.append(f"leg {i} {unit} states {sorted(kinds)}, the model gave {sorted(got)}")
+    reached = {(to, unit) for unit, _, to, _ in case.cross}
+    notes += [f"leg {to} {unit}: a crossing reaches it and expect.evidence states no kind there"
+              for to, unit in sorted(reached) if not case.evidence.get(to, {}).get(unit)]
     return notes
 
 

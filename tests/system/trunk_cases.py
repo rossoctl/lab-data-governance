@@ -586,6 +586,7 @@ def across_cases() -> None:
     case("K30", "the cross tier answers late", f"{sends(THREE)} ~10min> {returns(['s1'])}", cell="across/tiers",
          verdict=v(["allow tier 0"], ["allow tier 1"], ["allow tier 1", "block tier 2"]),
          edges=sent_edges(0, THREE), cross=crossing(11, 22, ["s1"], "vo") + carried(16, ["s1"]),
+         evidence={**received(11, ["s1"]), **every(range(22, 28), ["s1"], "crossed vo")},
          must_see=sent_premise(0, THREE), must_miss=returned_premise(16, ["s1"]), authored=True,
          pending={"reason": "the verdict tiers and the gate's time limit are not on this branch; "
                             "held, not run", "held": ["tiers"]},

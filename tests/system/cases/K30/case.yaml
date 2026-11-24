@@ -43,6 +43,29 @@ expect:
   - s1 25>26
   - s1 26>27
   - s1 23>26
+  evidence:
+    '11':
+      s1:
+      - classified SSN
+      - inherited
+    '22':
+      s1:
+      - crossed vo
+    '23':
+      s1:
+      - crossed vo
+    '24':
+      s1:
+      - crossed vo
+    '25':
+      s1:
+      - crossed vo
+    '26':
+      s1:
+      - crossed vo
+    '27':
+      s1:
+      - crossed vo
   pending:
     reason: the verdict tiers and the gate's time limit are not on this branch; held, not run
     held:

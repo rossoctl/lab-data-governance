@@ -308,6 +308,21 @@ def test_a_held_case_is_red_when_its_files_disagree(tmp_path: Path):
         "held for ['switch'], but the case does not use ['switch']")
 
 
+def test_a_held_case_states_a_kind_wherever_a_crossing_reaches(tmp_path: Path):
+    """A run draws a kind at the to leg of every edge in ``expect.cross``, and is red on a crossed label at a cell
+    the case does not state. A held case is not run, so the same is read from its files: the cell is stated, and
+    not as ``[]`` (nothing reaches it)."""
+    from .report import judge_held
+    waits = Pending("waits", held=frozenset({"config"}))
+    silent = _calibrated(tmp_path, _case(config={"payload_bytes": 1}, pending=waits, cross={("s1", 2, 3, "vo")}))
+    out = judge_held(silent)
+    assert out.status == "RED"
+    assert out.reasons == ["leg 3 s1: a crossing reaches it and expect.evidence states no kind there"]
+    assert judge_held(dataclasses.replace(silent, evidence={3: {"s1": frozenset()}})).reasons == out.reasons
+    stated = dataclasses.replace(silent, evidence={3: {"s1": frozenset({"crossed vo"})}})
+    assert judge_held(stated).status == "PENDING"
+
+
 @pytest.mark.parametrize("case_id, want", [
     ("K12", {"service:api.v2.partner.example:8000": "call"}),
     ("K13", {"agent:lab/a": "persistent"}),

@@ -56,7 +56,8 @@ The keys of a case across conversations (`cases.py` shows each; R1–R10 are the
 - **`expect.evidence`**: at a leg, per unit, how the cross run knows it: `classified SSN` (the type the
   model gave the unit's own bytes there; R8 states it at the leg the partner received the value),
   `inherited`, `crossed vo|co`, with ` ambiguous` for several origins. A stated cell is compared exactly;
-  `[]` says nothing reaches it; a crossed label drawn at a cell the case does not state is wrong. Read from the
+  `[]` says nothing reaches it; a crossed label drawn at a cell the case does not state is wrong, so the cell at
+  the to leg of every edge in `expect.cross` states a kind (checked from the files, for a held case too). Read from the
   rows (`engine.evidence_at`): `classified` from the findings at the leg, and one kind per edge row into it,
   `crossed L [ambiguous]` from the edge's `label_crossed_edges` row (the value's level at that leg, which at
   a crossing can differ from the crossing's own level in `expect.cross`), else `inherited`. The edge set keeps
