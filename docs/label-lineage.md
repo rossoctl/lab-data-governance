@@ -122,6 +122,8 @@ the file lacks cannot be made an anchor. With it on, at each leg in wire order:
    neither matched nor registered. A conversation derived again after the switch was turned on is
    derived whole, so the legs it received before the switch are registered too: "does not look
    back" means no conversation is derived because the switch changed.
+   A row keeps the interval it was registered with: a changed `LABEL_CROSS_RETENTION_SECONDS`
+   applies to values registered after the change, and to a conversation derived again after it.
 
 A derivation loads only the occurrences of its persistent senders, from other conversations, valid in
 its time window, whose value is in a payload they send. A value found bounded
