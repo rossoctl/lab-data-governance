@@ -444,7 +444,7 @@ def test_an_edge_on_bytes_of_no_unit_is_an_extra():
     assert resolved == {("?123", 1, 2, None)}
 
 
-def test_two_origins_of_one_value_are_two_rows_by_right_and_one_origin_twice_is_red():
+def test_two_origins_of_one_value_are_two_rows_by_right_and_the_same_row_twice_is_red():
     leg_of_key = {("i1", "request"): 1, ("i2", "request"): 2}
     row = ("i1", "request", "i2", "request", "MRN", MRN, MRN, "whole", None)
     resolved, _, _, problems = resolve_edges(_case(), [(*row, "o1"), (*row, "o2")], leg_of_key)
@@ -904,7 +904,7 @@ def test_a_duplicate_row_is_red():
     resolved, _, _, problems = resolve_edges(_case(), [row, row], leg_of_key)
     assert resolved == {("s1", 1, 2, None)} and problems == ["edge s1 1>2 (MRN) drawn by 2 rows"]
     assert _judge(_case(), problems=problems).status == "RED"
-    other_type = ("i1", "request", "i2", "request", "OPID", MRN, MRN, "whole", None, "o2")   # a second type, by right
+    other_type = ("i1", "request", "i2", "request", "OPID", MRN, MRN, "whole", None, "o1")   # a second type, by right
     case = _case(accepts={"s1": frozenset({"MRN", "OPID"})})
     assert resolve_edges(case, [row, other_type], leg_of_key)[3] == []
     second_copy = row[:-1] + ("o1/30/37",)                       # the same origin at a second place in the payload
