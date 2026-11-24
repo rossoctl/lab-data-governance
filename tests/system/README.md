@@ -119,7 +119,8 @@ classification row, is red: the case would test something other than it says.
 calibration runs the real model, then subtracts its findings on the case's units at the `must_miss`
 legs (never invents one), records in `findings.json` which values it removed from which payload, and
 the report says "authored" on the case. Every run checks that record against the case's current
-`must_miss`; a case edited since calibration fails until it is recalibrated. Decided 2026-11-09: the
+`must_miss`, and a held case is checked from its files the same way; a case edited since calibration
+fails until it is recalibrated. Decided 2026-11-09: the
 real model labels an SSN or a date by value under any key (the calibration shows it often labels the
 MRN too), so a wire-level classifier alone already blocks them; label lineage's claim does not depend
 on where one model happens to miss. The real-model cases (C1, C2, K0) keep the plumbing honest.
