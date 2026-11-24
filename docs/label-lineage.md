@@ -117,7 +117,9 @@ the file lacks cannot be made an anchor. With it on, at each leg in wire order:
 4. **register** — every labelled value a `persistent` entity receives is a `label_occurrences` row
    with its record, interval and evidence (`classified`, `inherited`, or `crossed` with the level it
    arrived with, at any leg after a crossing),
-   replaced when the conversation is derived again. A derivation with the switch off writes none
+   replaced when the conversation is derived again. A value the finder finds at several places of
+   the payload is a row at each, with the record of that place.
+   A derivation with the switch off writes none
    and deletes the trace's rows; switching on does not look back. A leg without an event time is
    neither matched nor registered. A conversation derived again after the switch was turned on is
    derived whole, so the legs it received before the switch are registered too: "does not look

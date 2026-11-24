@@ -279,6 +279,37 @@ def test_what_a_persistent_entity_receives_is_registered_with_its_record_and_int
     assert {(h.valid_from, h.valid_to) for h in d.holdings} == {(T0, T0 + ON.retention)}
 
 
+def _twice(records: list[dict], every: bool = True):
+    """A first conversation in which v receives *records*, classified at every place a value sits, or at its
+    first place only (what ``_findings`` marks)."""
+    t = _trace("T1", [("1", "request", "a", "v", records, []), ("1", "response", "a", "v", {"ok": True}, [])], T0)
+    text = project(records)
+    places = [(kind, value, at) for kind, value in (("SSN", SSN), ("DOB", DOB))
+              for at in range(len(text)) if text.startswith(value, at)]
+    if not every:
+        places = [next(p for p in places if p[0] == kind) for kind in ("SSN", "DOB")]
+    t.findings[t.legs[0].payload_hash] = [
+        {"entity_type": kind, "text": value, "start": at, "end": at + len(value), "regulatory_tags": ["PII"],
+         "sensitivity_level": "RESTRICTED"} for kind, value, at in places]
+    return t
+
+
+@pytest.mark.parametrize("every", [True, False], ids=["classified-at-each-place", "classified-at-the-first"])
+@pytest.mark.parametrize("records", [[{"ssn": SSN}, {"ssn": SSN, "dob": DOB}], [{"ssn": SSN, "dob": DOB}, {"ssn": SSN}]],
+                         ids=["alone-first", "alone-last"])
+def test_a_value_in_two_records_of_one_received_leg_is_held_in_each(records, every):
+    """Equal findings are one origin, at its first place (and the classifier may mark that place only). Held there
+    only, the identifier is alone in its record when that place is the record without the date, and the later
+    conversation draws it value-only and drops the date: the answer followed the order of the records."""
+    first = fold.derive(_twice(records, every), find.exact, crossing=ON)
+    assert sum(len(os) for os in first.occurrences.values()) == 2      # the leg's own occurrences: one per value
+    assert sorted((h.value, h.record is not None) for h in first.holdings) == [(SSN, True), (SSN, True), (DOB, True)]
+    assert len({h.record for h in first.holdings}) == 2
+    second = fold.derive(_second(first.holdings), find.exact, crossing=ON)
+    assert sorted({(e.to.unit.entity_type, second.levels[e.key].level) for e in second.edges
+                   if e.key in second.levels}) == [("DOB", cross.CORROBORATED), ("SSN", cross.CORROBORATED)]
+
+
 def test_nothing_is_registered_without_the_switch():
     assert fold.derive(_first(), find.exact).holdings == ()
 

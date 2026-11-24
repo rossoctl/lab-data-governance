@@ -140,8 +140,8 @@ def derive(trace_input: TraceInput, finder: Finder,
         if known is not None:
             carried.update(carry(leg_edges, crossed, level_of))
         if known is not None and leg.occurred_at is not None and persistent(receiver):
-            here = _received(receiver, held[key], own, level_of, leg.occurred_at, crossing,
-                             records=cross.records(output.text) if _structured(trace_input.payloads.get(
+            here = _received(receiver, _every_place(held[key], finder, output), own, level_of, leg.occurred_at,
+                             crossing, records=cross.records(output.text) if _structured(trace_input.payloads.get(
                                  leg.payload_hash)) else {})
             for h in here:
                 known.add(h)
@@ -210,6 +210,18 @@ def carry(edges: Sequence[Edge], crossed: Mapping[tuple, cross.Crossed],
     value = {span: cross.Carried(cross.strongest(level_of[o.key] for o in occs), len({o.unit.key for o in occs}) > 1)
              for span, occs in on_span.items()}
     return {e.key: value[e.to.span] for e in edges if level_of[e.to.key] != cross.CERTAIN}
+
+
+def _every_place(occurrences: Sequence[Occurrence], finder: Finder, output: ProjectedPayload) -> list[Occurrence]:
+    """*occurrences* at one payload, and each further place of that payload where the
+    finder finds the value of a unit that originates there. Equal findings of one
+    payload are one unit, at its first place (:func:`.units.units_of`); what an entity
+    receives is the value at every place it sits, each with the record of that place
+    (R4). The unit stays one origin, and the leg's own occurrences are untouched."""
+    places: dict[tuple, Occurrence] = {}
+    for o in (*occurrences, *finder([o for o in occurrences if o.at == o.unit.origin], output)):
+        places.setdefault(o.key, o)
+    return list(places.values())
 
 
 def _received(entity_id: str, occurrences: Sequence[Occurrence], own: Sequence[Unit], level_of: Mapping[tuple, str],

@@ -470,6 +470,23 @@ def test_one_run_derives_its_conversations_in_event_order(configured_db: str) ->
     assert _crossings(configured_db) == [("DOB", "Z1", "corroborated"), ("SSN", "Z1", "corroborated")]
 
 
+def test_a_value_received_in_two_records_is_stored_at_each_place(configured_db: str) -> None:
+    """One SSN in two records of the payload v receives, alone in the first: a row per place (the place is in the
+    row's id), and the later conversation crosses through the record that also holds the date."""
+    import dataclasses
+
+    from data_governance.label_lineage import cross
+    from tests.label_lineage.test_cross import DOB, SSN, _second, _twice
+    _seed_input(configured_db, dataclasses.replace(_twice([{"ssn": SSN}, {"ssn": SSN, "dob": DOB}]), trace_id="Z1"))
+    _seed_input(configured_db, _second())
+    driver.drain(0, driver.Config(find.exact, "exact", crossing=cross.Crossing()))
+    rows = _q(configured_db, "SELECT value_text, span_start, record_start FROM label_occurrences "
+                             "WHERE trace_id = 'Z1' ORDER BY span_start")
+    assert [r[0] for r in rows] == [SSN, DOB, SSN]
+    assert rows[0][2] != rows[1][2] == rows[2][2]
+    assert _crossings(configured_db) == [("DOB", "Z1", "corroborated"), ("SSN", "Z1", "corroborated")]
+
+
 # ("Z2", "A2"): the destination sorts first, so the trigger queues it first and the replay derives it first.
 @pytest.mark.parametrize("old, new", [("Z2", "A2"), ("A2", "Z2")], ids=["destination-first", "source-first"])
 def test_holdings_follow_their_receiving_interactions_to_a_new_trace(configured_db: str, old: str, new: str) -> None:
