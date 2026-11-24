@@ -504,6 +504,40 @@ def test_holdings_follow_their_receiving_interactions_to_a_new_trace(configured_
         ("DOB", new, "corroborated"), ("SSN", new, "corroborated")]
 
 
+@pytest.mark.parametrize("old, new", [("Z2", "A2"), ("A2", "Z2")], ids=["destination-first", "source-first"])
+def test_a_crossing_follows_its_holding_to_a_new_trace(configured_db: str, old: str, new: str) -> None:
+    """A conversation crossed with holdings whose interactions then move to another trace. Derived again, its
+    crossing edges name the trace that owns the holdings now (the edge's id does not change, so the upsert has to
+    carry it), and the read reaches the origin through that trace."""
+    import dataclasses
+    import datetime as dt
+
+    from data_governance.label_lineage import cross
+    from data_governance.processors.data_lineage.traversal import Entity
+    from tests.label_lineage.test_cross import DOB, ENTITIES, SSN, T0, _first, _second, _trace
+    config = driver.Config(find.exact, "exact", {"agent:lab/a": "persistent"}, crossing=cross.Crossing())
+    _seed_input(configured_db, dataclasses.replace(_first(), trace_id="Z1"))
+    cursor = driver.drain(0, config)
+    _seed_input(configured_db, dataclasses.replace(_second(), trace_id=old))   # v returns SSN and DOB to a
+    cursor = driver.drain(cursor, config)
+    _seed_input(configured_db, _trace("X3", [("4", "request", "u", "a", {"q": "again"}, []),
+                                             ("5", "request", "a", "t", {"subject": SSN, "since": DOB}, [])],
+                                      T0 + dt.timedelta(minutes=8),
+                                      {**ENTITIES, "u": Entity("u", "user:alice", "user")}))
+    cursor = driver.drain(cursor, config)                                       # X3 crosses before the move
+    with psycopg.connect(configured_db) as conn:
+        conn.execute("UPDATE interactions SET trace_id = %s WHERE trace_id = %s", (new, old))
+    driver.drain(cursor, config)
+    with psycopg.connect(configured_db) as conn:
+        conn.execute("SELECT dg_queue_label_trace('X3')")                       # X3 is derived again
+    driver.drain(cursor, config)
+    assert _q(configured_db, "SELECT e.entity_type, e.from_trace_id FROM payload_label_edges e JOIN label_crossings c "
+                             "ON c.edge_id = e.edge_id WHERE e.trace_id = 'X3' ORDER BY 1") == [("DOB", new), ("SSN", new)]
+    (leg,) = retrieval.labels.get_leg_labels("X3", "5").legs
+    assert [[(h.trace_id, h.role) for h in chain] for label in leg.labels for o in label.carried_in
+            for chain in o.chains] == [[("Z1", "origin"), (new, "hop"), ("X3", "here")]] * 2
+
+
 CROSS_TABLES = ("label_occurrences", "label_crossings", "label_crossed_edges")
 
 

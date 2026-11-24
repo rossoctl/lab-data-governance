@@ -268,6 +268,9 @@ All ten are built, in `label_lineage/cross.py` and the fold (R5 through leg-read
 `RISK_INHERITED_LABELS` and `LABEL_CROSS_CONVERSATION` on). Not yet: a conversation derived before a
 value it would cross arrived is not derived again, so R1 and R2 hold at the payload's time only when
 conversations are derived in event order.
+Nor is a conversation derived again when the interactions of a conversation it crossed from move to
+another trace: its crossing edges name the old trace (`from_trace_id`) and its chain ends at the
+crossing, until it is derived again.
 
 ## What this does not do yet
 

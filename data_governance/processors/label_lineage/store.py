@@ -81,6 +81,7 @@ INSERT INTO payload_label_edges (
 ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
           %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
 ON CONFLICT (edge_id) DO UPDATE SET
+    from_trace_id = EXCLUDED.from_trace_id,
     to_payload_hash = EXCLUDED.to_payload_hash, from_payload_hash = EXCLUDED.from_payload_hash,
     unit_text = EXCLUDED.unit_text, unit_value = EXCLUDED.unit_value,
     regulatory_tags = EXCLUDED.regulatory_tags, sensitivity_level = EXCLUDED.sensitivity_level,
