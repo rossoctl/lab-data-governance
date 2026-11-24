@@ -3,6 +3,8 @@ no shipped case exercises."""
 
 from __future__ import annotations
 
+import dataclasses
+import json
 import re
 from pathlib import Path
 
@@ -247,14 +249,58 @@ def test_a_problem_reading_the_rows_is_red_even_for_a_pending_case():
     assert out.status == "RED" and out.reasons[0] == "cross: edge s1 1>None (MRN) has an end on no line leg"
 
 
-def test_a_held_case_is_pending_only_for_exactly_what_this_branch_lacks():
+def _calibrated(tmp_path: Path, case: Case, authored: dict | None = None) -> Case:
+    """*case* with a findings.json in which the model found nothing in any payload."""
+    (tmp_path / "findings.json").write_text(json.dumps({"by_text": {t: [] for t in _texts(case)},
+                                                        "authored": authored}))
+    return dataclasses.replace(case, dir=tmp_path)
+
+
+def _texts(case: Case) -> set[str]:
+    from data_governance.processors.classification import projection
+    return {projection.project(r.content) for r in render(case.id, case.units, case.line).rendered}
+
+
+def test_a_held_case_is_pending_only_for_exactly_what_this_branch_lacks(tmp_path: Path):
     from .report import judge_held
-    held = _case(config={"payload_bytes": 1}, pending=Pending("waits", held=frozenset({"config"})))
+    waits = Pending("waits", held=frozenset({"config"}))
+    held = _calibrated(tmp_path, _case(config={"payload_bytes": 1}, pending=waits))
     out = judge_held(held)
     assert out.status == "PENDING" and out.runs == {} and out.reasons[1].startswith("held, not run: needs the limits")
-    assert judge_held(_case(scopes={"V1": "call"}, config={"payload_bytes": 1},
-                            pending=Pending("waits", held=frozenset({"scopes", "config"})))).status == "RED"
-    assert judge_held(_case(config={"payload_bytes": 1})).status == "RED"      # no pending block at all
+    assert judge_held(_calibrated(tmp_path, _case(
+        scopes={"V1": "call"}, config={"payload_bytes": 1},
+        pending=Pending("waits", held=frozenset({"scopes", "config"}))))).status == "RED"
+    assert judge_held(_calibrated(tmp_path, _case(config={"payload_bytes": 1}))).status == "RED"   # no pending block
+
+
+def test_a_held_case_is_red_when_its_files_disagree(tmp_path: Path):
+    """A held case is never run, so its files are all there is to check: an authored record the case no longer
+    states, a payload never calibrated, and a broken classifier premise are red, as they are in a run."""
+    from data_governance.processors.classification import projection
+    from .classify import recorded_findings
+    from .report import judge_held
+    waits = Pending("waits", held=frozenset({"config"}))
+    case = _case(config={"payload_bytes": 1}, pending=waits)
+    t3 = projection.project(render(case.id, case.units, case.line).rendered[2].content)
+    stale = _calibrated(tmp_path, case, authored={t3: {"values": [MRN], "removed": 1}})   # the flag dropped since
+    with pytest.raises(ValueError, match="calibrated for another must_miss"):
+        recorded_findings(stale, render(case.id, case.units, case.line))
+    out = judge_held(stale)
+    assert out.status == "RED" and "calibrated for another must_miss or authored flag" in out.reasons[0]
+    (tmp_path / "findings.json").write_text('{"by_text": {}}')
+    assert "not in findings.json" in judge_held(stale).reasons[0]
+    seen = _calibrated(tmp_path, _case(config={"payload_bytes": 1}, pending=waits, must_see={1: ["s1"]}))
+    out = judge_held(seen)
+    assert out.status == "RED" and out.reasons == ["leg 1: the model did NOT label s1 (MRN); found []"]
+    t4 = projection.project(render(case.id, case.units, case.line).rendered[3].content)   # the flagged response
+    by_text = {**{t: [] for t in _texts(case)}, t4: [[0, 1, "SSN"]]}
+    (tmp_path / "findings.json").write_text(json.dumps({"by_text": by_text}))
+    out = judge_held(dataclasses.replace(case, dir=tmp_path))
+    assert out.status == "RED" and out.reasons[0].startswith("the flagged exchange's response (leg 4) was labelled")
+    (tmp_path / "findings.json").write_text('{"authored": null}')
+    assert judge_held(stale).reasons == ["calibration: findings.json has no 'by_text'"]
+    (tmp_path / "findings.json").unlink()
+    assert "No such file" in judge_held(stale).reasons[0] and "findings.json" in judge_held(stale).reasons[0]
     ran = _judge(_case(scopes={"V1": "call"}, pending=Pending("waits", held=frozenset({"scopes"}))))   # the branch has it
     assert ran.status == "RED" and ran.reasons[0].startswith("held for ['scopes'], which this branch has")
     unused = _judge(_case(pending=Pending("waits", held=frozenset({"switch"}))))   # lacked or not, the case uses none
@@ -426,7 +472,7 @@ def test_an_edge_on_bytes_of_no_unit_is_an_extra():
     assert resolved == {("?123", 1, 2, None)}
 
 
-def test_two_origins_of_one_value_are_two_rows_by_right_and_one_origin_twice_is_red():
+def test_two_origins_of_one_value_are_two_rows_by_right_and_the_same_row_twice_is_red():
     leg_of_key = {("i1", "request"): 1, ("i2", "request"): 2}
     row = ("i1", "request", "i2", "request", "MRN", MRN, MRN, "whole", None)
     resolved, _, _, problems = resolve_edges(_case(), [(*row, "o1", None), (*row, "o2", None)], leg_of_key)
@@ -893,9 +939,11 @@ def test_a_duplicate_row_is_red():
     resolved, _, _, problems = resolve_edges(_case(), [row, row], leg_of_key)
     assert resolved == {("s1", 1, 2, None)} and problems == ["edge s1 1>2 (MRN) drawn by 2 rows"]
     assert _judge(_case(), problems=problems).status == "RED"
-    other_type = ("i1", "request", "i2", "request", "OPID", MRN, MRN, "whole", None, "o2", None)   # a second origin, by right
+    other_type = ("i1", "request", "i2", "request", "OPID", MRN, MRN, "whole", None, "o1", None)   # a second type, by right
     case = _case(accepts={"s1": frozenset({"MRN", "OPID"})})
     assert resolve_edges(case, [row, other_type], leg_of_key)[3] == []
+    second_copy = row[:-2] + ("o1/30/37", None)                 # the same origin at a second place in the payload
+    assert resolve_edges(_case(), [row, second_copy], leg_of_key)[3] == []
     crossing = ("i1", "request", "i2", "request", "MRN", MRN, MRN, "whole", "vo", "o3", None)      # beside the conversation's
     assert resolve_edges(_case(), [row, crossing], leg_of_key)[0] == {("s1", 1, 2, None), ("s1", 1, 2, "vo")}
 
@@ -944,17 +992,14 @@ def test_a_finding_classifies_a_unit_only_as_its_whole_value():
 def test_every_shipped_case_agrees_with_its_calibration():
     """The classifier premise and the types the evidence states (R8), against the findings every run replays: read
     from the files, so a case held from running is checked too."""
-    from .classify import recorded_findings
     from .cases import all_cases
-    from .report import premise
-    wrong = []
-    for case in all_cases():
-        found = recorded_findings(case, render(case.id, case.units, case.line))
-        legs = {i: _at(i, *f) for i, f in found.items()}
-        wrong += [f"{case.id}: {n}" for n in premise(case, _obs("cross", set(), None, legs))]
-        for i, cells in case.evidence.items():
-            for unit, kinds in cells.items():
-                got = {f"classified {t}" for t, text in found[i] if text == case.values[unit]}
-                if got != {k for k in kinds if k.startswith("classified")}:
-                    wrong.append(f"{case.id}: leg {i} {unit} states {sorted(kinds)}, the model gave {sorted(got)}")
-    assert wrong == []
+    from .report import calibration_problems
+    assert [f"{case.id}: {p}" for case in all_cases() for p in calibration_problems(case)] == []
+
+
+def test_a_payload_missing_from_the_calibration_is_refused_not_read_as_found_nothing(tmp_path: Path):
+    from .classify import UncalibratedPayload, recorded_findings
+    case = _case(dir=tmp_path)
+    (tmp_path / "findings.json").write_text('{"by_text": {}}')
+    with pytest.raises(UncalibratedPayload):
+        recorded_findings(case, render(case.id, case.units, case.line))

@@ -76,7 +76,7 @@ describe('LabelLineageTable', () => {
 });
 
 describe('LabelLineageTable — tracking on the graph (the label lineage overlay)', () => {
-  const trackable = { key: 'x/request/PID/0-1/v', interactionId: 'x', legType: 'request' as const, text: 'v', entityType: 'PID', chains: LEG.labels[0].carried_in[0].chains! };
+  const trackable = { key: 'x/request/PID/0-1/v', interactionId: 'x', legType: 'request' as const, text: 'v', entityType: 'PID', chains: LEG.labels[0].carried_in[0].chains!, carriers: [] };
   function withTrack(tracked: Map<string, typeof trackable>, set = vi.fn(), replace = vi.fn()) {
     render(
       <MemoryRouter>

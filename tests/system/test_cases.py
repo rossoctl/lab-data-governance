@@ -7,6 +7,9 @@ leg-ready did not finish, which are red (they write no ``result.md``)."""
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import psycopg
 import pytest
 
@@ -15,7 +18,7 @@ from data_governance.risk.engine.opa import OpaRequestError
 from tests.harness.fixtures import OtlpHarness
 
 from . import engine, report
-from .cases import MODES, all_cases
+from .cases import MODES, all_cases, load_case
 
 CASES = all_cases()
 
@@ -89,3 +92,27 @@ def test_label_only_recompute_requests_are_work_with_inherited_labels_on_only(ot
     assert obs.problems == []
     assert engine.backlog(otlp_harness.dsn, "off")[1]["leg_ready"] == 0
     assert engine.backlog(otlp_harness.dsn, "conv")[1]["leg_ready"] > 0
+
+
+@pytest.mark.opa
+def test_two_copies_of_one_origin_in_a_payload_are_two_edge_rows(otlp_harness: OtlpHarness, trunk_opa,
+                                                                 tmp_path: Path) -> None:
+    """One value twice in one payload: the fold draws two edges from the one origin, at two places, and the engine's
+    own edge query reads them as two rows of one edge, not as a duplicate. No shipped case has this shape; the
+    findings are written by hand, since the read is under test here and not the classifier."""
+    d = tmp_path / "Y"
+    d.mkdir()
+    (d / "case.yaml").write_text(
+        "id: Y\nline: \"U>A[s1], A>T1[s1@left s1@right], T1>A[-], A>U[-]\"\nunits: {s1: MRN}\n"
+        "expect:\n  edges: [s1 1>2]\nclassifier:\n  must_see: {1: [s1]}\n  must_miss: {2: [s1]}\n")
+    case = load_case(d)
+    mrn = case.values["s1"]
+    (d / "findings.json").write_text(json.dumps({"by_text": {
+        json.dumps({"mrn": mrn}): [[9, 9 + len(mrn), "MRN"]],
+        json.dumps({"left": mrn, "right": mrn}): [],
+        json.dumps({"note": "forwarded for fulfilment"}): [],
+        json.dumps({"note": "acknowledged"}): []}}))
+    obs = engine.run_case(case, dsn=otlp_harness.dsn, grpc_endpoint=otlp_harness.grpc_endpoint,
+                          opa_client=trunk_opa, mode="conv")
+    assert obs.problems == [] and obs.edges == {("s1", 1, 2, None)}
+    assert [e["to"] for e in obs.raw_edges] == [2, 2]
