@@ -347,13 +347,13 @@ def leaving(memory: Memory, crossing: Crossing, entity_id: str, output: Projecte
        limit: then nothing is asserted. One occurrence per holding and span, each
        remembering the holding's occurrence as its source.
     3. Cap: no value is dropped for being held from many conversations; one value
-       draws at most ``edges_per_value`` edges here: the surest first (corroborated
-       before value-only, so the cap does not lower the level the value crosses at),
-       then those of the newest holdings. A value cut this way is returned with the
-       count of other conversations it was held from (R2; this conversation's own
-       holdings never count, so the count can be 0: one holding found many times in
-       a payload is capped too). The rule table reads every holding found; the cap
-       comes after it.
+       draws at most ``edges_per_value`` edges here: the surest first, by the level the
+       edge carries (corroborated before value-only, so the cap does not lower the level
+       the value crosses at), then those of the newest holdings. A value cut this way
+       is returned with the count of other conversations it was held from (R2; this
+       conversation's own holdings never count, so the count can be 0: one holding
+       found many times in a payload is capped too). The rule table reads every
+       holding found; the cap comes after it.
     """
     if crossing.holdings_limit is not None and held > crossing.holdings_limit:
         return [], [], [HOLDINGS_PER_ENTITY]
@@ -396,10 +396,11 @@ def leaving(memory: Memory, crossing: Crossing, entity_id: str, output: Projecte
         by_value[a[1].value].append(a)
     asserted, capped = [], []
     for value in sorted(by_value):
-        # the surest level first, then the newest holdings; the rest of the key only makes the choice the same
-        # on every derivation
-        newest = sorted(by_value[value], key=lambda a: (-_RANK[a[2]], -a[1].valid_from.timestamp(), a[1].trace_id,
-                                                        a[1].occurrence.at.leg, a[0]))
+        # the surest level the edge carries first, then the newest holdings; the rest of the key, down to the
+        # holding's origin, only makes the choice the same on every derivation
+        newest = sorted(by_value[value], key=lambda a: (-_RANK[step(a[2], a[1])], -a[1].valid_from.timestamp(),
+                                                        a[1].trace_id, a[1].occurrence.at.leg, a[0],
+                                                        a[1].occurrence.key))
         asserted += newest[:crossing.edges_per_value]
         if len(newest) > crossing.edges_per_value:
             capped.append(Capped(output.site.leg, value, count.get(value, 0)))

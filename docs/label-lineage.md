@@ -104,7 +104,8 @@ the file lacks cannot be made an anchor. With it on, at each leg in wire order:
    the same record are `corroborated`. A record is the object a value is the whole member of in a
    structured payload; a value in prose or inside a string has none and is value-only at most.
    No value is dropped for being held from many conversations: one value draws at most
-   `LABEL_CROSS_EDGES_PER_VALUE` (default 30) edges at one payload, the surest and then the newest.
+   `LABEL_CROSS_EDGES_PER_VALUE` (default 30) edges at one payload, the surest by the level the edge
+   carries and then the newest.
 2. **crossing edge** — one `payload_label_edges` row per occurrence that passes, from the leg that
    received it (`from_trace_id`) with its origin unit (`origin_trace_id`); its level is a `label_crossings` row, with the
    count of other conversations the value was held from; a value whose edges were capped has one
@@ -290,8 +291,9 @@ implements one (`docs/LIVE-E2E.md` numbers its live scenarios with an R too; tho
   held.
 - **R2** No value is dropped for being held from many conversations: a value the classifier
   labelled crosses however often it is held. One value draws at most a fixed number of edges at one
-  payload: the surest first (corroborated before value-only, so the cap does not lower the level a
-  value crosses at), then those of the newest holdings; a value cut this way is marked on the leg.
+  payload: the surest first, by the level the edge carries (corroborated before value-only, so the
+  cap does not lower the level a value crosses at), then those of the newest holdings; a value cut
+  this way is marked on the leg.
   Every crossing carries the count of other conversations the value was held from, taken when the
   payload is matched, over the holdings valid at the payload's time, by distinct conversation (three
   holdings in one conversation count once). The number bounds the cost; it still chooses which

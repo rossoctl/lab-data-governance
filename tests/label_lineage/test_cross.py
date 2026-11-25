@@ -264,6 +264,28 @@ def test_the_cap_keeps_the_surest_edge_and_the_rule_table_reads_every_holding_fi
         [(SSN, cross.CORROBORATED, "T0"), (DOB, cross.CORROBORATED, "T0")], [(SSN, 5)])
 
 
+def test_the_cap_ranks_by_the_level_the_edge_carries():
+    """Both records come back, so the rule corroborates both SSN holdings; the newer one was itself crossed
+    value-only, so its edge carries value-only. The cap of one keeps the older, which carries corroborated."""
+    old = _holdings("T0", {"ssn": SSN, "dob": DOB}, ("SSN", SSN), ("DOB", DOB))
+    newer = [dataclasses.replace(h, label_basis="crossed", level=cross.VALUE_ONLY) if h.value == SSN else h
+             for h in _holdings("T1", {"ssn": SSN, "dob": DOB}, ("SSN", SSN), ("DOB", DOB),
+                                at=T0 + dt.timedelta(seconds=1))]
+    one = dataclasses.replace(ON, edges_per_value=1)
+    assert _leaving(old + newer, {"subject": SSN, "since": DOB}, crossing=one) == (
+        [(SSN, cross.CORROBORATED, "T0"), (DOB, cross.CORROBORATED, "T1")], [(SSN, 2), (DOB, 2)])
+
+
+def test_two_origins_held_from_one_leg_are_cut_by_their_origin_whatever_order_they_come_in():
+    """The same bytes received once as an SSN and once as an MRN tie on everything but their origin unit."""
+    held = _holdings("T1", {"id": SSN}, ("SSN", SSN), ("MRN", SSN))
+    output = ProjectedPayload(Site("T9", "ix-out", "response", "h-out"), project({"subject": SSN}))
+    one = dataclasses.replace(ON, edges_per_value=1)
+    for order in (held, held[::-1]):
+        found = cross.leaving(cross.Memory(order), one, "v", output, T0 + dt.timedelta(minutes=5), ())[0]
+        assert [o.unit.entity_type for o, _ in found] == ["MRN"]
+
+
 def test_the_cap_is_per_value():
     held = _many(4) + _holdings("T1", {"mrn": "4471820"}, ("MRN", "4471820"), leg="m")
     one = dataclasses.replace(ON, edges_per_value=1)
