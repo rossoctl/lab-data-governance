@@ -228,6 +228,18 @@ def occurrences(tx: db.Transaction, trace_id: str) -> set[tuple]:
                             "WHERE trace_id = %s", (trace_id,)))
 
 
+def drop_departed(tx: db.Transaction, trace_id: str) -> None:
+    """Delete the occurrences *trace_id* wrote whose receiving interaction is in another
+    trace now, before its derivation loads anything. Its write would delete them anyway.
+    Left in place they are another conversation's by their interaction, so the load
+    returned them and the trace's own later sends matched rows that were gone when the
+    derivation ended; a derivation never queues its own sends, so nothing derived it
+    again. The trace that owns the interaction registers the value again, and that
+    queues this one."""
+    tx.execute("DELETE FROM label_occurrences o USING interactions i "
+               "WHERE o.trace_id = %s AND i.id = o.interaction_id AND i.trace_id <> %s", (trace_id, trace_id))
+
+
 def taken_over(tx: db.Transaction, derivation: Derivation) -> set[tuple]:
     """The rows *derivation* is about to write that another trace's derivation wrote, in
     the shape of :func:`occurrences`. An occurrence whose origin lies outside the

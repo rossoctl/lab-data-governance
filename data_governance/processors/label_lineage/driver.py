@@ -288,6 +288,7 @@ def derive_and_persist(tx: db.Transaction, trace_id: str, config: Config,
 
     lock_trace(tx, trace_id)
     before = store.occurrences(tx, trace_id)
+    store.drop_departed(tx, trace_id)
     trace = load_trace(tx, trace_id, config)
     if not trace.legs:
         for table in ("payload_label_edges", "leg_inherited_labels", "label_lineage_trace_status",
