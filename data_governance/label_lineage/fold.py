@@ -132,7 +132,7 @@ def derive(trace_input: TraceInput, finder: Finder,
         if known is not None and leg.occurred_at is None and (persistent(sender) or persistent(receiver)):
             log.debug("leg %s %s has no event time: not matched, not registered", *key)
         elif known is not None and persistent(sender):
-            held_now = trace_input.held_elsewhere.get(key, 0) + sum(
+            held_now = 0 if crossing.holdings_limit is None else trace_input.held_elsewhere.get(key, 0) + sum(
                 h.holder_entity_id == sender and h.valid_at(leg.occurred_at) for h in holdings)
             found, cap, cut = cross.leaving(known, crossing, sender, output, leg.occurred_at,
                                                inbound.get(key, ()), held_now)

@@ -525,6 +525,23 @@ def test_the_holdings_limit_counts_other_conversations_and_the_conversation_s_ow
     assert fold.derive(t, find.exact, crossing=two).cuts == ((("1", "response"), "holdings_per_entity"),)
 
 
+def test_the_holdings_are_counted_only_under_a_holdings_limit(monkeypatch):
+    """v receives ten MRNs, acknowledging each: with a limit every send counts what v holds then (1 + 2 + … + 10)."""
+    t = _trace("T1", [leg for i in range(10) for leg in (
+        (f"{i}", "request", "a", "v", {"mrn": f"{7000000 + i}"}, [("MRN", f"{7000000 + i}")]),
+        (f"{i}", "response", "a", "v", {"ok": True}, []))], T0)
+    checks, valid_at = [0], cross.Holding.valid_at
+
+    def counted(h, at):
+        checks[0] += 1
+        return valid_at(h, at)
+
+    monkeypatch.setattr(cross.Holding, "valid_at", counted)
+    assert len(fold.derive(t, find.exact, crossing=ON).sends) == 10 and checks == [0]
+    fold.derive(t, find.exact, crossing=dataclasses.replace(ON, holdings_limit=1000))
+    assert checks == [55]
+
+
 # --- the fold inside one conversation is unchanged -------------------------------------------------------------------
 
 def test_candidates_from_inside_the_conversation_claim_exactly_as_before():
