@@ -124,14 +124,14 @@ def verdict_at(records: list[dict[str, Any]], role: str, *, listed: bool = False
     string when every version agrees (a single stated verdict needs that), else every version in order, repeats
     included, which a stated history must equal exactly. When the case states a history (*listed*) it is always the
     tuple, and every version that is a late finding says ``late`` (a single verdict cannot hide one: a late version
-    differs from the one before it); with *tiers* (the case names a tier anywhere) every version says the tier that
-    decided it. The harness sends every span before the processors run, so the record evidences the exchange's
-    response too; the renderer refuses a flagged exchange whose response carries a unit, and the judge one whose
-    response the model labelled."""
+    differs from the one before it); with *tiers* too (the case names a tier anywhere) every version says the tier
+    that decided it, so a plain verdict compares the decision only. The harness sends every span before the
+    processors run, so the record evidences the exchange's response too; the renderer refuses a flagged exchange
+    whose response carries a unit, and the judge one whose response the model labelled."""
     mine = [r for r in records if role in r["legs"]]
     if not mine:
         return None, None, f"no risk record evidences the flagged {role} leg"
-    history = tuple(r["enforcement_type"] + (f" tier {r['tier']}" if tiers else "")
+    history = tuple(r["enforcement_type"] + (f" tier {r['tier']}" if tiers and listed else "")
                     + (" late" if listed and r["late"] else "") for r in mine)
     return mine[-1], history[0] if len(set(history)) == 1 and not listed else history, None
 

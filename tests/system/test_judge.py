@@ -940,6 +940,20 @@ def test_the_loader_reads_a_level_evidence_marks_and_a_history(tmp_path: Path):
     assert case.verdict["cross"] == ("allow tier 1", "block tier 2") and case.uses == {"tiers"}
 
 
+def test_a_plain_verdict_is_compared_without_a_tier(tmp_path: Path):
+    """A case whose histories name tiers and whose conv run states a plain verdict: the plain verdict compares the
+    decision only, whatever tier decided it (``verdict_at`` takes what the engine passes)."""
+    case = load_case(_yaml(tmp_path, "expect:\n  verdict: {'off': [allow tier 0], conv: allow, cross: "
+                                     "[allow tier 1, block tier 2]}\n  edges: [s1 1>2]\n  cross: [s1 1>3 co]\n"
+                                     + SEE_ALL))
+    records = {"off": [_record(1, ["request"], "allow", 0)], "conv": [_record(1, ["request"], "allow", 1)],
+               "cross": [_record(1, ["request"], "allow", 1), _record(2, ["request"], "block", 2)]}
+    verdicts = {mode: verdict_at(records[mode], "request", listed=isinstance(case.verdict.get(mode), tuple),
+                                 tiers="tiers" in case.uses)[1] for mode in MODES}
+    out = _judge(case, verdicts=verdicts, legs={i: _at(i, ("MRN", case.values["s1"])) for i in case.must_see})
+    assert out.status == "GREEN" and not out.reasons, out.reasons
+
+
 @pytest.mark.parametrize("verdict, error", [
     ("{'off': [], conv: allow, cross: allow}", "a decision history lists"),
     ("{'off': [allow at 1], conv: allow, cross: allow}", "a decision history lists"),
@@ -947,6 +961,8 @@ def test_the_loader_reads_a_level_evidence_marks_and_a_history(tmp_path: Path):
     ("{'off': [late], conv: allow, cross: allow}", "a decision history lists"),          # late is no decision
     ("{'off': [allow tier 1, block late], conv: allow, cross: allow}", "states it on every version"),
     ("{'off': [allow tier 0], conv: [allow], cross: allow}", "states it on every version"),
+    ("{'off': [allow tier 0], conv: allow tier 1, cross: allow}", "a plain verdict states the decision only"),
+    ("{'off': allow, conv: block late, cross: allow}", "a plain verdict states the decision only"),
 ])
 def test_a_decision_history_names_each_tier(tmp_path: Path, verdict, error):
     with pytest.raises(ValueError, match=re.escape(error)):

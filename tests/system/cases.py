@@ -245,6 +245,9 @@ def _verdict(name: str, d: dict) -> dict[str, str | tuple[str, ...]]:
             out[mode] = tuple(v)
         else:
             out[mode] = str(v)
+            if " tier " in out[mode] or out[mode].endswith(" late"):
+                raise ValueError(f"{name}: a plain verdict states the decision only (a tier or late is stated in a "
+                                 f"history), got {v!r}")
     histories = [d for v in out.values() if not isinstance(v, str) for d in v]
     if any(" tier " in d for d in histories) and not all(" tier " in d for d in histories):
         raise ValueError(f"{name}: a case that names a tier states it on every version of every history, "
