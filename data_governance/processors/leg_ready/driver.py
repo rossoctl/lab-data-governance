@@ -74,10 +74,10 @@ import logging
 import threading
 import time
 from collections.abc import Callable, Iterator
-from typing import Any
 
 from data_governance import db
 from data_governance.processors import _driver
+from data_governance.processors._driver import advance_from, read_stamp
 from data_governance.processors import readiness_cursor as rc
 from data_governance.risk import config as risk_config
 
@@ -556,45 +556,6 @@ def _drain_recompute_requests(
     if done:
         log.info("recomputed %d corrected interaction(s)", done)
     return done
-
-
-def read_stamp(tx: db.Transaction, processor_name: str) -> tuple[int, Any]:
-    """The cursor row's seq and stamp, read inside the turn, before the computation
-    that :func:`advance_from` fences."""
-    tx.execute(
-        "INSERT INTO processor_state (processor_name, last_processed_seq, updated_at) "
-        "VALUES (%s, 0, now()) ON CONFLICT (processor_name) DO NOTHING",
-        (processor_name,),
-    )
-    row = tx.fetch_one(
-        "SELECT last_processed_seq, updated_at FROM processor_state WHERE processor_name = %s",
-        (processor_name,),
-    )
-    return int(row[0]), row[1]
-
-
-def advance_from(tx: db.Transaction, processor_name: str, expected: int, seq: int, stamp: Any) -> None:
-    """Advance the durable cursor from *expected* to *seq* and restamp the row, or
-    raise :class:`~data_governance.db.LockLost` if it no longer reads *expected* and
-    *stamp*: every leg-ready write stamps it, so that is any other write since the
-    computation started, including one that left the cursor where it was.
-
-    The sole-consumer lock is checked before each leg, but that check and this
-    transaction run on different connections: a consumer that stalls between
-    them can lose its lock while a replacement delivers the same legs. The
-    conditional update closes that window. It takes the cursor row's lock, so
-    the stalled writer waits for the replacement's commit, then finds the
-    cursor moved and rolls back its whole leg — record included — instead of
-    landing an older computation as the newest version and moving the cursor
-    backwards."""
-    if tx.fetch_one(
-        "UPDATE processor_state SET last_processed_seq = %s, updated_at = clock_timestamp() "
-        "WHERE processor_name = %s AND last_processed_seq = %s AND updated_at = %s RETURNING 1",
-        (seq, processor_name, expected, stamp),
-    ) is None:
-        raise db.LockLost(
-            f"{processor_name} cursor row moved from seq {expected}: another writer"
-        )
 
 
 def read_cursor(tx: db.Transaction) -> int:

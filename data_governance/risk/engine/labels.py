@@ -4,6 +4,7 @@ interaction's legs, which of them reach OPA, and the shape they reach it in.
 Two functions decide what is forwarded: :func:`forwarded` (known inside the
 conversation) and :func:`crossed` (resting on a crossing, with
 ``LABEL_CROSS_CONVERSATION`` on); ``utils`` and ``compute`` only call this module.
+:func:`tiers` says what each tier of evidence hands the policy.
 With ``RISK_INHERITED_LABELS=off`` the evidence carries no :class:`Inherited` at all
 and nothing here runs; with the cross switch off, :func:`crossed` forwards nothing
 and :func:`forwarded` ignores how surely an edge was carried.
@@ -53,6 +54,21 @@ class Inherited:
 
     def crossed(self, leg_type: str) -> list[InheritedEdge]:
         return [e for e in self.by_leg.get(leg_type, ()) if crossed(e, self.mode, self.cross)]
+
+
+def tiers(inherited: Inherited | None) -> list[Inherited | None]:
+    """What each tier of evidence hands the policy, in order: classification alone
+    (tier 0, no inherited labels); with ``RISK_INHERITED_LABELS=on``, the labels known
+    inside the conversation (tier 1); with the cross switch on too, the crossed labels
+    (tier 2), and tier 1 then leaves out every edge that rests on a crossing — a
+    persistent entity's later call in the same conversation (R7) included."""
+    if inherited is None:
+        return [None]
+    if not inherited.cross:
+        return [None, inherited]
+    within = dataclasses.replace(inherited, by_leg={
+        leg: [e for e in edges if e.crossed_level is None] for leg, edges in inherited.by_leg.items()})
+    return [None, within, inherited]
 
 
 def forwarded(edge: InheritedEdge, mode: str, cross: bool = False) -> bool:

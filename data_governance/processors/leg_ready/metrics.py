@@ -11,13 +11,17 @@ created at import time, served by the consumer's :class:`MetricsServer` on port
 interactions processor's 9091, the classification processor's 9092, and the
 entity-ready processor's 9093 so a co-located deployment doesn't collide.
 
-One counter (issue #123):
+Two counters:
 
-- ``legs_observed_total`` — one increment per ready **Interaction leg** the drain
+- ``legs_observed_total`` (issue #123) — one increment per ready **Interaction leg** the drain
   loop delivers to the downstream governance consumer. This is the delivery signal
   the exactly-once acceptance criterion is asserted against: after a full drain it
   equals the number of ready legs past the cursor, and a restart re-draining from
   the durable cursor does not advance it (no re-delivery).
+- ``late_findings_total`` — one increment per risk record version written with
+  ``interaction_risk_tiers.late`` (a **Late finding**), counted in the write before its
+  transaction commits: a write that rolls back and is redone counts twice. The rows
+  are the count of record; this is its live signal.
 """
 
 from __future__ import annotations
@@ -27,13 +31,14 @@ import prometheus_client as prom
 __all__ = [
     "make_registry",
     "legs_observed_total",
+    "late_findings_total",
 ]
 
 # Module-level registry; replaced by make_registry() in tests.
 _registry = prom.CollectorRegistry(auto_describe=True)
 
 
-def _make_metrics(registry: prom.CollectorRegistry) -> prom.Counter:
+def _make_metrics(registry: prom.CollectorRegistry) -> tuple[prom.Counter, prom.Counter]:
     # Named with the explicit ``_total`` suffix so the registered name equals the
     # scrape/exposition name (prometheus_client appends ``_total`` to counters),
     # matching the sibling consumers' convention.
@@ -43,10 +48,16 @@ def _make_metrics(registry: prom.CollectorRegistry) -> prom.Counter:
         "governance consumer",
         registry=registry,
     )
-    return legs_observed_total
+    late_findings_total = prom.Counter(
+        "late_findings_total",
+        "Risk record versions stricter than the earlier version a gate could have been "
+        "answered with (interaction_risk_tiers.late), counted when written",
+        registry=registry,
+    )
+    return legs_observed_total, late_findings_total
 
 
-legs_observed_total = _make_metrics(_registry)
+legs_observed_total, late_findings_total = _make_metrics(_registry)
 
 
 def make_registry() -> prom.CollectorRegistry:
@@ -59,9 +70,9 @@ def make_registry() -> prom.CollectorRegistry:
     kwarg.
     """
     global _registry  # noqa: PLW0603
-    global legs_observed_total  # noqa: PLW0603
+    global legs_observed_total, late_findings_total  # noqa: PLW0603
 
     new_registry = prom.CollectorRegistry(auto_describe=True)
     _registry = new_registry
-    legs_observed_total = _make_metrics(new_registry)
+    legs_observed_total, late_findings_total = _make_metrics(new_registry)
     return new_registry

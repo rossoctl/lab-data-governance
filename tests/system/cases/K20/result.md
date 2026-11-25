@@ -1,6 +1,6 @@
-# K20 — M+1 earlier conversations
+# K20 — four earlier conversations, one of them three times
 
-cell `across/common/beyond-M`  ·  status **GREEN**  ·  classifier **authored**: the model's findings subtracted at legs [32, 33, 34, 35]
+cell `across/many/four`  ·  status **GREEN**  ·  classifier **authored**: the model's findings subtracted at legs [32, 33, 34, 35]
 
 ```
 U>A[s1 -], A>T2[s1 -], T2>V2[s1 -], V2>T2[-], T2>V2[s1 -], V2>T2[-], T2>V2[s1 -], V2>T2[-], T2>A[-], A>U[-] ~2min> U>A[s1 -], A>T2[s1 -], T2>V2[s1 -], V2>T2[-], T2>A[-], A>U[-] ~2min> U>A[s1 -], A>T2[s1 -], T2>V2[s1 -], V2>T2[-], T2>A[-], A>U[-] ~2min> U>A[s1 -], A>T2[s1 -], T2>V2[s1 -], V2>T2[-], T2>A[-], A>U[-] ~2min> U>A[-], A>T2[-], T2>V2[-], V2>T2[s1@subject -], T2>A[s1@subject -], A>T3[s1@subject -], T3>V3[s1@subject -]⚑, V3>T3[-], T3>A[-], A>U[-]
@@ -31,7 +31,7 @@ SSN     s1    ┈┈┈┈┈┈┈┈┈┈┈●━━━━━━━━━━
 conversation 5
               29     30     31     32     33     34     35     36     37     38     
               U>A    A>T2   T2>V2  V2>T2  T2>A   A>T3   T3>V3⚑ V3>T3  T3>A   A>U    
-SSN     s1    ·      ·      ·      ┈┈┈┈┈┈○┈┈┈┈┈┈○┈┈┈┈┈┈○┈┈┈┈┈┈○·      ·      ·      
+SSN     s1    ·      ·      ·      ━━━━━━○━━━━━━○━━━━━━○━━━━━━○·      ·      ·      
 
 observed
 conversation 1
@@ -57,8 +57,8 @@ SSN     s1    ┈┈┈┈┈┈┈┈┈┈┈●━━━━━━━━━━
 conversation 5
               29     30     31     32     33     34     35     36     37     38     
               U>A    A>T2   T2>V2  V2>T2  T2>A   A>T3   T3>V3⚑ V3>T3  T3>A   A>U    
-SSN     s1    ·      ·      ·      ┈┈┈┈┈┈○┈┈┈┈┈┈○┈┈┈┈┈┈○┈┈┈┈┈┈○·      ·      ·      
-verdict at 35: expected off=allow / conv=allow / cross=allow, observed off=allow / conv=allow / cross=allow
+SSN     s1    ·      ·      ·      ━━━━━━○━━━━━━○━━━━━━○━━━━━━○·      ·      ·      
+verdict at 35: expected off=allow / conv=allow / cross=block, observed off=allow / conv=allow / cross=block
 ```
 
 **Rows (cross run).**
@@ -96,17 +96,15 @@ verdict at 35: expected off=allow / conv=allow / cross=allow, observed off=allow
 | 29 | U>A | PUBLIC  | — | — |
 | 30 | A>T2 | PUBLIC  | — | — |
 | 31 | T2>V2 | PUBLIC  | — | — |
-| 32 | V2>T2 | PUBLIC  | — | — |
-| 33 | T2>A | PUBLIC  | — | — |
-| 34 | A>T3 | PUBLIC  | — | — |
-| 35 | T3>V3⚑ | PUBLIC  | — | none allow [] v1 |
+| 32 | V2>T2 | PUBLIC  | s1=123-45-6789 (SSN, from 25, vo; crossed vo ambiguous), s1=123-45-6789 (SSN, from 5, vo; crossed vo ambiguous), s1=123-45-6789 (SSN, from 13, vo; crossed vo ambiguous), s1=123-45-6789 (SSN, from 19, vo; crossed vo ambiguous), s1=123-45-6789 (SSN, from 7, vo; crossed vo ambiguous), s1=123-45-6789 (SSN, from 3, vo; crossed vo ambiguous) | — |
+| 33 | T2>A | PUBLIC  | s1=123-45-6789 (SSN, from 32; crossed vo ambiguous), s1=123-45-6789 (SSN, from 32; crossed vo ambiguous), s1=123-45-6789 (SSN, from 32; crossed vo ambiguous), s1=123-45-6789 (SSN, from 32; crossed vo ambiguous) | — |
+| 34 | A>T3 | PUBLIC  | s1=123-45-6789 (SSN, from 33; crossed vo ambiguous), s1=123-45-6789 (SSN, from 33; crossed vo ambiguous), s1=123-45-6789 (SSN, from 33; crossed vo ambiguous), s1=123-45-6789 (SSN, from 33; crossed vo ambiguous) | — |
+| 35 | T3>V3⚑ | PUBLIC  | s1=123-45-6789 (SSN, from 34; crossed vo ambiguous), s1=123-45-6789 (SSN, from 34; crossed vo ambiguous), s1=123-45-6789 (SSN, from 34; crossed vo ambiguous), s1=123-45-6789 (SSN, from 34; crossed vo ambiguous) | critical block ['T-SENS'] v1 |
 | 36 | V3>T3 | PUBLIC  | — | — |
 | 37 | T3>A | PUBLIC  | — | — |
 | 38 | A>U | PUBLIC  | — | — |
 
-Marks (cross run): leg 32 [common 4]
+Risk observer calls: 52
 
-Risk observer calls: 48
-
-**Notes.** Four earlier conversations send V2 the SSN, the first of them three times (three calls in one call of T2); the fifth gets it back. Counted by distinct conversation the value is held from 4 > M = 3 conversations (R2): a common value, no edge, the count on the leg. Counted by leg it would be 6: the stated count tells the two apart.
+**Notes.** Four earlier conversations send V2 the SSN, the first of them three times (three calls in one call of T2); the fifth gets it back. No value is dropped for being held from many conversations (R2): six edges, one per time V2 received it, value-only, ambiguous (four origins); it blocks. Under the cap of 30 edges per value, so nothing is cut and no mark is drawn.
 

@@ -1,50 +1,108 @@
 id: K23a
 title: 'a limit fires: holdings per entity'
 cell: across/limits/holdings
-line: U>A[-], A>L[-], L>A[-], A>T1[-], ..V1.., T1>A[s1 s3 -], A>L[s1 s3 -], L>A[s1 s3 -], A>T2[s1 s3 -], T2>V2[s1 s3 -], V2>T2[-],
-  T2>A[-], A>L[-], L>A[-], A>U[-]
+line: U>A[-], A>L[-], L>A[-], A>T1[-], ..V1.., T1>A[s1 s2 s3 -], A>L[s1 s2 s3 -], L>A[s1 s2 s3 -], A>T2[s1 s2 s3 -], T2>V2[s1
+  s2 s3 -], V2>T2[-], T2>A[-], A>L[-], L>A[-], A>U[-] ~10min> U>A[-], A>L[-], L>A[-], A>T2[-], T2>V2[-], V2>T2[s1@subject
+  s2@account s3@ref -], T2>A[s1@subject s2@account s3@ref -], A>L[s1@subject s2@account s3@ref -], L>A[s1@subject s2@account
+  s3@ref -], A>T3[s1@subject s2@account s3@ref -], T3>V3[s1@subject s2@account s3@ref -]⚑, V3>T3[-], T3>A[-], A>L[-], L>A[-],
+  A>U[-]
 units:
   s1: SSN
+  s2: MRN
   s3: DOB
+  s4: DIS
 config:
-  holdings_per_entity: 1
+  holdings_per_entity: 2
 expect:
+  verdict:
+    'off': allow
+    conv: allow
+    cross: allow
   edges:
   - s1 7>8
   - s1 8>9
   - s1 9>10
   - s1 10>11
+  - s2 7>8
+  - s2 8>9
+  - s2 9>10
+  - s2 10>11
   - s3 7>8
   - s3 8>9
   - s3 9>10
   - s3 10>11
   - s1 7>10
+  - s2 7>10
   - s3 7>10
-  marks:
+  evidence:
     '11':
+      s1:
+      - classified SSN
+      - inherited
+      s2:
+      - classified MRN
+      - inherited
+      s3:
+      - classified DOB
+      - inherited
+    '22':
+      s1: []
+      s2: []
+      s3: []
+  marks:
+    '12':
     - incomplete holdings_per_entity
-  pending:
-    reason: the limits are not configuration on this branch; held, not run
-    held:
-    - config
+    '22':
+    - incomplete holdings_per_entity
 classifier:
   must_see:
     '7':
     - s1
+    - s2
     - s3
     '8':
     - s1
+    - s2
     - s3
     '9':
     - s1
+    - s2
     - s3
     '10':
     - s1
+    - s2
     - s3
     '11':
     - s1
+    - s2
     - s3
-  must_miss: {}
-  authored: false
-notes: 'V2 may hold one value; at leg 11 it receives two. Its holdings are cut, and the leg that would have registered the
-  second is marked incomplete, naming the limit. Which value is kept is not stated: no later leg depends on it here.'
+  must_miss:
+    '22':
+    - s1
+    - s2
+    - s3
+    '23':
+    - s1
+    - s2
+    - s3
+    '24':
+    - s1
+    - s2
+    - s3
+    '25':
+    - s1
+    - s2
+    - s3
+    '26':
+    - s1
+    - s2
+    - s3
+    '27':
+    - s1
+    - s2
+    - s3
+  authored: true
+notes: 'K1 with each entity searched only while it holds at most two occurrences. Predicted from the rule before the run:
+  V2 receives the three values at leg 11, so at its own answer (leg 12) it holds three, and at leg 22, ten minutes later and
+  inside the retention, it still holds conversation 1''s three: both legs are marked incomplete, nothing is searched there,
+  nothing crosses, allow (K1 blocks). V3 receives nothing labelled at leg 27, so its answer (leg 28) is not cut.'

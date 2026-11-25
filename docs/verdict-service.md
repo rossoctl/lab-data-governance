@@ -20,6 +20,7 @@ GitHub clones only, and `run-all.sh` runs the whole experiment and checks each s
 | `exchange_id`, `waited_ms` | always | the exchange asked about; the time this request waited |
 | `verdict`, `version` | decided, unjudged | the record's enforcement type as the policy wrote it (a gate denies only those in its `deny_on`, by default `block`), and its version |
 | `reason` | unjudged | `body_not_captured` or `body_truncated` |
+| `tier` | decided, unjudged, when the record has a tier row | the tier of evidence that decided the record: `0` classification, `1` the labels known inside the conversation, `2` the crossed labels (below); on a non-block, the highest tier asked; left out for a record with no tier row (written before migration 0033, or by a leg-ready pod still on an older image during a rollout) |
 | `rules` | decided, unjudged | the rule ids that fired on the record; `[]` when none |
 | `labels` | decided, unjudged | the sorted distinct categories of the request payload's own findings (a finding's entity type when its category is empty); `[]` when none or not classified |
 | `redacted_payload` | a `block`, decided or unjudged, whose payload renders | the classifier's text of the payload, each finding replaced by `[<label>]` |
@@ -31,6 +32,21 @@ GitHub clones only, and `run-all.sh` runs the whole experiment and checks each s
   is not text or not whole, a parser that reduced it to nothing); so is neither a value nor a size, from a sidecar older
   than contract v1.8. A value ending `…[truncated]` is `body_truncated`. The answer comes at once, with no wasted wait.
 - **`pending`:** `wait_ms` passed with no record, or before the read of it came back.
+
+**The tier.** Leg-ready asks the policy per tier of evidence on one snapshot (classification; with
+`RISK_INHERITED_LABELS=on` the labels known inside the conversation; with `LABEL_CROSS_CONVERSATION=on` too the
+crossed labels), keeps the strictest decision, and records the tier that decided it: the first tier that blocks, else
+the highest asked (`interaction_risk_tiers`, one row per record version, `0` with inherited labels off). When a lower
+tier cannot be asked, a block already answered stands, at the first tier that blocked; if only the full evidence's
+answer blocks, the record says the first tier past the failure that has the full evidence (the highest, unless
+nothing crossed into the leg), and that tier is not revised when the policy answers again (the record is unchanged,
+so no version and no tier row is written). A version
+stricter than the latest earlier one that evidenced the same legs is a late finding (`late` on its row, leg-ready's
+`late_findings_total`); it does not reach back. What is built is the tiers at the level of the decision record. What
+is not: an answer before label lineage is ready. A record is still written only once its leg is ready with all the
+evidence leg-ready waits for, so the service answers as before, a decided record at once and `pending` at `wait_ms`;
+it never answers early at a lower tier, and nothing changes in what the gate receives at its limit. An allow on
+incomplete evidence at the limit, marked with the tier reached, is not built.
 
 **What the gate does with `unjudged`.** It refuses the answer unless its verdict is one it denies anyway, with one
 exception: with `capture_io` off it lets a `body_not_captured` body through, because whoever turned capture off gave up

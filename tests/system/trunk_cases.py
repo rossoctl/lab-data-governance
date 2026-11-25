@@ -24,9 +24,6 @@ MISS_KEY = {"s1": "s1@subject", "s2": "s2@account", "s3": "s3@ref", "s4": "s4@co
             "s6": "s6@since"}
 TYPE = {"s1": "SSN", "s2": "MRN", "s3": "DOB", "s4": "DIS", "s5": "PN", "s6": "DOB"}
 
-# Why a case is pending: what delivers what it waits for.
-ORDER_PENDING = ("conversation 2 is matched before conversation 1 has arrived, and nothing matches it again: the "
-                 "correction queues the leaving leg to be matched again when conversation 1 registers")
 TRIVIAL = "Its deliberate break ({}) turns it red."
 
 
@@ -441,11 +438,11 @@ def across_cases() -> None:
                "On every later leg both reach it: inherited (the label classified at 22) and crossed. The "
                "conversation's own edges from 22 are drawn in every mode, so conv already blocks.")
 
-    # --- the common value -------------------------------------------------------------------------------------
+    # --- a value held from many conversations -------------------------------------------------------------------------------------
     k19 = " ~2min> ".join([to_partner()] * 3 + [back_from_partner()])
     k19_cross = (crossing(3, 22, ["s1"], "vo") + crossing(9, 22, ["s1"], "vo") + crossing(15, 22, ["s1"], "vo")
                  + chain([22, 23, 24, 25], ["s1"]))
-    case("K19", "exactly M earlier conversations", k19, cell="across/common/at-M", units={"s1": "SSN"},
+    case("K19", "three earlier conversations", k19, cell="across/many/three", units={"s1": "SSN"},
          verdict=crossed_block, edges=[e for b in (0, 6, 12) for e in chain([b + 1, b + 2, b + 3], ["s1"])],
          cross=k19_cross,
          evidence={3: {"s1": ["classified SSN", "inherited"]}, 9: {"s1": ["classified SSN", "inherited"]},
@@ -453,20 +450,32 @@ def across_cases() -> None:
                    **every(range(22, 26), ["s1"], "crossed vo ambiguous")},
          must_see={b + i: ["s1"] for b in (0, 6, 12) for i in (1, 2, 3)}, must_miss={i: ["s1"] for i in range(22, 26)},
          authored=True,
-         notes="Three earlier conversations (M = 3, R9) each send V2 the user's SSN; the fourth gets it back. Held "
-               "from exactly M conversations it is not a common value: three edges, value-only, ambiguous; it blocks.")
+         notes="Three earlier conversations each send V2 the user's SSN; the fourth gets it back: three edges, one "
+               "per conversation it is held from, value-only, ambiguous (three origins, R3); it blocks.")
 
     k20 = " ~2min> ".join([to_partner(3)] + [to_partner()] * 3 + [back_from_partner()])
     k20_edges = (chain([1, 2, 3], ["s1"]) + ["s1 2>5", "s1 2>7"]
                  + [e for b in (10, 16, 22) for e in chain([b + 1, b + 2, b + 3], ["s1"])])
-    case("K20", "M+1 earlier conversations", k20, cell="across/common/beyond-M", units={"s1": "SSN"},
-         verdict=aa, edges=k20_edges, evidence={32: {"s1": []}}, marks={32: ["common 4"]},
-         must_see={**{i: ["s1"] for i in (1, 2, 3, 5, 7)}, **{b + i: ["s1"] for b in (10, 16, 22) for i in (1, 2, 3)}},
-         must_miss={i: ["s1"] for i in range(32, 36)}, authored=True,
+    k20_premise = dict(
+        must_see={**{i: ["s1"] for i in (1, 2, 3, 5, 7)}, **{b + i: ["s1"] for b in (10, 16, 22) for i in (1, 2, 3)}},
+        must_miss={i: ["s1"] for i in range(32, 36)}, authored=True)
+    k20_on = chain([32, 33, 34, 35], ["s1"])
+    case("K20", "four earlier conversations, one of them three times", k20, cell="across/many/four",
+         units={"s1": "SSN"}, verdict=crossed_block, edges=k20_edges,
+         cross=[e for frm in (3, 5, 7, 13, 19, 25) for e in crossing(frm, 32, ["s1"], "vo")] + k20_on,
+         evidence=every(range(32, 36), ["s1"], "crossed vo ambiguous"), **k20_premise,
          notes="Four earlier conversations send V2 the SSN, the first of them three times (three calls in one call of "
-               "T2); the fifth gets it back. Counted by distinct conversation the value is held from 4 > M = 3 "
-               "conversations (R2): a common value, no edge, the count on the leg. Counted by leg it would be 6: the "
-               "stated count tells the two apart.")
+               "T2); the fifth gets it back. No value is dropped for being held from many conversations (R2): six "
+               "edges, one per time V2 received it, value-only, ambiguous (four origins); it blocks. Under the cap "
+               "of 30 edges per value, so nothing is cut and no mark is drawn.")
+    case("K20b", "the same, with at most two edges per value", k20, cell="across/many/capped",
+         units={"s1": "SSN"}, config={"edges_per_value": 2}, verdict=crossed_block, edges=k20_edges,
+         cross=crossing(19, 32, ["s1"], "vo") + crossing(25, 32, ["s1"], "vo") + k20_on,
+         evidence=every(range(32, 36), ["s1"], "crossed vo ambiguous"), marks={32: ["capped 4"]}, **k20_premise,
+         notes="K20 with the cap set to two. Predicted from the rule before the run: of the six times V2 received "
+               "the SSN the two newest are legs 25 and 19, so two edges are drawn, from two origins: still "
+               "ambiguous, still a block. The mark says the value was cut and counts the conversations it is held "
+               "from, 4; counted by leg it would be 6.")
 
     # --- scope ------------------------------------------------------------------------------------------------
     k21 = ("U>A[-], A>T2[-], T2>V1[-], V1>T2[s1 -], T2>V2[s1 -], V2>T2[s1@subject -], T2>A[-], A>T3[-], T3>V2[-], "
@@ -510,55 +519,72 @@ def across_cases() -> None:
                "draws the edges: if it did not reach the processor, the line would be K22b's.")
 
     # --- limits, order, correction ----------------------------------------------------------------------------
-    limits_pending = {"reason": "the limits are not configuration on this branch; held, not run",
-                      "held": ["config"]}
-    case("K23a", "a limit fires: holdings per entity", sends(["s1", "s3"]), cell="across/limits/holdings",
-         units={"s1": "SSN", "s3": "DOB"}, config={"holdings_per_entity": 1}, verdict={},
-         edges=sent_edges(0, ["s1", "s3"]), marks={11: ["incomplete holdings_per_entity"]},
-         must_see=sent_premise(0, ["s1", "s3"]), must_miss={}, pending=limits_pending,
-         notes="V2 may hold one value; at leg 11 it receives two. Its holdings are cut, and the leg that would have "
-               "registered the second is marked incomplete, naming the limit. Which value is kept is "
-               "not stated: no later leg depends on it here.")
+    # A limit is applied where a persistent entity (V2, V3) sends a payload, and marks that leg whenever it is
+    # exceeded there, whether or not the cut hid anything (the cut set asserts nothing).
+    k1_line = f"{sends(THREE)} ~10min> {returns(THREE)}"
+    no_cross = {**received(11, THREE), 22: {u: [] for u in THREE}}
+    case("K23a", "a limit fires: holdings per entity", k1_line, cell="across/limits/holdings",
+         config={"holdings_per_entity": 2}, verdict=aa, edges=sent_edges(0, THREE), evidence=no_cross,
+         marks={12: ["incomplete holdings_per_entity"], 22: ["incomplete holdings_per_entity"]},
+         must_see=sent_premise(0, THREE), must_miss=returned_premise(16, THREE), authored=True,
+         notes="K1 with each entity searched only while it holds at most two occurrences. Predicted from the rule "
+               "before the run: V2 receives the three values at leg 11, so at its own answer (leg 12) it holds "
+               "three, and at leg 22, ten minutes later and inside the retention, it still holds conversation 1's "
+               "three: both legs are marked incomplete, nothing is searched there, nothing crosses, allow (K1 "
+               "blocks). V3 receives nothing labelled at leg 27, so its answer (leg 28) is not cut.")
     two("K23b", "a limit fires: payload bytes", THREE, ["s1"], config={"payload_bytes": 16},
-        marks={22: ["incomplete payload_bytes"]}, pending=limits_pending, cell="across/limits/payload-bytes",
-        notes="K2 with at most 16 bytes of a payload searched: V2's answer holds the SSN past its first 16 bytes, so "
-              "it is not found; the leg is marked incomplete, naming the limit, and nothing crosses.")
+        marks={i: ["incomplete payload_bytes"] for i in (12, 22, 28)}, cell="across/limits/payload-bytes",
+        notes="K2 with at most 16 bytes of a payload searched. Predicted from the rule before the run: every payload "
+              "a persistent entity sends is longer than 16 bytes (V2's at legs 12 and 22, 43 and 50 bytes; V3's at "
+              "leg 28, 24 bytes), so all three are marked; at leg 22 the SSN starts after byte 16, so it is not "
+              "found and nothing crosses: allow.")
     k23c = f"{sends(THREE)} ~2min> {sends(THREE)} ~2min> {returns(['s1'])}"
     case("K23c", "a limit fires: candidates per payload", k23c, cell="across/limits/candidates",
          config={"candidates_per_payload": 1}, verdict=aa, edges=sent_edges(0, THREE) + sent_edges(16, THREE),
          evidence={38: {"s1": []}}, marks={38: ["incomplete candidates_per_payload"]},
          must_see={**sent_premise(0, THREE), **sent_premise(16, THREE)}, must_miss=returned_premise(32, ["s1"]),
-         authored=True, pending=limits_pending,
-         notes="K10 with one candidate per payload: the SSN at leg 38 has two origins, one more than the limit. The "
-               "leg is marked incomplete, naming the limit; the case states that a cut candidate set asserts "
-               "nothing (no edge), which the rules do not say: an open question for the limits.")
+         authored=True,
+         notes="K10 with one candidate per payload. Predicted from the rule before the run: the SSN at leg 38 has "
+               "two candidates (conversations 1 and 2 each sent it to V2), one more than the limit, so nothing is "
+               "asserted there and the leg is marked; V2's answers at legs 12 and 28 and V3's at 44 find no "
+               "held value at all. No crossing, allow.")
 
     k1_cross = crossing(11, 22, THREE, "co") + carried(16, THREE)
-    k1_line = f"{sends(THREE)} ~10min> {returns(THREE)}"
     k1 = dict(cell="across/order", verdict=crossed_block, edges=sent_edges(0, THREE), cross=k1_cross,
               evidence={**received(11, THREE), **every(range(22, 28), THREE, "crossed co")},
               must_see=sent_premise(0, THREE), must_miss=returned_premise(16, THREE), authored=True)
     case("K24", "conversation 1 arrives after conversation 2 was processed", k1_line,
          steps=[{"send": "17-32"}, "drain", {"send": "1-16"}, "drain"],
-         **{**k1, "pending": {"reason": ORDER_PENDING, "missing": k1_cross, "verdict": ["cross"],
-                              "evidence": list(range(22, 28))}},
+         **{**k1, "verdict": v("allow", "allow", ["allow", "block late"])},
          notes="K1 with conversation 2 sent and drained before conversation 1 is sent: conversation 1 is classified "
                "and derived after conversation 2 was matched (the readiness cursor derives a leg only once it is "
-               "classified, so a late classification is a late leg). The same final edges as in order: the late leg "
-               "queues V2's later leaving leg to be matched again. That it is matched again exactly "
-               "once is not stated by the notation: an open question for the correction.")
+               "classified, so a late classification is a late leg). Conversation 1's occurrences at V2 queue "
+               "conversation 2, whose V2 answer lies inside their interval, and it is derived again: the same final "
+               "edges as in order. The decision history, every version, predicted from the mechanism before the "
+               "run: a version is written only when the computed record differs. At the first drain both legs of "
+               "the flagged exchange are on the wire when leg-ready delivers its request, so one record evidences "
+               "both (v1 allow; the response leg computes the same record, no version). At the second drain the "
+               "correction changes the flagged leg's labels and queues its recompute: v2 block, stricter than v1, "
+               "which evidenced the same legs: a late finding. The cross run's "
+               "history is [allow, block late]. That conversation 2 is derived exactly once more is the driver "
+               "test's (test_a_late_conversation_corrects_the_one_derived_before_it_once).")
     k25_edges = sent_edges(0, ["s2", "s3"])
     case("K25", "the identifier's label removed from conversation 1", f"{sends(THREE)} ~10min> {returns(['s1'])}",
          cell="across/order", steps=[{"send": "1-32"}, "drain", {"reclassify": {i: ["s1"] for i in range(7, 12)}},
                                      {"derive": 1}, "drain", {"derive": 1}, "drain"],
-         verdict=aa, edges=k25_edges, evidence={22: {"s1": []}, 27: {"s1": []}},
+         verdict=v("allow", "allow", ["block", "allow"]), edges=k25_edges, evidence={22: {"s1": []}, 27: {"s1": []}},
          must_see=sent_premise(0, THREE), must_miss=returned_premise(16, ["s1"]), authored=True,
-         pending={"reason": "a classification replaced and its conversation derived again is not on this branch; "
-                            "held, not run", "held": ["reclassify"]},
-         notes="K2, then conversation 1 is classified again without the SSN's findings (the truncate-and-reclassify "
-               "of ADR-0024) and derived again. Conversation 2 loses the crossing and every label that rested on it: "
-               "the expected rows are the final state, with no SSN edge in conversation 1 either. Deriving once "
-               "more changes nothing. The classifier premise states the first classification.")
+         notes="K2, then every payload is classified again by ADR-0024's runbook, the model now reading legs 7-11 "
+               "without the SSN, and conversation 1 is queued and derived again (the runbook re-derives nothing by "
+               "itself). Its SSN occurrence at V2 is gone, which queues conversation 2: it loses the crossing and "
+               "every label that rested on it, and the flagged decision gets one new version (block, then allow). "
+               "The expected rows are the final state, with no SSN edge in conversation 1 either. Conversation 1 is "
+               "derived once more: it changes no occurrence, queues nothing, and writes no version. The history, "
+               "every version, predicted from the mechanism before the run: v1 block at the first drain (one record "
+               "evidences both legs of the flagged exchange), v2 allow at the second (the correction's recompute), "
+               "nothing at the third (no summary changed, no recompute): [block, allow]. "
+               "The classifier premise states the first classification; the rows are checked against it with the "
+               "reclassified cells unlabelled.")
     case("K26", "every leg arrives reversed", k1_line, steps=[{"send": "32-1"}, "drain"], **k1,
          notes="K1 with every leg of both conversations sent in reverse order, then drained: the same final edges.")
     case("K27", "conversation 2 derived twice", k1_line, steps=[{"send": "1-32"}, "drain", {"derive": 2}, "drain"],
@@ -579,20 +605,34 @@ def across_cases() -> None:
          cell="across/tiers", verdict=v(["block tier 0"], ["block tier 0"], ["block tier 0"]),
          edges=chain([1, 2, 3, 4, 5]) + held_earlier(1, 4),
          must_see={1: all4, 2: THREE, 3: THREE, 4: THREE, 5: THREE}, must_miss={},
-         pending={"reason": "the verdict tiers are not on this branch; held, not run",
-                  "held": ["tiers"]},
-         notes="C2: the classifier labels the three on the flagged leg. The decision is block at tier 0, before any "
-               "lineage is asked, in every mode.")
-    case("K30", "the cross tier answers late", f"{sends(THREE)} ~10min> {returns(['s1'])}", cell="across/tiers",
-         verdict=v(["allow tier 0"], ["allow tier 1"], ["allow tier 1", "block tier 2"]),
+         notes="C2: the classifier labels the three on the flagged leg, so tier 0 (classification alone) blocks. "
+               "The history, every version, predicted from the mechanism before the run: one version in every mode "
+               "(both legs of the flagged exchange are on the wire when leg-ready delivers its request; the response "
+               "computes the same record). The policy is asked per tier on that snapshot (off: tier 0 only; conv: "
+               "0 and 1, the chain's labels reaching leg 5; cross: 0, 1 and 2, tier 2's input equal to tier 1's), "
+               "every tier blocks, and a block is decided at the first tier that blocks: [block tier 0] in every "
+               "mode. That the answer comes before any lineage is asked is timing, which this harness does not "
+               "show: the record says the classifier alone decided it.")
+    case("K30", "the cross tier comes after the answer", f"{sends(THREE)} ~10min> {returns(['s1'])}",
+         cell="across/tiers", steps=[{"cross": "off"}, {"send": "1-32"}, "drain", {"cross": "on"}, {"derive": 1},
+                                     {"derive": 2}, "drain"],
+         verdict=v(["allow tier 0"], ["allow tier 1"], ["allow tier 1", "block tier 2 late"]),
          edges=sent_edges(0, THREE), cross=crossing(11, 22, ["s1"], "vo") + carried(16, ["s1"]),
          evidence={**received(11, ["s1"]), **every(range(22, 28), ["s1"], "crossed vo")},
          must_see=sent_premise(0, THREE), must_miss=returned_premise(16, ["s1"]), authored=True,
-         pending={"reason": "the verdict tiers and the gate's time limit are not on this branch; "
-                            "held, not run", "held": ["tiers"]},
-         notes="K2 with the cross-conversation tier answering after the gate's time limit. Tiers 0 and 1 complete and "
-               "allow: the gate answers allow, tier 1 reached. Then tier 2 blocks: a new decision version, one late "
-               "finding; it does not reach back. Making tier 2 late needs a seam the verdict tiers provide.")
+         notes="K2 with tier 2 (the crossed labels) absent at the first decision because the cross-conversation "
+               "switch was off, not because it was slow: the timing of a gate's limit is a live run's, which "
+               "this harness cannot show. Both conversations are sent and drained with the switch off; it is turned "
+               "on (as a restart would) and both are derived again: switching on does not look back (R6), so "
+               "conversation 1 registers its occurrences only when derived again, and conversation 2, derived while "
+               "the switch was off, wrote no send rows a correction could find, so it is queued too. The crossing "
+               "is drawn and the flagged decision recomputed. The "
+               "history, every version, predicted from the mechanism before the run. cross: v1 allow at tier 1 "
+               "(tiers 0 and 1 were on, nothing in conversation 2 is labelled), v2 block at tier 2 (the crossed SSN), "
+               "stricter than v1: a late finding; v1 stands, the finding does not reach back. conv: the switch stays "
+               "off whatever a step says, so tiers 0 and 1 only: one version, [allow tier 1]. off: inherited labels "
+               "off, tier 0 only; the crossing is drawn (the switch governs label lineage) but reaches no decision: "
+               "one version, [allow tier 0].")
 
 
 if __name__ == "__main__":

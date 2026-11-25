@@ -64,28 +64,44 @@ The keys of a case across conversations (`cases.py` shows each; R1–R10 are the
   no origin, but an extra crossed origin turns the cell ambiguous, so it is red where the case states one
   origin; a fabricated extra origin from the same carrier leg at a cell already stated ambiguous is not seen
   (a known limit).
-- **`expect.marks`**: at a leg, `common 4` (a common value and its count) or `incomplete payload_bytes`
-  (a limit that cut the result). Every mark drawn must be stated. `common N` is read from its crossing
-  row; no row writes `incomplete` on this branch.
+- **`expect.marks`**: at a leg, `capped 4` (a value whose edges were capped, and how many other conversations hold it) or `incomplete payload_bytes`
+  (a limit that cut the result), read from `label_crossings` (its count, or its `cut`). Every mark drawn
+  must be stated.
 - **`steps`**: `send: 17-32` (legs, a range in its own direction: `32-1` is reversed), `drain` (every
   drain on from where it stopped), `derive: 2` (the conversation queued again through the production
-  correction queue, `dg_queue_label_trace`), `reclassify: {7: [s1]}`, `cross: 'on'`. By default: send
-  every leg in line order, then drain.
+  correction queue, `dg_queue_label_trace`), `reclassify: {7: [s1]}`, `cross: 'on'` (the cross-conversation
+  switch for the drains after it, as a restart would set it, in the off and cross runs; the conv run is the
+  switch off and keeps it off). By default: send every leg in line order, then drain.
 - **`scopes`** (`{V2: call}`): a memory scope declared per party, applied through the production
   declaration: `LABEL_MEMORY_SCOPES` (a JSON object, `{"<natural_key>": "<scope>"}`), set for the label-lineage processor's
   `driver.configured()`, each party named by the natural key the derivation gives it
   (`Renderer.natural_key`: `agent:lab/a`, `tool:lab/t2`, `service:api.v2.partner.example:8000`,
   `llm:host.containers.internal:11434/qwen2.5:7b`). A declared party whose key is no derived entity is red.
   Every run sets the variable, `{}` for a case without `scopes`, so the shell's own value never leaks in.
-- **`config`** (`{payload_bytes: 16}`): a limit, applied through the production configuration.
-- **`expect.verdict`** per mode, or a decision history per mode: `[allow tier 1, block tier 2]`.
+- **`config`** (`{payload_bytes: 16}`): a limit, applied through the production configuration
+  (`LABEL_CROSS_PAYLOAD_BYTES` and its two siblings, `engine.LIMIT_ENV`); every run sets all three, empty
+  for none.
+- **`reclassify: {7: [s1]}`**: ADR-0024's runbook — every classification truncated, the classification
+  cursor reset, the next drain classifying again with the model's findings on those units at those legs
+  taken away. The runbook re-derives nothing by itself; a `derive` step queues the conversation. The
+  classifier premise states the first classification; a step takes a unit only from a leg the premise says
+  the model labels, and the premise as it stands is checked on the rows before each such step (red if it
+  does not hold); the final rows are judged with the reclassified cells unlabelled.
+- **`expect.verdict`** per mode, or a decision history per mode: the decisions of every record that
+  evidences the flagged leg, in version order, repeats included (`[allow, block late]`: a correction reached
+  the decision, once); a single verdict needs every version to agree. Read from each version's
+  `interaction_risk_tiers` row (a version without one is red, in every mode): in a history, every version
+  that is a late finding (stricter than the latest earlier version that evidenced the same legs) says `late`,
+  so a late finding is always stated (a single verdict cannot hide one: a late version differs from the one
+  before it); a case that names a tier anywhere states it on every version of every history
+  (`[allow tier 1, block tier 2 late]`, `[block tier 0]`), the tier that decided the version. A case that
+  states a plain verdict compares the decision only.
 
-A case that needs a production path this branch lacks (a limit, a reclassification, the tiers:
-`engine.NOT_ON_BRANCH`, one row each naming the path and where the engine applies it) is **held**: not
-run, and PENDING only when `expect.pending.held` names exactly those paths; here that is K23a-c (limits),
-K25 (reclassify), K29 and K30 (tiers). The change that builds a path removes its row and the case runs
-from then on. `engine.switches` sets the cross-conversation switch per run (on in `off` and `cross`, off
-in `conv`), and a `cross` step switches it inside a run.
+A case that needs a production path this branch lacks (`engine.NOT_ON_BRANCH`, one row each naming the path
+and where the engine applies it; empty now) is **held**: not run, and PENDING only when
+`expect.pending.held` names exactly those paths. The change that builds a path removes its row and the
+case runs from then on. `engine.switches` sets the cross-conversation switch per run (on in `off` and
+`cross`, off in `conv`), and a `cross` step switches it inside a run.
 
 ## Run
 
@@ -142,7 +158,7 @@ partner of conversation 2 returns nothing (K0) or some of conversation 1's value
 controls on the memoryless rule of #348, P1–P3: a tool that calls two partners inside one call, two
 callers of one tool in flight, and the same with one value in both calls (`T1(A1)>V1` names the call a
 request belongs to). K8–K30 are the cases across conversations, most of them K0's
-conversations or more of them: the rule, the level on its way, the common value, scope, limits, order and
+conversations or more of them: the rule, the level on its way, a value held from many conversations, scope, limits, order and
 correction, switches and tiers. Each case's `notes` says what it proves and, for a case that draws no
 crossing, which deliberate break turns it red; the `cell` groups them.
 

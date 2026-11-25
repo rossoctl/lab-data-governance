@@ -41,12 +41,12 @@ expect:
     '22':
       s1: []
   marks:
+    '12':
+    - incomplete payload_bytes
     '22':
     - incomplete payload_bytes
-  pending:
-    reason: the limits are not configuration on this branch; held, not run
-    held:
-    - config
+    '28':
+    - incomplete payload_bytes
 classifier:
   must_see:
     '7':
@@ -83,5 +83,6 @@ classifier:
     '27':
     - s1
   authored: true
-notes: 'K2 with at most 16 bytes of a payload searched: V2''s answer holds the SSN past its first 16 bytes, so it is not found;
-  the leg is marked incomplete, naming the limit, and nothing crosses.'
+notes: 'K2 with at most 16 bytes of a payload searched. Predicted from the rule before the run: every payload a persistent
+  entity sends is longer than 16 bytes (V2''s at legs 12 and 22, 43 and 50 bytes; V3''s at leg 28, 24 bytes), so all three
+  are marked; at leg 22 the SSN starts after byte 16, so it is not found and nothing crosses: allow.'

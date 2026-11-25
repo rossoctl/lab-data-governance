@@ -98,6 +98,20 @@ def recorded_findings(case, renderer) -> dict[int, list[tuple[str, str]]]:
     return out
 
 
+def without(detector: ReplayDetector, renderer, values_at: dict[int, list[str]]) -> ReplayDetector:
+    """*detector* reading the payloads of the legs in *values_at* without its findings on those values (a
+    reclassification the case states): subtracted, never invented, as an authored case is."""
+    from data_governance.processors.classification import projection
+
+    by_text = {t: list(a) for t, a in detector._by_text.items()}
+    text_of = {r.leg.index: projection.project(r.content) for r in renderer.rendered}
+    for leg, values in values_at.items():
+        subtract(by_text, text_of[leg], set(values))
+    out = ReplayDetector({"by_text": by_text, "model_version": detector.model_version})
+    out.authored = detector.authored
+    return out
+
+
 def subtract(by_text: dict[str, list[list]], text: str, values: set[str]) -> int:
     """Remove every annotation whose span is one of *values*; returns how many."""
     before = len(by_text[text])
