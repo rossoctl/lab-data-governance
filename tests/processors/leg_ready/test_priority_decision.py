@@ -15,7 +15,9 @@ real observer and the real cursor arm:
 - a lost lock ends the arm, before any computing; a fault on one id does not
   starve the ids behind it;
 - every arm computes inside a turn and stamps the row;
-- with inherited labels on, the arm waits for label lineage;
+- with inherited labels on, the arm waits for label lineage, except for a block on the
+  classification alone (the early block): released at once, asked once, never an allow,
+  never over a record that exists, fenced and retried like any write;
 - the notify itself drives it (the listener thread), with the cursor arm idle;
 - a priority turn goes before a waiting cursor turn.
 """
@@ -405,3 +407,243 @@ def test_a_priority_turn_goes_first() -> None:
     for t in (h, c, w):
         t.join(5)
     assert order == ["priority", "cursor"]
+
+
+# --- the early block ---------------------------------------------------------------------------------
+# A decision is released when it is a block, or when the evidence is complete.
+
+from data_governance.processors.leg_ready import metrics  # noqa: E402
+from data_governance.risk.engine.observer import make_early_block_observer  # noqa: E402
+
+from .test_risk_observer import _decision  # noqa: E402
+
+
+class _Opa(_FakeOpaClient):
+    """A policy that answers *enforcement* on whatever it is asked."""
+
+    def __init__(self, enforcement: str = "allow") -> None:
+        super().__init__()
+        self.enforcement = enforcement
+
+    def evaluate(self, **kwargs):
+        super().evaluate(**kwargs)
+        return _decision(enforcement_type=self.enforcement)
+
+
+def _early_arm(opa, monkeypatch) -> priority_decision.PriorityDecisionArm:
+    """The arm as leg-ready starts it with inherited labels on: both observers on one policy."""
+    monkeypatch.setattr(driver.risk_config, "inherited_labels_mode", lambda: "on")
+    return priority_decision.PriorityDecisionArm(make_risk_observer(opa), early=make_early_block_observer(opa))
+
+
+def _derive(dsn: str, interaction_id: str = _B, payload_hash: str = "h-b") -> None:
+    """Label lineage derived the leg (no labels to inherit)."""
+    with psycopg.connect(dsn) as conn:
+        conn.execute(
+            "INSERT INTO leg_inherited_labels (interaction_id, leg_type, trace_id, payload_hash, seq, matcher, "
+            "classified) VALUES (%s, 'request', 't-158', %s, 0, 'exact', true)", (interaction_id, payload_hash))
+        conn.commit()
+
+
+def _records(dsn: str, interaction_id: str = _B) -> list[tuple]:
+    with psycopg.connect(dsn) as conn:
+        return conn.execute(
+            "SELECT r.version, r.enforcement_type, t.tier, t.late FROM interaction_risk_records r "
+            "LEFT JOIN interaction_risk_tiers t USING (interaction_id, version) "
+            "WHERE r.interaction_id = %s ORDER BY r.version", (interaction_id,)).fetchall()
+
+
+def test_a_classifier_block_is_released_before_label_lineage(configured_db: str, monkeypatch) -> None:
+    metrics.make_registry()
+    _unready_prefix_then_ready_leg(configured_db)
+    opa = _Opa("block")
+    arm = _early_arm(opa, monkeypatch)
+    arm.want(_B)
+    assert arm.serve() == 1, "classified, label lineage has not derived it, and the policy blocks"
+    assert _records(configured_db) == [(1, "block", 0, False)]
+    assert _B not in arm.pending and arm.asked_early == {} and len(opa.calls) == 1
+    assert metrics.early_blocks_total._value.get() == 1
+
+
+def test_an_early_allow_is_not_released_and_is_asked_once(configured_db: str, monkeypatch) -> None:
+    _unready_prefix_then_ready_leg(configured_db)
+    opa = _Opa("allow")
+    arm = _early_arm(opa, monkeypatch)
+    arm.want(_B)
+    for _ in range(3):
+        assert arm.serve() == 0
+    assert _records(configured_db) == [] and _B in arm.pending
+    assert len(opa.calls) == 1, "asked once on this payload, however many re-checks pass"
+    with psycopg.connect(configured_db) as conn:
+        assert conn.execute("SELECT count(*) FROM interaction_policy_decisions").fetchone()[0] == 0
+    _derive(configured_db)
+    assert arm.serve() == 1
+    assert _records(configured_db) == [(1, "allow", 1, False)]
+    assert len(opa.calls) == 2 and arm.asked_early == {}
+
+
+def test_with_everything_ready_there_is_no_early_question(configured_db: str, monkeypatch) -> None:
+    _unready_prefix_then_ready_leg(configured_db)
+    _derive(configured_db)
+    opa = _Opa("block")
+    asked: list[str] = []
+    monkeypatch.setattr(driver.risk_config, "inherited_labels_mode", lambda: "on")
+    early = make_early_block_observer(opa)
+    arm = priority_decision.PriorityDecisionArm(
+        make_risk_observer(opa), early=lambda leg: asked.append(leg.interaction_id) or early(leg))
+    arm.want(_B)
+    assert arm.serve() == 1 and asked == []
+    assert _records(configured_db) == [(1, "block", 0, False)] and len(opa.calls) == 1
+
+
+def test_readiness_is_read_again_inside_the_turn(configured_db: str, monkeypatch) -> None:
+    """The look that takes the turn saw "classified only"; by the time the turn is held, label lineage has
+    derived the leg and the full record is written. The arm runs the full computation on what is there now, and
+    the fuller record stays the latest."""
+    _unready_prefix_then_ready_leg(configured_db)
+    opa = _Opa("allow")
+    arm = _early_arm(opa, monkeypatch)
+    with db.transaction() as tx:
+        stale = driver.one_leg(tx, _B, "request")
+    assert stale.classified and not stale.ready
+    _derive(configured_db)
+    with db.transaction() as tx:
+        make_risk_observer(opa)(driver.one_leg(tx, _B, "request"))(tx)        # the cursor arm got there first
+    assert _records(configured_db) == [(1, "allow", 1, False)]
+    opa.enforcement = "block"          # what an early question would answer, were it asked
+    arm.want(_B)
+    assert arm._compute(stale) is True
+    assert _records(configured_db) == [(1, "allow", 1, False)], "the full record was not pushed aside"
+    assert len(opa.calls) == 1, "no early question: the full computation ran, on its cached decision"
+
+
+def test_a_fenced_out_early_block_is_asked_again(configured_db: str, monkeypatch) -> None:
+    _unready_prefix_then_ready_leg(configured_db)
+    opa = _Opa("block")
+    monkeypatch.setattr(driver.risk_config, "inherited_labels_mode", lambda: "on")
+    real = make_early_block_observer(opa)
+    moved: list[bool] = []
+
+    def early(leg):
+        write = real(leg)
+        if not moved:
+            moved.append(True)
+            with psycopg.connect(configured_db) as conn:
+                conn.execute(
+                    "INSERT INTO processor_state (processor_name, last_processed_seq, updated_at) "
+                    "VALUES ('leg_ready', 99, now()) ON CONFLICT (processor_name) "
+                    "DO UPDATE SET last_processed_seq = 99")
+                conn.commit()
+        return write
+
+    arm = priority_decision.PriorityDecisionArm(make_risk_observer(opa), early=early)
+    arm.want(_B)
+    assert arm.serve() == 0 and _records(configured_db) == []
+    assert _B in arm.pending and _B not in arm.asked_early, "not remembered: the write did not land"
+    assert arm.serve() == 1 and _records(configured_db) == [(1, "block", 0, False)]
+
+
+def test_an_opa_outage_at_the_early_question_keeps_the_id_unasked(configured_db: str, monkeypatch) -> None:
+    _unready_prefix_then_ready_leg(configured_db)
+    opa = _Opa("block")
+    opa.fail_with = OpaRequestError("OPA unreachable (injected)")
+    arm = _early_arm(opa, monkeypatch)
+    arm.want(_B)
+    assert arm.serve() == 0 and _B in arm.pending and arm.asked_early == {}
+    opa.fail_with = None
+    assert arm.serve() == 1
+
+
+def test_what_was_asked_early_goes_with_its_pending_entry(configured_db: str, monkeypatch) -> None:
+    _unready_prefix_then_ready_leg(configured_db)
+    opa = _Opa("allow")
+    arm = _early_arm(opa, monkeypatch)
+    arm.want(_B, now=0.0)
+    assert arm.serve(now=1.0) == 0 and arm.asked_early == {_B: "h-b"}
+    arm.asked_early[_B] = "another-payload"            # the request leg's payload changed since it was asked
+    assert arm.serve(now=2.0) == 0 and len(opa.calls) == 2 and arm.asked_early == {_B: "h-b"}
+    assert arm.serve(now=priority_decision.TTL_SECONDS + 1.0) == 0
+    assert arm.pending == {} and arm.asked_early == {}, "expired together"
+    monkeypatch.setattr(priority_decision, "MAX_PENDING", 1)
+    arm.want(_B)
+    arm.serve()
+    assert _B in arm.asked_early
+    arm.want(_A)
+    assert list(arm.pending) == [_A] and arm.asked_early == {}, "evicted together"
+
+
+def test_without_the_early_observer_the_arm_waits_as_before(configured_db: str, monkeypatch) -> None:
+    """``LEG_READY_EARLY_BLOCK=off``: no early observer is handed to the arm."""
+    monkeypatch.setattr(driver.risk_config, "inherited_labels_mode", lambda: "on")
+    _unready_prefix_then_ready_leg(configured_db)
+    opa = _Opa("block")
+    arm = priority_decision.PriorityDecisionArm(make_risk_observer(opa))
+    arm.want(_B)
+    assert arm.serve() == 0 and opa.calls == [] and _records(configured_db) == []
+
+
+def test_with_inherited_labels_off_a_classified_leg_is_a_ready_leg(configured_db: str) -> None:
+    _unready_prefix_then_ready_leg(configured_db)
+    opa = _Opa("allow")
+    asked: list[str] = []
+    arm = priority_decision.PriorityDecisionArm(make_risk_observer(opa), early=lambda leg: asked.append("early"))
+    arm.want(_B)
+    assert arm.serve() == 1 and asked == [] and _records(configured_db) == [(1, "allow", 0, False)]
+
+
+def test_a_classifier_block_is_released_while_a_correction_is_pending(configured_db: str, monkeypatch) -> None:
+    """Label lineage derived the leg, and the trace has a correction pending: not ready, still classified."""
+    _unready_prefix_then_ready_leg(configured_db)
+    _derive(configured_db)
+    with psycopg.connect(configured_db) as conn:
+        conn.execute("INSERT INTO label_lineage_dirty_traces (trace_id) VALUES ('t-158')")
+        conn.commit()
+    arm = _early_arm(_Opa("block"), monkeypatch)
+    arm.want(_B)
+    assert arm.serve() == 1 and _records(configured_db) == [(1, "block", 0, False)]
+
+
+def test_an_early_block_leaves_the_recompute_queue_alone(configured_db: str, monkeypatch) -> None:
+    _unready_prefix_then_ready_leg(configured_db)
+    with psycopg.connect(configured_db) as conn:
+        conn.execute("INSERT INTO risk_recompute_requests (interaction_id, reason, labels_pending) "
+                     "VALUES (%s, 'inherited labels changed', true)", (_B,))
+        conn.commit()
+        before = conn.execute("SELECT to_jsonb(r)::text FROM risk_recompute_requests r").fetchall()
+    arm = _early_arm(_Opa("block"), monkeypatch)
+    arm.want(_B)
+    assert arm.serve() == 1
+    with psycopg.connect(configured_db) as conn:
+        assert conn.execute("SELECT to_jsonb(r)::text FROM risk_recompute_requests r").fetchall() == before
+
+
+def test_an_unclassified_leg_is_not_asked_early(configured_db: str, monkeypatch) -> None:
+    """The early question needs the classification: a leg whose payload is not classified yet is neither asked
+    nor remembered as asked, so the early block still fires when the classification lands."""
+    _unready_prefix_then_ready_leg(configured_db)        # _A's payload h-a is not classified
+    opa = _Opa("block")
+    arm = _early_arm(opa, monkeypatch)
+    with db.transaction() as tx:
+        leg = driver.one_leg(tx, _A, "request")
+    assert not leg.classified and not leg.ready
+    arm.want(_A)
+    assert arm.serve() == 0 and opa.calls == [] and arm.asked_early == {} and _records(configured_db, _A) == []
+    assert arm._compute(leg) is False and opa.calls == [], "nor when a stale look takes the turn"
+    _classify(configured_db, "h-a")
+    assert arm.serve() == 1 and _records(configured_db, _A) == [(1, "block", 0, False)]
+
+
+def test_a_second_ask_after_an_early_block_writes_nothing_and_says_so(configured_db: str, monkeypatch, caplog) -> None:
+    """The verdict service names a waited exchange more than once. The second early block finds the record of the
+    first and writes nothing; the log does not say it blocked early again, and the counter does not move."""
+    import logging
+    metrics.make_registry()
+    _unready_prefix_then_ready_leg(configured_db)
+    arm = _early_arm(_Opa("block"), monkeypatch)
+    caplog.set_level(logging.INFO, logger=priority_decision.log.name)
+    for _ in range(2):
+        arm.want(_B)
+        assert arm.serve() == 1
+    assert _records(configured_db) == [(1, "block", 0, False)] and metrics.early_blocks_total._value.get() == 1
+    lines = [r.getMessage() for r in caplog.records if _B in r.getMessage()]
+    assert sum("blocked early" in m for m in lines) == 1 and sum("wrote nothing" in m for m in lines) == 1

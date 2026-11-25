@@ -911,7 +911,7 @@ def test_the_loader_refuses_a_level_evidence_or_mark_it_cannot_read(tmp_path: Pa
      "Y: expect.evidence at leg 1: s2 is not declared in units"),
     ("", "  marks: {3: }\n", LINE, "Y: expect.marks at leg 3: a list of marks, got None"),
     ("scopes: [V1]\n", "", LINE, "Y: scopes maps a party on the line"),
-    ("steps:\n  send: 1-6\n", "", LINE, "Y: steps is a list of drain, send, derive, reclassify and cross steps"),
+    ("steps:\n  send: 1-6\n", "", LINE, "Y: steps is a list of drain, ask, send, derive, reclassify and cross steps"),
 ])
 def test_the_loader_names_the_case_for_a_shape_it_cannot_read(tmp_path: Path, top, expect, line, error):
     see = SEE_ALL + ("  must_miss: {1: [s2]}\n" if "s2" in line else "")
@@ -985,8 +985,8 @@ def test_steps_default_to_every_leg_then_the_drains_and_read_ranges_both_ways(tm
     ("[drain, {send: 1-6}]", "the steps end with work no drain follows"),
     ("[{send: 1-6}, drain, {derive: 1}]", "the steps end with work no drain follows"),
     ("[{send: 1-6}, drain, {derive: 2}, drain]", "derive names a conversation 1..1"),
-    ("[{send: 1-6}, {wait: 1}, drain]", "a step is drain, or one of send"),
-    ("[{send: 1-6}, sleep]", "a step is drain, or one of send"),
+    ("[{send: 1-6}, {wait: 1}, drain]", "a step is drain, ask, or one of send"),
+    ("[{send: 1-6}, sleep]", "a step is drain, ask, or one of send"),
     ("[{send: 'one'}, drain]", "send takes leg indices and ranges"),
     ("[{send: '1-6, 9'}, drain]", "send names leg 9, which puts nothing on the wire"),
     ("[{cross: on}, {send: 1-6}, drain]", "the cross step is 'on' or 'off' (quoted)"),
@@ -995,6 +995,13 @@ def test_steps_default_to_every_leg_then_the_drains_and_read_ranges_both_ways(tm
 def test_the_loader_refuses_a_missing_or_unreadable_step(tmp_path: Path, steps, error):
     with pytest.raises(ValueError, match=re.escape(error)):
         load_case(_yaml(tmp_path, f"steps: {steps}\nexpect:\n" + VERDICT + "  edges: []\n" + SEE_ALL))
+
+
+def test_an_ask_step_needs_a_flagged_exchange(tmp_path: Path):
+    body = "steps: [{send: 1-6}, ask, drain]\nexpect:\n" + VERDICT + "  edges: []\n" + SEE_ALL
+    assert ("ask",) in load_case(_yaml(tmp_path, body)).steps
+    with pytest.raises(ValueError, match="an ask step asks for the flagged exchange's verdict; the line flags none"):
+        load_case(_yaml(tmp_path, body.replace(VERDICT, ""), line=LINE.replace("⚑", "")))
 
 
 def test_a_step_sends_its_legs_rows_in_the_order_given():

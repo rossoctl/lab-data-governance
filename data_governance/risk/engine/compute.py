@@ -62,7 +62,7 @@ from data_governance.risk.engine.evidence import gather_evidence
 from data_governance.risk.engine.opa import OpaClient, OpaError
 from data_governance.risk.rules.rego import FALLBACK_RULE_ID
 
-__all__ = ["RecordWrite", "compute_interaction_risk", "prepare_interaction_risk"]
+__all__ = ["RecordWrite", "compute_interaction_risk", "prepare_early_block", "prepare_interaction_risk"]
 
 # The write half prepare_interaction_risk returns: runs the idempotency-checked
 # risk-record insert inside the transaction the CALLER owns (the leg-ready
@@ -137,6 +137,11 @@ _PREVIOUS_SAME_LEGS_DECISION_SQL = (
 
 _INSERT_TIER_SQL = (
     "INSERT INTO interaction_risk_tiers (interaction_id, version, tier, late) VALUES (%s, %s, %s, %s)"
+)
+
+# An early block is only ever the first answer for the legs it evidences.
+_ANY_SAME_LEGS_RECORD_SQL = (
+    "SELECT 1 FROM interaction_risk_records WHERE interaction_id = %s AND legs_evidenced = %s LIMIT 1"
 )
 
 
@@ -475,6 +480,56 @@ def prepare_interaction_risk(
         tx.execute(_INSERT_TIER_SQL, (interaction_id, version, tier, late))
         if late:
             leg_ready_metrics.late_findings_total.inc()
+
+    return write
+
+
+def prepare_early_block(interaction_id: str, *, opa_client: OpaClient) -> RecordWrite | None:
+    """The early question, for an interaction a gate waits on whose label lineage is
+    not ready: the decision on the evidence that is final, released only when it is a
+    block. Returns the write of that block, or ``None`` when the policy does not block
+    on this evidence (the full computation decides, once label lineage is ready).
+
+    The evidence that is final is tier 0, the classification: a payload is classified
+    once. Label rows that exist before label lineage is ready can still be corrected,
+    so nothing inherited reaches the policy or the record (the evidence is gathered
+    as ever; what is inherited in it is left out). A block on it stands whatever the later tiers find
+    (:func:`utils.strictest`); any other decision could still be made stricter, so it
+    is not written and the gate is not answered.
+
+    The policy is asked once and the answer is not cached, as a lower tier's never
+    is: the decision cache keeps the full evidence's answer only.
+
+    The write inserts the record, with its tier row (tier 0, not late), only when no
+    version evidences these legs yet, checked under the interaction lock in the
+    caller's transaction: an early block is the first answer for its legs and never
+    replaces a record of them, whatever was written between this computation and its
+    write. The write returns whether it inserted. Raises what
+    :func:`prepare_interaction_risk` raises."""
+    evidence = gather_evidence(interaction_id)
+    decision = _ask(opa_client, interaction_id, _opa_input(evidence, None))
+    if decision.enforcement_type != "block":
+        return None
+    params, _ = _record_params(
+        interaction_id=evidence.interaction_id,
+        trace_id=evidence.trace_id,
+        parent_interaction_id=evidence.parent_interaction_id,
+        caller_entity_id=evidence.caller_entity_id,
+        callee_entity_id=evidence.callee_entity_id,
+        legs=evidence.legs,
+        classifications=evidence.classifications,
+        decision=decision,
+        inherited=None,
+    )
+
+    def write(tx: db.Transaction) -> bool:
+        tx.execute(_LOCK_SQL, (_lock_key(interaction_id),))
+        if tx.fetch_one(_ANY_SAME_LEGS_RECORD_SQL, (interaction_id, params["legs_evidenced"])) is not None:
+            return False
+        (version,) = tx.fetch_one(_INSERT_RISK_RECORD_SQL + " RETURNING version", params)
+        tx.execute(_INSERT_TIER_SQL, (interaction_id, version, 0, False))
+        leg_ready_metrics.early_blocks_total.inc()
+        return True
 
     return write
 

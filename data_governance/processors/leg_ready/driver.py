@@ -146,14 +146,18 @@ class Leg:
     Carries the leg identity a downstream governance consumer needs
     (``interaction_id``, ``leg_type``, ``payload_hash``) plus the ``seq`` the drain
     orders and cursors on and the ``ready`` flag the contiguous-prefix primitive
-    gates on. A driver-local read shape (like the sibling consumers' ``Entity`` /
-    ``Payload``)."""
+    gates on. ``classified`` is the first tier of that readiness alone: the leg has
+    no payload or its classification has landed, whatever label lineage has derived.
+    It is what the priority decision arm releases an early block on, and it equals
+    ``ready`` with inherited labels off. A driver-local read shape (like the sibling
+    consumers' ``Entity`` / ``Payload``)."""
 
     interaction_id: str
     leg_type: str
     payload_hash: str | None
     seq: int
     ready: bool
+    classified: bool = False
 
 
 def process_leg(tx: db.Transaction, leg: Leg, write: LegWrite | None = None) -> None:
@@ -183,7 +187,8 @@ def process_leg(tx: db.Transaction, leg: Leg, write: LegWrite | None = None) -> 
 # this stream's rule), so both read the same columns into the same Leg.
 _LEGS_SQL = """
 SELECT l.interaction_id, l.leg_type::text, l.payload_hash, l.seq,
-       (l.payload_hash IS NULL OR pc.content_hash IS NOT NULL) AS ready
+       (l.payload_hash IS NULL OR pc.content_hash IS NOT NULL) AS ready,
+       (l.payload_hash IS NULL OR pc.content_hash IS NOT NULL) AS classified
   FROM interaction_legs l
   LEFT JOIN payload_classifications pc ON pc.content_hash = l.payload_hash
 """
@@ -195,7 +200,8 @@ SELECT l.interaction_id, l.leg_type::text, l.payload_hash, l.seq,
        ((l.payload_hash IS NULL
         OR (pc.content_hash IS NOT NULL AND m.payload_hash = l.payload_hash
             AND m.trace_id = i.trace_id))
-        AND NOT EXISTS (SELECT 1 FROM label_lineage_dirty_traces d WHERE d.trace_id = i.trace_id)) AS ready
+        AND NOT EXISTS (SELECT 1 FROM label_lineage_dirty_traces d WHERE d.trace_id = i.trace_id)) AS ready,
+       (l.payload_hash IS NULL OR pc.content_hash IS NOT NULL) AS classified
   FROM interaction_legs l
   LEFT JOIN interactions i ON i.id = l.interaction_id
   LEFT JOIN payload_classifications pc ON pc.content_hash = l.payload_hash
@@ -218,7 +224,7 @@ def one_leg(tx: db.Transaction, interaction_id: str, leg_type: str) -> "Leg | No
     if row is None:
         return None
     return Leg(interaction_id=row[0], leg_type=row[1], payload_hash=row[2],
-               seq=int(row[3]), ready=bool(row[4]))
+               seq=int(row[3]), ready=bool(row[4]), classified=bool(row[5]))
 
 
 class Turns:
@@ -328,6 +334,7 @@ def _fetch_batch(tx: db.Transaction, cursor: int, limit: int) -> list[Leg]:
             payload_hash=r[2],
             seq=int(r[3]),
             ready=bool(r[4]),
+            classified=bool(r[5]),
         )
         for r in rows
     ]

@@ -143,12 +143,19 @@ def main() -> int:
     # engine, injected as the two-phase observer. Import here (not at module
     # top) so the bare consumer never pays the risk-engine import cost when
     # switched off.
-    observer = None
+    observer = early = None
     if os.environ.get("RISK_ENGINE_OBSERVER", "on").lower() not in ("off", "0", "false"):
-        from data_governance.risk.engine.observer import make_risk_observer
+        from data_governance.risk.engine.observer import make_early_block_observer, make_risk_observer
         from data_governance.risk.engine.opa import create_opa_client
 
-        observer = make_risk_observer(create_opa_client())
+        opa_client = create_opa_client()
+        observer = make_risk_observer(opa_client)
+        # The early block: a waited request that is classified, with label lineage
+        # not ready, is asked on the classification alone, and a block is released
+        # at once. It can only happen with inherited labels on (off, a classified
+        # leg is a ready leg). LEG_READY_EARLY_BLOCK=off waits for full readiness.
+        if os.environ.get("LEG_READY_EARLY_BLOCK", "on").lower() not in ("off", "0", "false"):
+            early = make_early_block_observer(opa_client)
         log.info("risk engine observer enabled (set RISK_ENGINE_OBSERVER=off to disable)")
     else:
         log.info("risk engine observer DISABLED via RISK_ENGINE_OBSERVER")
@@ -181,8 +188,10 @@ def main() -> int:
                 if observer is not None and os.environ.get("LEG_READY_PRIORITY_DECISION", "on").lower() not in ("off", "0", "false"):
                     from . import priority_decision
 
-                    priority_decision.start(observer, stop_event, dsn, guard=lock.check)
-                    log.info("priority decision enabled (set LEG_READY_PRIORITY_DECISION=off to disable)")
+                    priority_decision.start(observer, stop_event, dsn, guard=lock.check, early=early)
+                    log.info("priority decision enabled (set LEG_READY_PRIORITY_DECISION=off to disable); "
+                             "early block %s (LEG_READY_EARLY_BLOCK)%s", "on" if early is not None else "off",
+                             "" if early is None or mode == "on" else ", no effect while inherited labels are off")
                 driver.run(stop_event, dsn, observer=observer, guard=lock.check)
         except db.LockWaitStopped:
             log.info("stopped while waiting for the sole-consumer lock")

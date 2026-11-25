@@ -1,0 +1,72 @@
+id: K29b
+title: the classifier's block is released before label lineage
+cell: across/tiers/early
+line: U>A[s1 s2 s3 s4 -], A>L[s1 s2 s3 -], L>A[s1 s2 s3 -], A>T1[s1 s2 s3 -], T1>V1[s1 s2 s3 -]⚑, V1>T1[-], T1>A[-], A>L[-],
+  L>A[-], A>T2[-], T2>V2[-], V2>T2[-], T2>A[-], A>L[-], L>A[-], A>U[-]
+units:
+  s1: SSN
+  s2: MRN
+  s3: DOB
+  s4: DIS
+steps:
+- send: 1-16
+- ask
+- drain
+expect:
+  verdict:
+    'off':
+    - block tier 0
+    conv:
+    - block tier 0
+    - block tier 0
+    cross:
+    - block tier 0
+    - block tier 0
+  edges:
+  - s1 1>2
+  - s1 2>3
+  - s1 3>4
+  - s1 4>5
+  - s2 1>2
+  - s2 2>3
+  - s2 3>4
+  - s2 4>5
+  - s3 1>2
+  - s3 2>3
+  - s3 3>4
+  - s3 4>5
+  - s1 1>4
+  - s2 1>4
+  - s3 1>4
+classifier:
+  must_see:
+    '1':
+    - s1
+    - s2
+    - s3
+    - s4
+    '2':
+    - s1
+    - s2
+    - s3
+    '3':
+    - s1
+    - s2
+    - s3
+    '4':
+    - s1
+    - s2
+    - s3
+    '5':
+    - s1
+    - s2
+    - s3
+  must_miss: {}
+  authored: false
+notes: 'K29 with a gate asking while label lineage is held back (the ask step). A decision is released when it is a block,
+  or when the evidence is complete. Predicted from the mechanism before the run. conv and cross: at the ask the flagged request
+  is classified and label lineage has not derived it, so the policy is asked on the classification alone; it blocks, and version
+  1 is written there, tier 0, with nothing inherited in it. The drain then computes the full evidence: the chain''s labels
+  reach leg 5, the record differs, version 2, a block again and so not a late finding. off: a classified leg is a ready leg,
+  the ask computes the full record and the drain writes nothing more: one version. Red when the early question never fires
+  (one version in conv and cross).'
