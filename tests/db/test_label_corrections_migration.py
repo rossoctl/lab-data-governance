@@ -112,6 +112,30 @@ def test_downgrade_leaves_the_0031_schema_and_upgrade_restores_0032(pg_dsn: str,
     assert _schema(pg_dsn) == at_head
 
 
+def test_the_upgrade_queues_every_derived_conversation(pg_dsn: str, monkeypatch) -> None:
+    """Derived before 0032, a conversation has no send rows and 0031's rule on its rows: the upgrade queues each,
+    one already queued included (its generation moves, so an acknowledgment taken before cannot drop it)."""
+    from alembic import command
+
+    from data_governance.db.migrate import _alembic_config
+
+    monkeypatch.setenv("DATABASE_URL", pg_dsn)
+    cfg = _alembic_config()
+    command.upgrade(cfg, "0031_label_crossings")
+    with psycopg.connect(pg_dsn) as conn:
+        for trace in ("T1", "T2", "T3"):
+            conn.execute("INSERT INTO label_lineage_trace_status (trace_id, status, unclassified_legs, "
+                         "unanchored_findings, derived_legs, edge_count, matcher) "
+                         "VALUES (%s, 'complete', 0, 0, 1, 0, 'exact')", (trace,))
+        (queued_before,), = conn.execute("INSERT INTO label_lineage_dirty_traces (trace_id) VALUES ('T3') "
+                                         "RETURNING generation").fetchall()
+    command.upgrade(cfg, "head")
+    with psycopg.connect(pg_dsn) as conn:
+        queued = dict(conn.execute("SELECT trace_id, generation FROM label_lineage_dirty_traces").fetchall())
+    assert sorted(queued) == ["T1", "T2", "T3"]
+    assert queued["T3"] > queued_before
+
+
 def test_0032_follows_0031_in_the_chain() -> None:
     from alembic.config import Config
     from alembic.script import ScriptDirectory

@@ -29,6 +29,13 @@ A rename only: the CHECKs and the indexes of 0031 follow their columns. Since 00
 ``label_crossings`` row without an edge and without a cut is a *capped* value (one whose
 edges were cut to the surest and then the newest), no longer a common value: the row's shape is unchanged.
 
+The upgrade queues every conversation that has legs or that label lineage has derived
+(the set 0028 queued), so the new code derives each again: that writes its sends and
+replaces the rows 0031's rule wrote. The cost: after the upgrade every conversation is
+derived once more. A label-lineage image from before 0032 does not know the two new column
+names: with the cross switch on, its derivations fail until its pod is replaced
+(nothing is lost: each rolls back and the new image derives it).
+
 Revision ID: 0032_label_corrections
 Revises: 0031_label_crossings
 Create Date: 2026-11-13
@@ -73,6 +80,15 @@ def upgrade() -> None:
     )
     op.execute("CREATE INDEX label_sends_entity_idx ON label_sends (entity_id, occurred_at)")
     op.execute("CREATE INDEX label_sends_trace_idx ON label_sends (trace_id)")
+    op.execute(
+        """
+        SELECT dg_queue_label_trace(trace_id) FROM (
+            SELECT trace_id FROM label_lineage_trace_status
+            UNION
+            SELECT i.trace_id FROM interactions i JOIN interaction_legs l ON l.interaction_id = i.id
+        ) t ORDER BY trace_id
+        """
+    )
 
 
 def downgrade() -> None:
