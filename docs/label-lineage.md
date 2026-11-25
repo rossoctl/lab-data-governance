@@ -172,7 +172,9 @@ round; a re-derivation that changes no occurrence queues nothing. The cursor arm
 several conversations in one transaction, queues their corrections once at its end, in sorted order. It needs one label-lineage worker at a time: the processor holds a session lock
 (`consumer:label_lineage`), so a second one, an evicted pod overlapping its replacement included, waits
 for it; without the lock a derivation could read the occurrences before another commits a change and
-miss its correction for good.
+miss its correction for good. The lock is checked before every derivation, and each derivation's
+transaction is fenced on the processor's cursor row: it commits only if nothing else wrote the row
+since the derivation began; otherwise it rolls back whole, its queue entry stays, and the worker exits 5.
 
 **The limits**, each unset by default (no limit) and applied where a persistent entity sends a payload:
 `LABEL_CROSS_HOLDINGS_PER_ENTITY` (more occurrences valid at the payload's time, in every conversation,

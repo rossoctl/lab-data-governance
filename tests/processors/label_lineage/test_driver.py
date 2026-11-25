@@ -48,6 +48,15 @@ def _max_seq(dsn: str) -> int:
     return _q(dsn, "SELECT max(seq) FROM interaction_legs")[0][0]
 
 
+def _set_cursor(dsn: str, seq: int = 0) -> int:
+    """Set the processor's cursor row to *seq*, as the recovery runbook resets it, and return it: a drain runs
+    from the row's cursor (any other stops with LockLost)."""
+    with psycopg.connect(dsn) as conn:
+        conn.execute("UPDATE processor_state SET last_processed_seq = %s WHERE processor_name = %s",
+                     (seq, driver.PROCESSOR_NAME))
+    return seq
+
+
 def test_a_full_drain_derives_every_payload_bearing_leg(configured_db: str) -> None:
     seed(configured_db, "R4")
     cursor = driver.drain(0, OFF)
@@ -90,7 +99,7 @@ def test_draining_twice_writes_the_same_rows(configured_db: str) -> None:
     seed(configured_db, "R2")
     driver.drain(0, OFF)
     first = _snapshot(configured_db)
-    driver.drain(0, OFF)  # every leg delivered again, every derivation repeated
+    driver.drain(_set_cursor(configured_db), OFF)  # every leg delivered again, every derivation repeated
     assert _snapshot(configured_db) == first and first[0]
 
 
@@ -306,7 +315,7 @@ def test_a_recompute_request_is_written_only_for_a_changed_summary(configured_db
     with psycopg.connect(configured_db) as conn:
         conn.execute("DELETE FROM risk_recompute_requests")
         conn.commit()
-    driver.drain(0, OFF)  # derived again, nothing changed
+    driver.drain(_set_cursor(configured_db), OFF)  # derived again, nothing changed
     assert _q(configured_db, "SELECT count(*) FROM risk_recompute_requests") == [(0,)]
     with psycopg.connect(configured_db) as conn:
         classify(conn, next(c for c in d["classifications"] if c["content_hash"] == store_read.payload_hash))
@@ -850,7 +859,7 @@ def test_a_conversation_derived_between_the_two_traces_of_a_move_is_derived_agai
         with db.transaction() as tx:
             driver.derive_and_persist(tx, trace_id, config)
     assert _q(configured_db, "SELECT trace_id FROM label_lineage_dirty_traces") == [("X8",)]
-    driver.drain(_q(configured_db, "SELECT max(seq) FROM interaction_legs")[0][0], config)
+    driver.drain(_set_cursor(configured_db, _max_seq(configured_db)), config)
     assert _crossings(configured_db) == [("DOB", new, "corroborated"), ("SSN", new, "corroborated")]
     assert _q(configured_db, "SELECT trace_id, count(*) FROM label_occurrences GROUP BY 1") == [(new, 2)]
 
@@ -1178,8 +1187,8 @@ def test_a_received_leg_clocked_before_its_crossing_does_not_keep_the_correction
                                                                          candidates_limit=1))
     for t in _skewed(10 if skewed else 21):
         _seed_input(configured_db, t)
-    driver._drain_ready(driver._spec(), 0, config)
-    assert driver._redrive_dirty(config, limit=50) < 10
+    cursor = driver._drain_ready(driver._spec(), 0, config)
+    assert driver._redrive_dirty(cursor, config, limit=50) < 10
     assert _q(configured_db, "SELECT count(*) FROM label_lineage_dirty_traces")[0][0] == 0
     from tests.label_lineage.test_cross import T0
     # what V received at a2 rests on the crossing at a1 (20 s): it begins there, not at a2's own clock (10 s)
@@ -1198,8 +1207,8 @@ def test_a_received_leg_clocked_before_its_crossing_by_more_than_the_retention_h
     config = driver.Config(find.exact, "exact", crossing=cross.Crossing(retention=dt.timedelta(seconds=15)))
     for t in _skewed(5):
         _seed_input(configured_db, t)
-    driver._drain_ready(driver._spec(), 0, config)
-    assert driver._redrive_dirty(config, limit=50) < 10
+    cursor = driver._drain_ready(driver._spec(), 0, config)
+    assert driver._redrive_dirty(cursor, config, limit=50) < 10
     assert _q(configured_db, "SELECT count(*) FROM label_lineage_dirty_traces")[0][0] == 0
     assert _q(configured_db, "SELECT interaction_id FROM label_occurrences ORDER BY 1") == [("b2",), ("c1",)]
     assert _q(configured_db, "SELECT trace_id FROM label_lineage_trace_status ORDER BY 1") == [("A",), ("B",), ("C",)]
@@ -1284,3 +1293,145 @@ def test_a_second_worker_waits_for_the_first(configured_db: str, monkeypatch) ->
     assert ran.wait(10)
     second.join(10)
     assert exit_code == [0]
+
+
+# --- the sole-consumer lock: checked before every derivation, every derivation fenced -------------------------------
+
+def _cursor_row(dsn: str) -> int:
+    return _q(dsn, "SELECT last_processed_seq FROM processor_state WHERE processor_name = %s",
+              (driver.PROCESSOR_NAME,))[0][0]
+
+
+def _run_losing_the_lock(dsn: str, monkeypatch, config: driver.Config) -> Counter:
+    """Run the processor under its real sole-consumer lock and terminate the lock's backend during the first
+    derivation (a Postgres restart or an idle-session kill does the same). Returns how many times each trace was
+    derived before ``run`` stopped with LockLost."""
+    import threading
+    import time
+
+    from tests.processors.leg_ready.test_entrypoint import _lock_holder_pid
+    calls: Counter = Counter()
+    real = driver.derive_and_persist
+    stop = threading.Event()
+    with db.session_lock(f"consumer:{driver.PROCESSOR_NAME}", dsn) as lock:
+        pid = _lock_holder_pid(dsn)
+
+        def derive(tx, trace_id, *args):
+            if not calls:
+                with psycopg.connect(dsn, autocommit=True) as admin:
+                    admin.execute("SELECT pg_terminate_backend(%s)", (pid,))
+                    while admin.execute("SELECT 1 FROM pg_stat_activity WHERE pid = %s", (pid,)).fetchone():
+                        time.sleep(0.05)
+            calls.update([trace_id])
+            return real(tx, trace_id, *args)
+
+        monkeypatch.setattr(driver, "derive_and_persist", derive)
+        monkeypatch.setattr(driver, "POLL_SECONDS", 0.1)
+        timer = threading.Timer(30, stop.set)
+        timer.start()
+        try:
+            with pytest.raises(db.LockLost):
+                driver.run(stop, dsn, config, guard=lock.check)
+        finally:
+            timer.cancel()
+    return calls
+
+
+def test_a_lock_lost_during_a_cursor_batch_commits_no_further_batch(configured_db: str, monkeypatch) -> None:
+    """A backlog of three cursor batches; the lock's backend dies during the first. That batch passed its check and
+    commits; the next batch is not derived and the cursor stays at the first batch's end."""
+    from tests.label_lineage.test_cross import _first, _second
+    _seed_input(configured_db, _first())                  # seqs 1-2
+    _seed_input(configured_db, _second())                 # seqs 3-5
+    monkeypatch.setattr(driver, "_DRAIN_BATCH", 2)
+    assert _run_losing_the_lock(configured_db, monkeypatch, OFF) == {"T1": 1}
+    assert _cursor_row(configured_db) == 2
+
+
+def test_a_lock_lost_during_a_correction_commits_no_further_correction(configured_db: str, monkeypatch) -> None:
+    """Two queued traces; the lock's backend dies while the first is derived again. The second is neither derived
+    nor acknowledged: it stays queued for the worker that holds the lock."""
+    from tests.label_lineage.test_cross import _first, _second
+    _seed_input(configured_db, _first())
+    _seed_input(configured_db, _second())
+    driver.drain(0, OFF)
+    with psycopg.connect(configured_db) as conn:
+        conn.execute("SELECT dg_queue_label_trace('T1')")
+        conn.execute("SELECT dg_queue_label_trace('T2')")
+    assert _run_losing_the_lock(configured_db, monkeypatch, OFF) == {"T1": 1}
+    assert _q(configured_db, "SELECT trace_id FROM label_lineage_dirty_traces") == [("T2",)]
+
+
+def test_a_lock_lost_during_a_stale_derivation_commits_no_further_one(configured_db: str, monkeypatch) -> None:
+    """Another matcher makes both traces stale; the lock's backend dies while the first is derived again. The
+    second keeps the rows of the old matcher."""
+    from tests.label_lineage.test_cross import _first, _second
+    _seed_input(configured_db, _first())
+    _seed_input(configured_db, _second())
+    driver.drain(0, OFF)
+    assert _run_losing_the_lock(configured_db, monkeypatch, driver.Config(find.exact, "another")) == {"T1": 1}
+    assert _q(configured_db, "SELECT DISTINCT trace_id, matcher FROM leg_inherited_labels ORDER BY 1") == [
+        ("T1", "another"), ("T2", "exact")]
+
+
+def test_a_worker_that_lost_the_lock_cannot_commit_a_derivation_beside_its_replacement(
+        configured_db: str, monkeypatch) -> None:
+    """A correction makes v the callee in T2 and queues it. The old worker derives T2 again and reads no priors (T1
+    is not there yet), then stalls; it has lost its lock. T1 arrives and the replacement derives it: v holds the SSN
+    and the birthdate. Unfenced, the replacement's correction looks for v's sends before the old worker's T2 has
+    any, so it queues nothing; the old worker then commits T2 without the crossings and acknowledges its queue
+    entry, and the next wake finds nothing to do. Fenced, one of the two derivations rolls back, and the next wake
+    ends with both crossings and an empty queue."""
+    import threading
+
+    from data_governance.processors.data_lineage.traversal import Entity
+    from tests.label_lineage.test_cross import ENTITIES, _first, _second
+    from tests.processors.leg_ready.test_entrypoint import _wait_for
+    config = _crossed()
+    _seed_input(configured_db, dataclasses.replace(
+        _second(), entities={**ENTITIES, "w": Entity("w", "service:other", "service")}))
+    with psycopg.connect(configured_db) as conn:
+        conn.execute("UPDATE interactions SET callee_entity_id = 'w' WHERE id = '2'")
+    cursor = driver.drain(0, config)                      # T2 asked w: w's send is registered, not v's
+    with psycopg.connect(configured_db) as conn:
+        conn.execute("UPDATE interactions SET callee_entity_id = 'v' WHERE id = '2'")
+    assert _q(configured_db, "SELECT trace_id FROM label_lineage_dirty_traces") == [("T2",)]
+
+    loaded, release, priors = threading.Event(), threading.Event(), []
+    real = driver.load_trace
+
+    def load(tx, trace_id, *args):
+        t = real(tx, trace_id, *args)
+        if threading.current_thread().name == "old" and trace_id == "T2" and not loaded.is_set():
+            priors.append(t.priors)
+            loaded.set()
+            release.wait(30)                              # the old worker stalls inside its derivation
+        return t
+
+    monkeypatch.setattr(driver, "load_trace", load)
+    errors: dict[str, Exception] = {}
+
+    def work(name: str, fn) -> threading.Thread:
+        def target() -> None:
+            try:
+                fn()
+            except Exception as exc:  # noqa: BLE001 — collected and checked below
+                errors[name] = exc
+        thread = threading.Thread(target=target, name=name)
+        thread.start()
+        return thread
+
+    old = work("old", lambda: driver.drain(cursor, config))
+    assert loaded.wait(30) and priors == [()]
+    _seed_input(configured_db, _first())
+    new = work("new", lambda: driver._drain_ready(driver._spec(), cursor, config))
+    waiting = "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'"
+    assert _wait_for(lambda: not new.is_alive() or _q(configured_db, waiting)[0][0] > 0)
+    release.set()
+    old.join(30)
+    new.join(30)
+    assert not old.is_alive() and not new.is_alive()
+    assert all(isinstance(e, db.LockLost) for e in errors.values()), errors
+    driver.drain(_cursor_row(configured_db), config)      # the next wake of the worker that holds the lock
+    assert _q(configured_db, "SELECT count(*) FROM label_lineage_dirty_traces") == [(0,)]
+    assert _crossings(configured_db) == [("DOB", "T1", "corroborated"), ("SSN", "T1", "corroborated")]

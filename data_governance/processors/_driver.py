@@ -31,7 +31,7 @@ import dataclasses
 import logging
 import threading
 from collections.abc import Callable
-from typing import Generic, TypeVar
+from typing import Any, Generic, TypeVar
 
 from data_governance import db
 
@@ -102,6 +102,44 @@ def advance_cursor(tx: db.Transaction, processor_name: str, seq: int) -> None:
         "last_processed_seq = EXCLUDED.last_processed_seq, updated_at = now()",
         (processor_name, seq),
     )
+
+
+def read_stamp(tx: db.Transaction, processor_name: str) -> tuple[int, Any]:
+    """The cursor row's seq and stamp (creating the row at 0 if absent), read
+    before the unit of work that :func:`advance_from` fences."""
+    tx.execute(
+        "INSERT INTO processor_state (processor_name, last_processed_seq, updated_at) "
+        "VALUES (%s, 0, now()) ON CONFLICT (processor_name) DO NOTHING",
+        (processor_name,),
+    )
+    row = tx.fetch_one(
+        "SELECT last_processed_seq, updated_at FROM processor_state WHERE processor_name = %s",
+        (processor_name,),
+    )
+    return int(row[0]), row[1]
+
+
+def advance_from(tx: db.Transaction, processor_name: str, expected: int, seq: int, stamp: Any) -> None:
+    """Advance the durable cursor from *expected* to *seq* and restamp the row, or
+    raise :class:`~data_governance.db.LockLost` if it no longer reads *expected* and
+    *stamp*: every fenced unit restamps it, so that is any other write since the
+    unit read the stamp (:func:`read_stamp`), including one that left the cursor
+    where it was.
+
+    A sole-consumer lock check and the unit's transaction run on different
+    connections: a consumer that stalls between them can lose its lock while a
+    replacement does the same work. This conditional update closes that window. It
+    takes the cursor row's lock, so the stalled writer waits for the
+    replacement's commit, then finds the row moved and rolls back its whole unit
+    instead of landing an older result and moving the cursor backwards."""
+    if tx.fetch_one(
+        "UPDATE processor_state SET last_processed_seq = %s, updated_at = clock_timestamp() "
+        "WHERE processor_name = %s AND last_processed_seq = %s AND updated_at = %s RETURNING 1",
+        (seq, processor_name, expected, stamp),
+    ) is None:
+        raise db.LockLost(
+            f"{processor_name} cursor row moved from seq {expected}: another writer"
+        )
 
 
 def drain(spec: StreamSpec[T], cursor: int) -> int:

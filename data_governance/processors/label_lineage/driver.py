@@ -52,7 +52,8 @@ strictly earlier in event time (R1): a re-derivation that changes no occurrence 
 nothing, and each round settles the earliest leg still wrong. It needs one worker at a
 time (two would let a derivation read the occurrences before another commits its
 change): the entry point holds the session lock ``consumer:label_lineage``, checked
-before every drain.
+before every derivation. The check runs on another connection, so each derivation's
+transaction is also fenced on the ``label_lineage`` cursor row (:func:`drain`).
 
 When a re-derivation changes a leg's inherited summary — including a leg that
 gains its first edges — the leg's interaction is written to
@@ -314,12 +315,16 @@ def derive_and_persist(tx: db.Transaction, trace_id: str, config: Config,
     return changed
 
 
-def _drain_ready(spec: _driver.StreamSpec[ReadyLeg], cursor: int, config: Config) -> int:
+def _drain_ready(spec: _driver.StreamSpec[ReadyLeg], cursor: int, config: Config,
+                 guard: Callable[[], None] | None = None) -> int:
     """The cursor arm: take the leading ready run past *cursor* (holding at the first
     unready leg), derive each trace it touches once, and advance the cursor to the
     run's last leg — one transaction per run."""
     while True:
+        if guard is not None:
+            guard()
         with db.transaction() as tx:
+            _seq, stamp = _driver.read_stamp(tx, spec.processor_name)
             batch = spec.fetch_batch(tx, cursor, spec.batch_size)
         if not batch:
             return cursor
@@ -332,8 +337,10 @@ def _drain_ready(spec: _driver.StreamSpec[ReadyLeg], cursor: int, config: Config
         with db.transaction() as tx:
             # Take every trace lock before queue/derived-row locks, in sorted
             # order, because this cursor transaction can cover several traces.
+            # Then the fence, before anything is read or written.
             for trace_id in traces:
                 lock_trace(tx, trace_id)
+            _driver.advance_from(tx, spec.processor_name, cursor, result.cursor, stamp)
             queued = tx.fetch_all(
                 "SELECT trace_id, generation FROM label_lineage_dirty_traces WHERE trace_id = ANY(%s)",
                 (traces,),
@@ -344,7 +351,6 @@ def _drain_ready(spec: _driver.StreamSpec[ReadyLeg], cursor: int, config: Config
             for trace_id in traces:
                 derive_and_persist(tx, trace_id, config, corrections)
             store.queue(tx, corrections)     # sorted, at the end: queue rows in one order
-            _driver.advance_cursor(tx, spec.processor_name, result.cursor)
         _ack_dirty(queued)
         cursor = result.cursor
         if len(result.delivered) < len(batch) or len(batch) < spec.batch_size:
@@ -369,15 +375,15 @@ SELECT i.trace_id
 """
 
 
-def _redrive_stale(cursor: int, config: Config, limit: int = _DRAIN_BATCH) -> int:
+def _redrive_stale(cursor: int, config: Config, limit: int = _DRAIN_BATCH,
+                   guard: Callable[[], None] | None = None) -> int:
     """The stale arm: re-derive every trace holding a leg at or below *cursor*
     whose label row no longer matches it. Never moves the cursor (the oldest
     offending leg first, so a sticky trace cannot starve the rest)."""
     with db.transaction() as tx:
         traces = [r[0] for r in tx.fetch_all(_STALE_SQL, (cursor, config.matcher, limit))]
     for trace_id in traces:
-        with db.transaction() as tx:
-            derive_and_persist(tx, trace_id, config)
+        _derive_fenced(cursor, trace_id, config, guard)
     if traces:
         log.info("label-lineage re-derived %d trace(s) whose legs changed under the cursor", len(traces))
     return len(traces)
@@ -396,7 +402,22 @@ def _ack_dirty(queued: list[tuple]) -> None:
         tx.execute("SELECT pg_notify(%s, '')", (NOTIFY_CHANNEL,))
 
 
-def _redrive_dirty(config: Config, limit: int = _DRAIN_BATCH) -> int:
+def _derive_fenced(cursor: int, trace_id: str, config: Config, guard: Callable[[], None] | None) -> None:
+    """One derivation of the correction or stale arm: the guard, the cursor row's stamp,
+    then the derivation in a transaction that takes the trace lock, restamps the row at
+    *cursor*, and only then reads or writes."""
+    if guard is not None:
+        guard()
+    with db.transaction() as tx:
+        _seq, stamp = _driver.read_stamp(tx, PROCESSOR_NAME)
+    with db.transaction() as tx:
+        lock_trace(tx, trace_id)
+        _driver.advance_from(tx, PROCESSOR_NAME, cursor, cursor, stamp)
+        derive_and_persist(tx, trace_id, config)
+
+
+def _redrive_dirty(cursor: int, config: Config, limit: int = _DRAIN_BATCH,
+                   guard: Callable[[], None] | None = None) -> int:
     """The correction arm: derive every queued trace again, oldest generation first,
     reading the queue again until it is empty or *limit* derivations are spent (a
     derivation here may queue another; the rest waits for the next wake)."""
@@ -410,8 +431,7 @@ def _redrive_dirty(config: Config, limit: int = _DRAIN_BATCH) -> int:
         if not queued:
             break
         for trace_id, generation in queued:
-            with db.transaction() as tx:
-                derive_and_persist(tx, trace_id, config)
+            _derive_fenced(cursor, trace_id, config, guard)
             _ack_dirty([(trace_id, generation)])
         done += len(queued)
     if done:
@@ -437,25 +457,34 @@ def read_cursor(tx: db.Transaction) -> int:
     return _driver.read_cursor(tx, PROCESSOR_NAME)
 
 
-def drain(cursor: int, config: Config | None = None) -> int:
+def drain(cursor: int, config: Config | None = None, guard: Callable[[], None] | None = None) -> int:
     """One wake: the cursor arm, correction replay, then the stale arm.
-    Returns the new cursor."""
+    Returns the new cursor.
+
+    *guard*, when given, runs before each cursor batch and before every other
+    derivation, and ends the drain by raising. It runs on another connection, so it
+    cannot fence a write: each derivation's transaction, once it holds its trace locks
+    and before it reads or writes anything, restamps the cursor row from the seq
+    *cursor* and the stamp read before the derivation
+    (:func:`~data_governance.processors._driver.advance_from`; only the cursor arm
+    moves the seq). If the row was written meanwhile, the derivation rolls
+    back whole, its queue entry stays, and the drain raises
+    :class:`~data_governance.db.LockLost`. So *cursor* must be the row's."""
     config = config or configured()
-    cursor = _drain_ready(_spec(), cursor, config)
-    _redrive_dirty(config)
-    _redrive_stale(cursor, config)
+    cursor = _drain_ready(_spec(), cursor, config, guard)
+    _redrive_dirty(cursor, config, guard=guard)
+    _redrive_stale(cursor, config, guard=guard)
     return cursor
 
 
 def run(stop_event: threading.Event, dsn: str, config: Config | None = None,
         guard: Callable[[], None] | None = None) -> None:
-    """Wake-driven drain over ``interaction_legs`` until *stop_event* is set; *guard*,
-    when given, runs before every drain (the entry point's sole-consumer lock check)."""
+    """Wake-driven drain over ``interaction_legs`` until *stop_event* is set; *guard*
+    (the entry point's sole-consumer lock check) runs as :func:`drain` says, so at
+    every wake and before every derivation."""
     config = config or configured()
 
     def drain_once(spec: _driver.StreamSpec[ReadyLeg], cursor: int) -> int:
-        if guard is not None:
-            guard()
-        return drain(cursor, config)
+        return drain(cursor, config, guard)
 
     _driver.run(_spec(), stop_event, dsn, drain_fn=drain_once)

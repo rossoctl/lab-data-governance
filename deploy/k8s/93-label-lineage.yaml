@@ -21,7 +21,8 @@
 # surge for the same single-cursor reason as 90-data-lineage.yaml. maxSurge: 0
 # does not stop an evicted pod overlapping its replacement, so the processor holds
 # a session lock (consumer:label_lineage) and a second pod waits for it rather than
-# deriving beside it (exit 5 if the lock's session is lost). With
+# deriving beside it (exit 5 if the lock's session is lost, or if anything else
+# wrote the processor's cursor row meanwhile). With
 # LABEL_CROSS_CONVERSATION on that is what keeps a correction from being missed: a
 # derivation reads what other conversations registered and queues the ones a change
 # bears on, which assumes no other worker derives meanwhile.

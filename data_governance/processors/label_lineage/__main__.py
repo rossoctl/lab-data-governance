@@ -77,8 +77,10 @@ def main() -> int:
     # worker derives meanwhile (one could read the occurrences before this one commits a
     # change and miss its correction for good). maxSurge: 0 does not stop an evicted or
     # still-exiting pod from overlapping its replacement; the replacement waits here
-    # until the old process's connection closes. The lock's session is checked before
-    # every drain: if it died, run() raises db.LockLost and the process exits 5.
+    # until the old process's connection closes. The lock's session is checked at every
+    # wake and before every derivation, and every derivation is fenced on the cursor
+    # row: if the session died, or another worker wrote the row, run() raises
+    # db.LockLost and the process exits 5.
     log.info("waiting for the sole-consumer lock %r", driver.PROCESSOR_NAME)
     try:
         with db.session_lock(f"consumer:{driver.PROCESSOR_NAME}", dsn, stop=stop_event) as lock:
