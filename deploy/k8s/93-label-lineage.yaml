@@ -170,7 +170,9 @@ spec:
             # (a comma list of the classifier's label types, the TAG column of
             # its tag table; default the person identifiers) tune it. Anything
             # invalid, an unknown label type or a retention past the last date
-            # included, exits 2, whether the switch is on or off. Three limits,
+            # included, exits 2, whether the switch is on or off; so does a
+            # leftover LABEL_CROSS_COMMON_LIMIT (the common-value rule is gone:
+            # remove the setting). Three limits,
             # each unset = no limit (no number can be reasoned to without
             # traffic): LABEL_CROSS_HOLDINGS_PER_ENTITY, LABEL_CROSS_PAYLOAD_BYTES,
             # LABEL_CROSS_CANDIDATES_PER_PAYLOAD; a leg a limit cuts is marked

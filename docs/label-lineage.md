@@ -131,6 +131,8 @@ the file lacks cannot be made an anchor. With it on, at each leg in wire order:
    back" means no conversation is derived because the switch changed.
    A row keeps the interval it was registered with: a changed `LABEL_CROSS_RETENTION_SECONDS`
    applies to values registered after the change, and to a conversation derived again after it.
+   `LABEL_CROSS_EDGES_PER_VALUE` and the three limits are the same: a changed value applies to
+   conversations derived after the change, and none is derived because a setting changed.
 
 A derivation loads only the occurrences of its persistent senders, from other conversations, valid in
 its time window, whose value is in a payload they send. Whose conversation an occurrence is, is read
@@ -159,7 +161,8 @@ interactions that moved to another trace) queues, in its own transaction and thr
 `dg_queue_label_trace`, every other conversation with a leg the entity sent strictly inside that
 occurrence's interval (`label_sends`); the dirty arm derives them again, re-reading the queue until it is
 empty or a batch is spent. Everything a match at such a leg reads from other conversations is the
-entity's occurrences valid at its time, so this is exactly the set of legs whose result can change, and
+entity's occurrences valid at its time, so every leg whose result can change is in that set (the payload
+is not looked at, so a leg that does not hold the changed value is derived again too, with no change), and
 the final rows do not depend on which conversation was derived first. A conversation is queued at most
 once at a time (the queue's key), and a changed summary or level reaches the decision through
 `risk_recompute_requests` as a new version. The correction runs with the switch off too: a derivation

@@ -281,8 +281,9 @@ def affected(tx: db.Transaction, trace_id: str, before: set[tuple]) -> list[str]
     one with a leg sent by the entity of an occurrence that was added, removed or
     changed (*before* against the rows now), strictly inside that occurrence's
     interval (R1). Everything a match at such a leg reads from other conversations is
-    the entity's occurrences valid at its time, so this is every leg whose result can
-    differ, and no other. An unchanged derivation changes none."""
+    the entity's occurrences valid at its time, so every leg whose result can differ is
+    among them. The payload is not looked at: a leg sent inside the interval is taken
+    whether or not it holds the changed value. An unchanged derivation changes none."""
     changed = before ^ occurrences(tx, trace_id)
     if not changed:
         return []
