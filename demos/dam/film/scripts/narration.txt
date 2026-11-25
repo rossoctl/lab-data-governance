@@ -1,0 +1,59 @@
+title|DAM runs AI agents for the long haul.
+arch|Each agent works in its own secure micro-VM, and everything it does goes through a gateway that holds its credentials and enforces its owner's network rules.
+arch|Sentry builds on that gateway and takes control down to a finer grain: which tool an agent may use, {pause=0.3} and what type of data may leave with it.
+home|We start with a clean DAM. Only Dammy, its built-in assistant, is here. {hold=0.5}
+create|We create a new agent, issue-triage, to help its owner keep track of GitHub issues.
+describe|We give it this description.
+describe|Issue triage assistant. Reads and summarizes open issues in the S and P team demo repositories, so the owner can prioritize them. It reports on issues, and never changes repositories or issues.
+connect|Then we connect it to GitHub, through DAM's github-mcp connection.
+connect|The connection holds a personal access token. The gateway attaches it to each call, so the agent itself never sees it.
+nosec|Before we add Sentry, let's see what the agent can do.
+s0list|We ask it to list the open issues in our two demo repositories. {hold=3.8}
+s0list|It calls three tools, and finds two repositories, each with a single issue.
+s0list|demo-public is a public repository, and demo-private is private, but the personal access token can reach both. {hold=1}
+s0close|Now, let's ask it to close issue number one in demo-public. {hold=1.3}
+s0close|The agent complies. It uses two more tools, and the issue is closed. That is not in line with the agent's description, and probably should have been rejected. {hold=1}
+s0search|Next, we ask it to search the issues for a customer's name and social security number. We use fictitious data for the sake of this demo, but as far as the agent is concerned, it is personal data.
+s0search|The search goes out to GitHub, personal data and all. {hold=1}
+plug|This is where Sentry comes in.
+plug|Sentry has two components: aiac, automated access control management, and dg, data governance.
+plug|Sentry plugs into DAM's gateway through a new policy enforcement point.
+plug|Each tool call is checked there, before the agent's token is attached.
+s1config|Now, let's turn on the automated access control management feature. In the agent's network access settings, we leave data governance off for now, and turn on MCP policy enforcement.
+s1config|The gateway restarts, with the policy check in place.
+aiac|aiac's onboarding process reads the agent's description and automatically writes its policy to conform with the agent's intent.
+aiac|Three tools are allowed: issue read, list issues, and search issues. The other forty-three are denied.
+aiac|Here is the policy aiac generated, in Rego, running in OPA. {hold=2}
+s1close|Now, let's see what happens when we ask the agent to close issue number one again. {hold=0.3}
+s1close|This time, the call is denied.
+s1close|The reason quotes the policy, and the owner's own words: the agent reports on issues, and never changes them. {hold=1.5}
+s1comment|What about adding a comment to the issue, asking the reporter which browser they use? {hold=2.9}
+s1comment|Denied as well: a comment is a change too. {hold=1}
+s1search|And the search with the customer's name and social security number, word for word as before? {hold=2.3}
+s1search|Searching is a legitimate tool for this agent, so the call is allowed, and the personal data still goes out.
+s1search|Keeping data in its place is a job for data governance. {hold=0.8}
+desc|Now, the owner decides the agent should ask reporters for missing details.
+desc|They edit the last sentence of its description: it may comment on an issue to ask the reporter for missing details, but it never closes issues. {hold=0.1}
+desc|aiac sees the change, and rewrites the policy. Adding an issue comment is now allowed. {hold=1.5}
+s2comment|Now, when we ask for the same comment, asking the reporter which browser they use, {hold=2.7}
+s2comment|this time, the comment is posted. {hold=1}
+s2close|And closing the issue, once more? {hold=3.1}
+s2close|Still denied. The reason is taken from the agent's description, which clearly states that it never closes issues. {hold=1.5}
+dg|Finally, we turn on data governance.
+dg|Now each call is also checked for the data it carries. {hold=1}
+s3search|Same search, same agent: the customer's name and social security number, word for word. {hold=2.0}
+s3search|This time, the call is blocked.
+s3search|The reason given: company policy states that personal and restricted data must not be sent to an untrusted external destination, and this request carries a person's name and a government ID. {hold=2}
+dgpol|Behind that reason is dg's rule DG-001, from company policy.
+dgpol|dg classified the name and the social security number in the query as personal data.
+dgpol|The rule is compiled to Rego and runs in OPA: personal data, sent to an untrusted external destination, means block. {hold=1}
+dgpol|So Sentry blocks the call before it leaves. {hold=1.5}
+s3list|And listing the open issues, just as at the start? {hold=5.0}
+s3list|Still works, as it should. {hold=1}
+summary|Here is every decision, side by side.
+summary|With no Sentry, every call goes through.
+summary|With aiac, the agent gets only the tools its description grants. Listing and searching are allowed; closing and commenting are denied, until the owner allows commenting.
+summary|With dg added, the search carrying personal data is blocked as well, while reading still works. {hold=2}
+close|In this demo, we have shown some of Sentry's capabilities integrated into DAM, including automated access control management, and classification-based data governance.
+close|DAM with granular security: control every tool call, and every piece of data.
+close|Sentry, on DAM.

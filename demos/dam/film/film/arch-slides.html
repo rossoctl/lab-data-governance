@@ -1,0 +1,144 @@
+<!doctype html><html><head><meta charset="utf-8"><style>
+@font-face { font-family: "Fira Sans"; font-weight: 400; src: url(../overlays/fonts/FiraSans-Regular.ttf); }
+@font-face { font-family: "Fira Sans"; font-weight: 500; src: url(../overlays/fonts/FiraSans-Medium.ttf); }
+@font-face { font-family: "Fira Sans"; font-weight: 600; src: url(../overlays/fonts/FiraSans-SemiBold.ttf); }
+@font-face { font-family: "Fira Sans"; font-weight: 700; src: url(../overlays/fonts/FiraSans-Bold.ttf); }
+@font-face { font-family: "Fira Sans"; font-weight: 800; src: url(../overlays/fonts/FiraSans-ExtraBold.ttf); }
+@font-face { font-family: "Fira Mono"; font-weight: 400; src: url(../overlays/fonts/FiraMono-Regular.ttf); }
+@font-face { font-family: "Fira Mono"; font-weight: 500; src: url(../overlays/fonts/FiraMono-Medium.ttf); }
+
+/* The pitch film's system (Sentry pitch, film.html), extended for a recorded UI, an architecture
+   diagram whose paths light up stage by stage, and side bubbles (tools, generated Rego). */
+:root {
+  --ink: #0b1d22;
+  --cream: #f6e7c8;
+  --gold: #e9c46a;
+  --blue: #6fb6ff;
+  --red: #ef6351;
+  --green: #5cc98a;
+  --muted: #a9b8b9;
+  --dam: #8fb3c9;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { width: 1920px; height: 1080px; overflow: hidden; background: #000; }
+body { font-family: "Fira Sans", sans-serif; color: var(--cream); }
+
+#stage { position: absolute; inset: 0; overflow: hidden; background: var(--ink); }
+.scene { position: absolute; inset: 0; opacity: 0; }
+.bg { position: absolute; inset: 0; background-size: cover; background-position: center; background-repeat: no-repeat; }
+.dim { position: absolute; inset: 0; background: #06121a; opacity: 0; }
+.el { position: absolute; opacity: 0; }
+
+.chip {
+  font-weight: 700; font-size: 30px; padding: 12px 28px 12px 18px; border-radius: 999px;
+  border: 2px solid var(--gold); background: rgba(11, 29, 34, .88); display: flex; align-items: center; gap: 14px;
+  white-space: nowrap;
+}
+.chip .n { min-width: 40px; height: 40px; padding: 0 10px; border-radius: 999px; background: var(--red); color: #fff;
+  font-size: 20px; display: grid; place-items: center; }
+.chip .n.aiac { background: #7b5cd6; }
+.chip .n.dg { background: #c9862b; }
+.chip .n.none { background: #546b72; }
+.tag { font-family: "Fira Mono"; font-size: 17px; letter-spacing: .14em; text-transform: uppercase; }
+.box {
+  border-radius: 22px; border: 2px solid var(--gold); background: rgba(11, 29, 34, .9);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, .45);
+}
+.callout {
+  white-space: nowrap; font-weight: 700; font-size: 30px; padding: 12px 22px; border-radius: 12px; color: #1b1405; background: var(--gold);
+  box-shadow: 0 14px 40px rgba(0, 0, 0, .45); line-height: 1.15;
+}
+.callout small { display: block; font-weight: 500; font-size: 19px; }
+.callout.red { background: var(--red); color: #fff; }
+.stamp {
+  font-weight: 800; font-size: 76px; letter-spacing: .06em; padding: 2px 34px; border: 9px solid currentColor;
+  border-radius: 20px; background: rgba(11, 29, 34, .55); white-space: nowrap; line-height: 1.1;
+}
+.stamp small { display: block; font-size: 26px; letter-spacing: .12em; font-weight: 700; text-align: center; padding-bottom: 6px; }
+.stamp.block { color: var(--red); }
+.stamp.allow { color: var(--green); }
+.stamp.warn { color: #f2b25c; }
+
+.caption {
+  left: 0; right: 0; text-align: center; bottom: 64px; font-weight: 700; font-size: 44px; color: var(--cream);
+  text-shadow: 0 3px 18px rgba(0, 0, 0, .85), 0 0 2px rgba(0, 0, 0, .9); white-space: nowrap;
+}
+.caption small { display: block; font-weight: 500; font-size: 28px; color: #e7dcc4; margin-top: 6px; }
+.pills { left: 48px; bottom: 34px; display: flex; gap: 10px; }
+.pill { font-family: "Fira Mono"; font-size: 17px; padding: 7px 14px; border-radius: 999px; border: 1.5px solid rgba(246, 231, 200, .35);
+  color: rgba(246, 231, 200, .55); background: rgba(11, 29, 34, .6); }
+.pill.on { color: var(--ink); background: var(--cream); border-color: var(--cream); font-weight: 500; }
+
+/* ---- the recorded DAM UI ---- */
+#ui-frame { position: absolute; left: 48px; top: 112px; width: 1280px; height: 720px; overflow: hidden;
+  border-radius: 14px; border: 2px solid var(--gold); box-shadow: 0 24px 60px rgba(0, 0, 0, .55); background: #fff; }
+#cam { position: absolute; left: 0; top: 0; width: 1920px; height: 1080px; transform-origin: 0 0; }
+#vid { width: 1920px; height: 1080px; display: block; }
+.ff { right: 16px; top: 14px; font-family: "Fira Mono"; font-weight: 500; font-size: 22px; padding: 6px 14px; border-radius: 10px;
+  background: rgba(11, 29, 34, .82); color: var(--gold); border: 1.5px solid var(--gold); }
+#ui-head { left: 48px; top: 34px; display: flex; gap: 16px; align-items: center; }
+#ui-head .what { font-size: 26px; font-weight: 600; color: var(--cream); }
+#panel { left: 1360px; top: 112px; width: 512px; display: flex; flex-direction: column; gap: 16px; }
+
+.bubble { padding: 20px 22px; border-radius: 18px; border: 2px solid var(--gold); background: rgba(11, 29, 34, .94);
+  box-shadow: 0 20px 50px rgba(0, 0, 0, .45); }
+.bubble .tag { color: var(--gold); margin-bottom: 10px; display: block; }
+.bubble .tag.aiac { color: #b3a2ff; }
+.bubble .tag.dg { color: #f0b45c; }
+.tools { display: flex; flex-direction: column; gap: 6px; font-family: "Fira Mono"; font-size: 21px; }
+.tools .t { display: flex; align-items: center; gap: 10px; }
+.tools .t::before { content: ""; width: 12px; height: 12px; border-radius: 50%; flex: none; }
+.tools .t.ok { color: #c9f0d6; } .tools .t.ok::before { background: var(--green); }
+.tools .t.no { color: #ffd2cb; } .tools .t.no::before { background: var(--red); }
+.tools .more { color: var(--muted); font-size: 18px; padding-left: 22px; }
+.tools .sum { margin-top: 8px; font-family: "Fira Sans"; font-size: 22px; color: var(--cream); }
+pre.rego { font-family: "Fira Mono"; font-size: 16.5px; line-height: 1.42; color: #d9e4e6; white-space: pre; overflow: hidden; }
+pre.rego .c { color: #7f9497; } pre.rego .k { color: #b3a2ff; } pre.rego .s { color: #c9f0d6; } pre.rego .d { color: #ffd2cb; }
+pre.rego .hl { background: rgba(92, 201, 138, .22); border-radius: 4px; box-shadow: 0 0 0 2px rgba(92, 201, 138, .5); }
+.reason { font-size: 22px; line-height: 1.38; color: var(--cream); }
+.reason b { color: var(--gold); font-weight: 600; }
+
+/* ---- architecture ---- */
+.arch text { font-family: "Fira Sans"; fill: var(--cream); }
+.arch .node rect { fill: rgba(11, 29, 34, .92); stroke: rgba(246, 231, 200, .45); stroke-width: 2; }
+.arch .node.dam rect { stroke: var(--dam); }
+.arch .node.sentry rect { stroke: var(--gold); }
+.arch .node.new rect { stroke: var(--gold); stroke-dasharray: 10 7; }
+.arch .label { font-weight: 700; font-size: 26px; }
+.arch .sub { font-size: 18px; fill: var(--muted); }
+.arch .newtag rect { fill: var(--gold); stroke: none; }
+.arch .newtag text { font-family: "Fira Mono"; font-size: 14px; letter-spacing: .12em; fill: #1b1405; font-weight: 500; }
+.arch .wire { fill: none; stroke: rgba(246, 231, 200, .22); stroke-width: 4; }
+.arch .wire.cfg { stroke: var(--gold); stroke-dasharray: 10 8; stroke-width: 3; }
+.arch .lit { fill: none; stroke: #ffd36a; stroke-width: 6; stroke-linecap: round; filter: url(#glow); }
+.arch .arrowhead { fill: rgba(246, 231, 200, .3); }
+.arch .tok { fill: #ffd36a; filter: url(#glow); }
+.arch-big { left: 160px; top: 150px; width: 1600px; height: 760px; }
+.arch-mini { width: 512px; height: 243px; }
+
+.card-title { font-weight: 800; font-size: 96px; text-align: center; letter-spacing: -.01em; }
+.card-sub { font-size: 34px; color: var(--muted); text-align: center; margin-top: 14px; }
+.duo { display: flex; gap: 28px; justify-content: center; margin-top: 44px; }
+.duo .bubble { width: 520px; }
+.duo h3 { font-size: 34px; font-weight: 700; margin-top: 6px; }
+.duo p { font-size: 23px; color: #d4dcd9; margin-top: 8px; line-height: 1.35; }
+</style>
+<style>.slide { position:absolute; inset:0; background: radial-gradient(1400px 900px at 40% 40%, #12303a 0%, #0b1d22 60%, #071419 100%); }
+.slide .arch-big { opacity:1; top:130px !important; } .slide h1 { position:absolute; left:80px; top:44px; font-size:52px; font-weight:800; }
+.slide .key { position:absolute; left:80px; bottom:48px; display:flex; gap:28px; font-size:24px; color:var(--muted); }
+.slide .key b { color: var(--cream); }</style></head>
+<body><div class="slide"><h1 id="h"></h1><div class="arch-big" id="a" style="position:absolute"></div>
+<div class="key"><span><b style="color:#ffd36a">━</b> the call's path</span><span><b style="color:#8fb3c9">▢</b> DAM</span><span><b style="color:#e9c46a">┅</b> new in DAM, and how Sentry is configured</span><span><b style="color:#e9c46a">▢</b> Sentry</span></div></div>
+<script src="arch.js"></script>
+<script>
+const a = Arch.mount(document.getElementById("a"));
+const ALL = ["agent","rules","pep","creds","github","ctrl","sentry","aiac","dg","owner","api","kc","records","model","llm"];
+const show = (o) => Object.fromEntries(ALL.map((n) => [n, o[n] ?? 1]));
+const STATES = {
+  0: ["Stage 0 · DAM today, no Sentry", { show: show({ pep: 0.08, sentry: 0.08, aiac: 0.08, dg: 0.08, llm: 0.25 }), adds: 0.08, wire: { w5: 0.08, w6: 0.08, w7: 0.08, wc: 0.08, wd: 0.08, wl: 0.08 }, lit: { w1: 1, w2: 1, w3: 1, w4: 1 } }],
+  1: ["Stage 1 · aiac: each tool call checked against the agent's policy", { show: show({ dg: 0.22 }), wire: { w7: 0.18 }, lit: { w1: 1, w2: 1, w3: 1, w4: 1, w5: 1, w6: 1, wc: 1 } }],
+  2: ["Stage 2 · aiac + dg: tool and data are both checked", { show: show({}), lit: { w1: 1, w2: 1, w3: 1, w4: 1, w5: 1, w6: 1, w7: 1, wc: 1 } }],
+};
+window.show = (k) => { document.getElementById("h").textContent = STATES[k][0]; a.set(STATES[k][1]); };
+document.fonts.ready.then(() => { window.show(0); window.ready = true; });
+</script></body></html>

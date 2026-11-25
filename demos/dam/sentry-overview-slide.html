@@ -1,0 +1,154 @@
+<title>Sentry Overview Slide</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fira+Mono:wght@400;500&family=Fira+Sans:wght@400;500;600;700;800&display=swap">
+<style>
+/* Single dark look, matching the Sentry on DAM film. */
+:root {
+  color-scheme: dark;
+  --ground: #071419;
+  --ink: #0b1d22;
+  --card: #0f262c;
+  --cream: #f6e7c8;
+  --text: #d4dcd9;
+  --muted: #93a6a8;
+  --line: rgba(246, 231, 200, .16);
+  --gold: #e9c46a;
+  --aiac: #b3a2ff;
+  --aiac-deep: #7b5cd6;
+  --dg: #f0b45c;
+  --dg-deep: #c9862b;
+  --deny: #ef6351;
+  --ok: #5cc98a;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; min-height: 100vh; background: var(--ground); color: var(--text);
+  font-family: "Fira Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  display: grid; place-items: center;
+  padding-block: 16px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+
+/* A 16:9 slide that scales with the window; type is sized in container units. */
+.slide {
+  container-type: inline-size;
+  width: min(100%, calc((100vh - 32px) * 16 / 9));
+  aspect-ratio: 16 / 9;
+  background: radial-gradient(120% 90% at 25% 15%, #12303a 0%, var(--ink) 55%, var(--ground) 100%);
+  border: 1px solid var(--line); border-radius: 14px; overflow: hidden;
+}
+.in { height: 100%; display: flex; flex-direction: column; gap: 2.2cqw; padding: 3.4cqw 4cqw 2.6cqw; }
+
+.kicker { font-family: "Fira Mono", ui-monospace, monospace; font-size: 1cqw; letter-spacing: .16em; text-transform: uppercase; color: var(--gold); }
+h1 { margin: .5cqw 0 0; font-weight: 800; font-size: 3.5cqw; line-height: 1.05; color: var(--cream); letter-spacing: -.01em; text-wrap: balance; }
+.lede { margin: .8cqw 0 0; font-size: 1.45cqw; color: var(--muted); }
+
+.cols { flex: 1; display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 2.2cqw; min-height: 0; }
+.comp { display: flex; flex-direction: column; gap: 1.1cqw; min-width: 0; }
+.comp-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: .4cqw 1cqw; padding-bottom: .9cqw; border-bottom: 2px solid var(--c); }
+.badge { font-family: "Fira Mono", ui-monospace, monospace; font-weight: 500; font-size: 1.5cqw; color: #fff; background: var(--cd); padding: .2cqw .9cqw; border-radius: .6cqw; }
+.comp-head h2 { margin: 0; font-size: 1.85cqw; white-space: nowrap; font-weight: 700; color: var(--cream); }
+.comp-head .q { flex-basis: 100%; font-size: 1.2cqw; color: var(--c); font-weight: 500; white-space: nowrap; }
+.aiac { --c: var(--aiac); --cd: var(--aiac-deep); }
+.dg   { --c: var(--dg);   --cd: var(--dg-deep); }
+
+.cards { flex: 1; display: grid; grid-template-rows: 1fr 1fr; gap: 1.1cqw; min-height: 0; }
+.card {
+  display: grid; grid-template-columns: minmax(0,1fr) auto; grid-template-rows: auto auto 1fr; column-gap: 1.2cqw;
+  background: var(--card); border: 2px solid color-mix(in srgb, var(--c) 55%, transparent); border-radius: 1.1cqw;
+  padding: 1.3cqw 1.5cqw; min-width: 0;
+}
+.card.later { background: transparent; border-style: dashed; border-color: color-mix(in srgb, var(--c) 40%, transparent); }
+.card h3 { margin: 0; font-size: 1.75cqw; font-weight: 700; color: var(--cream); }
+.card .what { grid-column: 1 / -1; margin: .35cqw 0 0; font-size: 1.3cqw; color: var(--text); }
+.card .eg {
+  grid-column: 1 / -1; align-self: end; margin-top: .9cqw; padding: .8cqw 1cqw; border-radius: .7cqw;
+  background: rgba(0, 0, 0, .22); font-size: 1.18cqw; line-height: 1.4; color: var(--text);
+}
+.card.later .eg { background: none; padding-left: 0; color: var(--muted); }
+.eg .q { color: var(--cream); font-style: italic; }
+.eg code { font-family: "Fira Mono", ui-monospace, monospace; font-size: .95em; color: var(--cream); }
+.eg .no { color: var(--deny); font-weight: 600; }
+.eg .yes { color: var(--ok); font-weight: 600; }
+
+.demo {
+  align-self: start; font-family: "Fira Mono", ui-monospace, monospace; font-size: .95cqw; letter-spacing: .06em;
+  text-transform: uppercase; white-space: nowrap; padding: .35cqw .8cqw; border-radius: 99px;
+  color: var(--ground); background: var(--cream);
+}
+.demo.d1 { background: #8fb3c9; }
+.demo.none { background: none; color: var(--muted); border: 1.5px dashed var(--muted); }
+
+.foot { display: flex; flex-wrap: wrap; gap: .6cqw 2.4cqw; align-items: center; font-size: 1.1cqw; color: var(--muted); border-top: 1px solid var(--line); padding-top: 1.2cqw; }
+.foot b { color: var(--cream); font-weight: 600; }
+.foot .k { display: inline-flex; align-items: center; gap: .6cqw; }
+.foot .demo { font-size: .85cqw; }
+
+/* Phone width: drop the fixed 16:9 frame and stack. */
+@media (max-width: 760px) {
+  .slide { aspect-ratio: auto; width: 100%; container-type: normal; }
+  .in { padding: 22px 18px; gap: 18px; }
+  .kicker { font-size: 11px; } h1 { font-size: 26px; } .lede { font-size: 15px; }
+  .cols { grid-template-columns: minmax(0,1fr); gap: 26px; }
+  .cols, .cards { flex: none; } .cards { grid-template-rows: auto; } .card .eg { align-self: start; }
+  .comp { gap: 12px; } .comp-head { flex-wrap: wrap; gap: 8px; padding-bottom: 10px; }
+  .badge { font-size: 15px; padding: 2px 8px; border-radius: 6px; } .comp-head h2 { font-size: 18px; white-space: normal; } .comp-head .q { font-size: 13px; margin-left: 0; width: 100%; }
+  .cards { gap: 12px; } .card { padding: 14px; border-radius: 12px; column-gap: 10px; }
+  .card h3 { font-size: 17px; } .card .what { font-size: 14px; margin-top: 4px; } .card .eg { font-size: 13.5px; margin-top: 10px; padding: 10px; border-radius: 8px; }
+  .demo { font-size: 10px; padding: 3px 8px; } .foot { font-size: 12.5px; gap: 8px 16px; padding-top: 12px; } .foot .demo { font-size: 10px; }
+}
+</style>
+
+<main class="slide" aria-label="Sentry overview">
+  <div class="in">
+    <header>
+      <div class="kicker">Sentry · granular security for agents proposed for DAM</div>
+      <h1>Control every tool call, and every piece of data</h1>
+      <p class="lede">Sentry has two components. Each turns policy into Rego, decided in OPA on every tool call the agent makes.</p>
+    </header>
+
+    <div class="cols">
+      <section class="comp aiac">
+        <div class="comp-head"><span class="badge">aiac</span><h2>Automated access control management</h2><span class="q">Which tools may run?</span></div>
+        <div class="cards">
+          <article class="card">
+            <h3>Intent-based</h3><span class="demo">Demo 2</span>
+            <p class="what">The agent's tools follow its own description.</p>
+            <div class="eg">Issue-triage agent, <span class="q">“…it never closes issues.”</span><br>
+              Close issue <span class="no">denied</span> · comment <span class="yes">allowed</span> once the description permits it</div>
+          </article>
+          <article class="card">
+            <h3>Role-based (RBAC)</h3><span class="demo d1">Demo 1</span>
+            <p class="what">The role of the person prompting decides.</p>
+            <div class="eg">Same agent, same prompt: <span class="q">“Fix the typo in README.md and commit it.”</span><br>
+              Developer: commit <span class="yes">allowed</span> · Reviewer: <code>write_file</code> <span class="no">blocked</span></div>
+          </article>
+        </div>
+      </section>
+
+      <section class="comp dg">
+        <div class="comp-head"><span class="badge">dg</span><h2>Data governance</h2><span class="q">Which data may leave?</span></div>
+        <div class="cards">
+          <article class="card">
+            <h3>Classification-based enforcement</h3><span class="demo">Demo 2</span>
+            <p class="what">The data is classified; company policy decides where it may go.</p>
+            <div class="eg">Name and social security number, classified <code>PII</code><br>
+              Search sent to GitHub <span class="no">blocked</span> by rule DG-001, as an untrusted destination</div>
+          </article>
+          <article class="card later">
+            <h3>Data lineage</h3><span class="demo none">Not in demos</span>
+            <p class="what">Tracks where data came from and where it flows, across the agent's steps.</p>
+            <div class="eg">Not shown today.</div>
+          </article>
+        </div>
+      </section>
+    </div>
+
+    <footer class="foot">
+      <span class="k"><span class="demo d1">Demo 1</span><b>Software Developer Plus</b> dev vs. reviewer</span>
+      <span class="k"><span class="demo">Demo 2</span><b>Sentry on DAM</b> issue triage, aiac then aiac + dg</span>
+    </footer>
+  </div>
+</main>

@@ -1,0 +1,291 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Sentry on DAM film</title>
+<style>
+@font-face { font-family: "Fira Sans"; font-weight: 400; src: url(../overlays/fonts/FiraSans-Regular.ttf); }
+@font-face { font-family: "Fira Sans"; font-weight: 500; src: url(../overlays/fonts/FiraSans-Medium.ttf); }
+@font-face { font-family: "Fira Sans"; font-weight: 600; src: url(../overlays/fonts/FiraSans-SemiBold.ttf); }
+@font-face { font-family: "Fira Sans"; font-weight: 700; src: url(../overlays/fonts/FiraSans-Bold.ttf); }
+@font-face { font-family: "Fira Sans"; font-weight: 800; src: url(../overlays/fonts/FiraSans-ExtraBold.ttf); }
+@font-face { font-family: "Fira Mono"; font-weight: 400; src: url(../overlays/fonts/FiraMono-Regular.ttf); }
+@font-face { font-family: "Fira Mono"; font-weight: 500; src: url(../overlays/fonts/FiraMono-Medium.ttf); }
+
+/* The pitch film's system (Sentry pitch, film.html), extended for a recorded UI, an architecture
+   diagram whose paths light up stage by stage, and side bubbles (tools, generated Rego). */
+:root {
+  --ink: #0b1d22;
+  --cream: #f6e7c8;
+  --gold: #e9c46a;
+  --blue: #6fb6ff;
+  --red: #ef6351;
+  --green: #5cc98a;
+  --muted: #a9b8b9;
+  --dam: #8fb3c9;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { width: 1920px; height: 1080px; overflow: hidden; background: #000; }
+body { font-family: "Fira Sans", sans-serif; color: var(--cream); }
+
+#stage { position: absolute; inset: 0; overflow: hidden; background: var(--ink); }
+.scene { position: absolute; inset: 0; opacity: 0; }
+.bg { position: absolute; inset: 0; background-size: cover; background-position: center; background-repeat: no-repeat; }
+.dim { position: absolute; inset: 0; background: #06121a; opacity: 0; }
+.el { position: absolute; opacity: 0; }
+
+.chip {
+  font-weight: 700; font-size: 30px; padding: 12px 28px 12px 18px; border-radius: 999px;
+  border: 2px solid var(--gold); background: rgba(11, 29, 34, .88); display: flex; align-items: center; gap: 14px;
+  white-space: nowrap;
+}
+.chip .n { min-width: 40px; height: 40px; padding: 0 10px; border-radius: 999px; background: var(--red); color: #fff;
+  font-size: 20px; display: grid; place-items: center; }
+.chip .n.aiac { background: #7b5cd6; }
+.chip .n.dg { background: #c9862b; }
+.chip .n.none { background: #546b72; }
+.tag { font-family: "Fira Mono"; font-size: 17px; letter-spacing: .14em; text-transform: uppercase; }
+.box {
+  border-radius: 22px; border: 2px solid var(--gold); background: rgba(11, 29, 34, .9);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, .45);
+}
+.callout {
+  white-space: nowrap; font-weight: 700; font-size: 30px; padding: 12px 22px; border-radius: 12px; color: #1b1405; background: var(--gold);
+  box-shadow: 0 14px 40px rgba(0, 0, 0, .45); line-height: 1.15;
+}
+.callout small { display: block; font-weight: 500; font-size: 19px; }
+.callout.red { background: var(--red); color: #fff; }
+.stamp {
+  font-weight: 800; font-size: 76px; letter-spacing: .06em; padding: 2px 34px; border: 9px solid currentColor;
+  border-radius: 20px; background: rgba(11, 29, 34, .55); white-space: nowrap; line-height: 1.1;
+}
+.stamp small { display: block; font-size: 26px; letter-spacing: .12em; font-weight: 700; text-align: center; padding-bottom: 6px; }
+.stamp.block { color: var(--red); }
+.stamp.allow { color: var(--green); }
+.stamp.warn { color: #f2b25c; }
+
+.caption {
+  left: 0; right: 0; text-align: center; bottom: 64px; font-weight: 700; font-size: 44px; color: var(--cream);
+  text-shadow: 0 3px 18px rgba(0, 0, 0, .85), 0 0 2px rgba(0, 0, 0, .9); white-space: nowrap;
+}
+.caption small { display: block; font-weight: 500; font-size: 28px; color: #e7dcc4; margin-top: 6px; }
+.pills { right: 96px; top: 34px; display: flex; gap: 10px; }
+.pill { font-family: "Fira Mono"; font-size: 17px; padding: 7px 14px; border-radius: 999px; border: 1.5px solid rgba(246, 231, 200, .35);
+  color: rgba(246, 231, 200, .55); background: rgba(11, 29, 34, .6); }
+.pill.on { color: var(--ink); background: var(--cream); border-color: var(--cream); font-weight: 500; }
+
+/* ---- the recorded DAM UI ---- */
+#ui-frame { position: absolute; left: 96px; top: 96px; width: 1728px; height: 972px; overflow: hidden;
+  border-radius: 14px; border: 2px solid var(--gold); box-shadow: 0 24px 60px rgba(0, 0, 0, .55); background: #fff; }
+#cam { position: absolute; left: 0; top: 0; width: 1920px; height: 1080px; transform-origin: 0 0; }
+#vid { width: 1920px; height: 1080px; display: block; }
+.ff { right: 16px; top: 14px; font-family: "Fira Mono"; font-weight: 500; font-size: 22px; padding: 6px 14px; border-radius: 10px;
+  background: rgba(11, 29, 34, .82); color: var(--gold); border: 1.5px solid var(--gold); }
+#ui-head { left: 96px; top: 18px; display: flex; gap: 16px; align-items: center; }
+#ui-head .what { font-size: 26px; font-weight: 600; color: var(--cream); }
+#panel { left: 1360px; top: 112px; width: 512px; display: flex; flex-direction: column; gap: 16px; }
+
+.bubble { padding: 20px 22px; border-radius: 18px; border: 2px solid var(--gold); background: rgba(11, 29, 34, .94);
+  box-shadow: 0 20px 50px rgba(0, 0, 0, .45); }
+.bubble .tag { color: var(--gold); margin-bottom: 10px; display: block; }
+.bubble .tag.aiac { color: #b3a2ff; }
+.bubble .tag.dg { color: #f0b45c; }
+.tools { display: flex; flex-direction: column; gap: 6px; font-family: "Fira Mono"; font-size: 21px; }
+.tools .t { display: flex; align-items: center; gap: 10px; }
+.tools .t::before { content: ""; width: 12px; height: 12px; border-radius: 50%; flex: none; }
+.tools .t.ok { color: #c9f0d6; } .tools .t.ok::before { background: var(--green); }
+.tools .t.no { color: #ffd2cb; } .tools .t.no::before { background: var(--red); }
+.tools .more { color: var(--muted); font-size: 18px; padding-left: 22px; }
+.tools .sum { margin-top: 8px; font-family: "Fira Sans"; font-size: 22px; color: var(--cream); }
+pre.rego { font-family: "Fira Mono"; font-size: 16.5px; line-height: 1.42; color: #d9e4e6; white-space: pre; overflow: hidden; }
+pre.rego .c { color: #7f9497; } pre.rego .k { color: #b3a2ff; } pre.rego .s { color: #c9f0d6; } pre.rego .d { color: #ffd2cb; }
+pre.rego .hl { background: rgba(92, 201, 138, .22); border-radius: 4px; box-shadow: 0 0 0 2px rgba(92, 201, 138, .5); }
+.reason { font-size: 22px; line-height: 1.38; color: var(--cream); }
+.reason b { color: var(--gold); font-weight: 600; }
+
+/* ---- summary table ---- */
+.sum { width: 100%; border-collapse: separate; border-spacing: 14px 12px; font-size: 26px; }
+.sum th { font-weight: 700; text-align: center; padding: 14px 10px; border-radius: 14px; background: rgba(11, 29, 34, .9); border: 2px solid rgba(246, 231, 200, .3); }
+.sum th small { display: block; font-weight: 500; font-size: 18px; color: var(--muted); margin-top: 4px; }
+.sum th.row { text-align: left; background: none; border: none; font-size: 26px; padding-left: 0; }
+.sum td { text-align: center; padding: 18px 10px; border-radius: 14px; font-weight: 700; border: 2.5px solid currentColor; }
+.sum td.ok { color: var(--green); } .sum td.no { color: var(--red); } .sum td.leak { color: #f2b25c; }
+.sum td.shown.ok { background: rgba(92, 201, 138, .16); } .sum td.shown.no { background: rgba(239, 99, 81, .18); } .sum td.shown.leak { background: rgba(242, 178, 92, .16); }
+.sum td:not(.shown) { border-style: dashed; opacity: .8; }
+.sum td small { display: block; font-weight: 500; font-size: 17px; margin-top: 3px; }
+
+/* ---- architecture ---- */
+.arch text { font-family: "Fira Sans"; fill: var(--cream); }
+.arch .node rect { fill: rgba(11, 29, 34, .92); stroke: rgba(246, 231, 200, .45); stroke-width: 2; }
+.arch .node.dam rect { stroke: var(--dam); }
+.arch .node.sentry rect { stroke: var(--gold); }
+.arch .node.new rect { stroke: var(--gold); stroke-dasharray: 10 7; }
+.arch .label { font-weight: 700; font-size: 26px; }
+.arch .sub { font-size: 18px; fill: var(--muted); }
+.arch .newtag rect { fill: var(--gold); stroke: none; }
+.arch .newtag text { font-family: "Fira Mono"; font-size: 14px; letter-spacing: .12em; fill: #1b1405; font-weight: 500; }
+.arch .wire { fill: none; stroke: rgba(246, 231, 200, .22); stroke-width: 4; }
+.arch .wire.cfg { stroke: var(--gold); stroke-dasharray: 10 8; stroke-width: 3; }
+.arch .lit { fill: none; stroke: #ffd36a; stroke-width: 6; stroke-linecap: round; filter: url(#glow); }
+.arch .arrowhead { fill: rgba(246, 231, 200, .3); }
+.arch .tok { fill: #ffd36a; filter: url(#glow); }
+.arch-big { left: 160px; top: 150px; width: 1600px; height: 760px; }
+.arch-mini { width: 512px; height: 243px; }
+
+.card-title { font-weight: 800; font-size: 96px; text-align: center; letter-spacing: -.01em; }
+.card-sub { font-size: 34px; color: var(--muted); text-align: center; margin-top: 14px; }
+.duo { display: flex; gap: 28px; justify-content: center; margin-top: 44px; }
+.duo .bubble { width: 520px; }
+.duo h3 { font-size: 34px; font-weight: 700; margin-top: 6px; }
+.duo p { font-size: 23px; color: #d4dcd9; margin-top: 8px; line-height: 1.35; }
+</style>
+</head>
+<body>
+<div id="stage">
+
+  <!-- the recorded DAM UI sits under every scene; stills fade in over it -->
+  <section class="scene" id="s-ui">
+    <div class="bg" style="background:radial-gradient(1400px 900px at 30% 40%, #12303a 0%, #0b1d22 60%, #071419 100%)"></div>
+    <div id="ui-frame"><div id="cam"><video id="vid" muted preload="auto" playsinline></video></div>
+      <div class="el ff" id="ff">▶▶ <span id="ff-x">10</span>×</div>
+    </div>
+    <div class="el" id="ui-head"><div class="chip" id="ui-chip"><span class="n none" id="ui-chip-n">0</span><span id="ui-chip-t">No Sentry</span></div><span class="what" id="ui-what"></span></div>
+    <!-- result stamps over the frame -->
+    <div class="el stamp allow" id="st-allow" style="left:140px; top:800px"><small id="st-allow-by">GOES THROUGH</small>ALLOWED</div>
+    <div class="el stamp block" id="st-block" style="left:150px; top:800px"><small id="st-block-by">DENIED BY aiac</small>DENIED</div>
+    <div class="el stamp warn" id="st-warn" style="left:130px; top:800px"><small>PERSONAL DATA LEAVES</small>ALLOWED</div>
+    <!-- side bubbles -->
+    <div class="el bubble" id="b-tools" style="left:120px; top:150px; width:500px">
+      <span class="tag aiac">aiac · tools for issue-triage</span>
+      <div class="tools" id="tools-list"></div>
+    </div>
+    <div class="el bubble" id="b-rego" style="left:120px; top:150px; width:520px; height:440px">
+      <span class="tag aiac">aiac · generated Rego, loaded into OPA</span>
+      <pre class="rego" id="rego"></pre>
+    </div>
+    <div class="el bubble" id="b-reason" style="left:120px; top:150px; width:500px">
+      <span class="tag" id="reason-tag">Reason given</span>
+      <div class="reason" id="reason"></div>
+    </div>
+    <div class="el pills" id="pills">
+      <span class="pill" data-p="0">NO SENTRY</span><span class="pill" data-p="1">aiac</span><span class="pill" data-p="2">aiac + dg</span>
+    </div>
+  </section>
+
+  <section class="scene" id="s-title">
+    <div class="bg" style="background-image:url(../stills/final/d01_citadel.png)"></div>
+    <div class="dim"></div>
+    <div class="el" id="title-card" style="left:96px; top:150px">
+      <div class="tag" style="color:var(--gold)">Sentry · aiac + dg</div>
+      <div style="font-weight:800; font-size:110px; line-height:1; margin-top:14px">Sentry on DAM</div>
+      <div style="font-size:34px; color:#e7dcc4; margin-top:18px; max-width:760px; line-height:1.3">Control down to every tool call and every piece of data, for agents that run for the long haul.</div>
+    </div>
+  </section>
+
+  <section class="scene" id="s-arch">
+    <div class="bg" style="background-image:url(../stills/final/d02_wardens.png)"></div>
+    <div class="dim"></div>
+    <div class="el arch-big" id="arch-big"></div>
+    <div class="el caption" id="arch-cap">DAM's gateway: credentials and the owner's network rules<small>Sentry adds finer grain: which tool, and which data</small></div>
+  </section>
+
+  <section class="scene" id="s-nosec">
+    <div class="bg" style="background-image:url(../stills/final/d03_unchecked.png)"></div>
+    <div class="dim"></div>
+    <div class="el caption" id="nosec-cap">Before Sentry<small>The agent follows its instructions</small></div>
+  </section>
+
+  <section class="scene" id="s-plug">
+    <div class="bg" style="background-image:url(../stills/final/d04_knight_arrives.png)"></div>
+    <div class="dim"></div>
+    <div class="el arch-big" id="arch-plug"></div>
+    <div class="el caption" id="plug-cap" style="bottom:40px">Stage 1 · aiac<small>each tool call checked against the agent's policy</small></div>
+  </section>
+
+  <section class="scene" id="s-aiac">
+    <div class="bg" style="background-image:url(../stills/final/d05_scribe.png)"></div>
+    <div class="dim"></div>
+    <div class="el bubble" id="aiac-desc" style="left:980px; top:150px; width:860px">
+      <span class="tag aiac">The agent's description</span>
+      <div class="reason" style="font-size:27px">Issue triage assistant. Reads and summarizes open issues in the s-and-p-team demo repositories so the owner can prioritize them. <b>It reports on issues and never changes repositories or issues.</b></div>
+    </div>
+    <div class="el bubble" id="aiac-tools" style="left:980px; top:440px; width:420px">
+      <span class="tag aiac">aiac decides · 46 tools</span>
+      <div class="tools" id="tools-big"></div>
+    </div>
+    <div class="el bubble" id="aiac-rego" style="left:1420px; top:440px; width:440px; height:500px">
+      <span class="tag aiac">generated Rego · OPA</span>
+      <pre class="rego" id="rego-big" style="font-size:15px"></pre>
+    </div>
+  </section>
+
+  <section class="scene" id="s-dgarch">
+    <div class="bg" style="background:radial-gradient(1400px 900px at 40% 40%, #12303a 0%, #0b1d22 60%, #071419 100%)"></div>
+    <div class="dim"></div>
+    <div class="el arch-big" id="arch-dg"></div>
+    <div class="el caption" id="dgarch-cap" style="bottom:40px">Stage 2 · aiac + dg<small>the tool and the data are both checked</small></div>
+  </section>
+
+  <section class="scene" id="s-dgpol">
+    <div class="bg" style="background-image:url(../stills/final/d06_knight_stops.png)"></div>
+    <div class="dim"></div>
+    <div class="el bubble" id="dg-policy" style="left:1060px; top:60px; width:820px">
+      <span class="tag dg">dg · company policy · rule DG-001</span>
+      <div class="reason" style="font-size:28px">Personal data and restricted data <b>must not be sent to an untrusted external destination</b> such as api.githubcopilot.com.</div>
+    </div>
+    <div class="el bubble" id="dg-found" style="left:1060px; top:270px; width:820px">
+      <span class="tag dg">dg · found in the search query</span>
+      <div class="reason" style="font-size:26px">The name and the social security number, both <b>classified as personal data</b> (PII).</div>
+    </div>
+    <div class="el bubble" id="dg-rule" style="left:1060px; top:455px; width:820px">
+      <span class="tag dg">dg · the rule, as Rego in OPA</span>
+      <pre class="rego" style="font-size:15.5px; white-space:pre"><span class="c"># dg rule DG-001, compiled to Rego, loaded into OPA (excerpt)</span>
+<span class="k">package</span> data_governance
+
+<span class="k">triggered_rules contains</span> <span class="s">&quot;DG-001&quot;</span> <span class="k">if</span> {
+    some flow in input.flows
+    flow.event_type == &quot;external_sharing&quot;
+    some _DG_001_item_0 in flow.data_items
+    every t in [<span class="s">&quot;PII&quot;</span>] { t in _DG_001_item_0.regulatory_tags }
+    some _DG_001_dest_0 in flow.data_destinations
+    _DG_001_dest_0.data_destination_trust_level == <span class="s">&quot;UNTRUSTED_EXTERNAL&quot;</span>
+    every c in [&quot;external&quot;] { c in _DG_001_dest_0.data_destination_categories }
+}
+
+_rule_decisions := {&quot;DG-001&quot;: {&quot;risk_level&quot;: &quot;critical&quot;,
+    &quot;enforcement_type&quot;: <span class="d">&quot;block&quot;</span>, …}, …}</pre>
+    </div>
+    <div class="el stamp block" id="dg-stamp" style="left:140px; top:800px"><small>DENIED BY dg</small>BLOCKED</div>
+  </section>
+
+  <section class="scene" id="s-summary">
+    <div class="bg" style="background:radial-gradient(1400px 900px at 50% 40%, #12303a 0%, #0b1d22 60%, #071419 100%)"></div>
+    <div class="el" id="sum-title" style="left:0; right:0; top:70px; text-align:center">
+      <div class="tag" style="color:var(--gold)">issue-triage · every decision in this demo</div>
+      <div style="font-weight:800; font-size:64px; margin-top:10px">One agent, four configurations</div>
+    </div>
+    <div class="el" id="sum-table" style="left:120px; top:250px; width:1680px"></div>
+    <div class="el" id="sum-key" style="left:120px; top:960px; font-size:22px; color:var(--muted)">Solid: run in this demo &nbsp;·&nbsp; Dashed: not run here, decided by the same configuration</div>
+  </section>
+
+  <section class="scene" id="s-close">
+    <div class="bg" style="background:radial-gradient(1200px 800px at 50% 40%, #12303a 0%, #0b1d22 65%, #061217 100%)"></div>
+    <div class="el" id="close-card" style="left:0; right:0; top:150px">
+      <div style="display:flex; justify-content:center"><img src="../stills/final/logo.png" style="width:220px; height:220px; border-radius:36px; box-shadow:0 20px 60px rgba(0,0,0,.5)"></div>
+      <div class="card-title" style="margin-top:28px">Sentry, on DAM</div>
+      <div class="card-sub">DAM with granular security: control every tool call and every piece of data</div>
+      <div class="duo">
+        <div class="bubble"><span class="tag aiac">aiac</span><h3>Automated access control management</h3><p>Each agent's tools, from its own description.</p></div>
+        <div class="bubble"><span class="tag dg">dg</span><h3>Data governance</h3><p>Classifies the data; personal and restricted data stay where company policy says.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <div id="fade" style="position:absolute; inset:0; background:#000; opacity:0"></div>
+</div>
+<script src="cues.js"></script>
+<script src="data/film-data.js"></script>
+<script src="arch.js"></script>
+<script src="timeline.js"></script>
+</body>
+</html>

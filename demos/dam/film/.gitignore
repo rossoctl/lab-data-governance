@@ -1,0 +1,16 @@
+# Not committed: copies, drafts, superseded takes, and files the scripts regenerate.
+# (build/, with the recordings and renders, is ignored at the repo root.)
+/base/
+/stills/draft_dam/
+/voice/pron/
+/voice/*/[0-9][0-9].wav
+/film/data/take1/
+/film/media/take1.mp4
+/film/media/take2.mp4
+/scripts/render.mjs
+/scripts/pron_test.txt
+/scripts/narration_v1.txt
+node_modules
+.DS_Store
+/overlays/ui/
+/stills/logo.png

@@ -1,0 +1,69 @@
+[
+ {
+  "tool": "issue_write",
+  "decision": "deny",
+  "checks": [
+   "aiac"
+  ],
+  "reason": "github-mcp.issue_write for agent issue-triage is denied: the policy prohibits it, agent specifically states that it reports on issues and never changes repositories or issues."
+ },
+ {
+  "tool": "add_issue_comment",
+  "decision": "deny",
+  "checks": [
+   "aiac"
+  ],
+  "reason": "github-mcp.add_issue_comment for agent issue-triage is denied: the policy prohibits it, agent specifically states that it reports on issues and never changes repositories or issues."
+ },
+ {
+  "tool": "search_issues",
+  "decision": "allow",
+  "checks": [
+   "aiac"
+  ],
+  "reason": "github-mcp.search_issues for agent issue-triage is allowed: agent states that it is an issue triage assistant and it reads and summarizes open issues in the s-and-p-team demo repositories so the owner can prioritize them."
+ },
+ {
+  "tool": "add_issue_comment",
+  "decision": "allow",
+  "checks": [
+   "aiac"
+  ],
+  "reason": "github-mcp.add_issue_comment for agent issue-triage is allowed: agent states that it reports on issues and may comment on an issue to ask the reporter for missing details, but it never closes issues and never changes repositories."
+ },
+ {
+  "tool": "issue_write",
+  "decision": "deny",
+  "checks": [
+   "aiac"
+  ],
+  "reason": "github-mcp.issue_write for agent issue-triage is denied: the policy prohibits it, agent specifically states that it reports on issues and may comment on an issue to ask the reporter for missing details, but it never closes issues and never changes repositories."
+ },
+ {
+  "tool": "search_issues",
+  "decision": "deny",
+  "checks": [
+   "aiac",
+   "dg"
+  ],
+  "reason": "github-mcp.search_issues for agent issue-triage is denied: company policy states that personal data and restricted data must not be sent to an untrusted external destination such as api.githubcopilot.com, and the request carries a government ID or a person's name: {\"owner\": \"[person.employment]\", \"query\": \"[person.govID] [person.govID]\", \"repo\": \"demo-public\"}"
+ },
+ {
+  "tool": "list_issues",
+  "decision": "allow",
+  "checks": [
+   "aiac",
+   "dg"
+  ],
+  "reason": "github-mcp.list_issues for agent issue-triage is allowed: agent states that it is an issue triage assistant and it reads and summarizes open issues in the s-and-p-team demo repositories so the owner can prioritize them."
+ },
+ {
+  "tool": "list_issues",
+  "decision": "allow",
+  "checks": [
+   "aiac",
+   "dg"
+  ],
+  "reason": "github-mcp.list_issues for agent issue-triage is allowed: agent states that it is an issue triage assistant and it reads and summarizes open issues in the s-and-p-team demo repositories so the owner can prioritize them."
+ }
+]
