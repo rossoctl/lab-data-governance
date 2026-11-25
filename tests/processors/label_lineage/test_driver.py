@@ -853,6 +853,47 @@ def test_a_conversation_derived_between_the_two_traces_of_a_move_is_derived_agai
     assert _q(configured_db, "SELECT trace_id, count(*) FROM label_occurrences GROUP BY 1") == [(new, 2)]
 
 
+@pytest.mark.parametrize("old, new, retimed_first", [("Z1", "A1", True), ("Z1", "A1", False),
+                                                     ("A1", "Z1", True), ("A1", "Z1", False)],
+                         ids=["new-first/retimed-then-moved", "new-first/moved-then-retimed",
+                              "old-first/retimed-then-moved", "old-first/moved-then-retimed"])
+def test_a_holding_retimed_and_moved_in_one_wake_frees_the_sends_of_its_old_interval(
+        configured_db: str, old: str, new: str, retimed_first: bool) -> None:
+    """v holds an SSN and its date of birth and sends both to a: a crossing, and a holds them. Their origin is in
+    another conversation, so their rows keep their ids when a's receiving interaction moves to another trace. A
+    later conversation in which a sends both crosses with them. Then, before the next wake, the receiving leg gets
+    a time after that send and its interaction moves. Derived first, the new trace takes the rows over with their
+    new interval. What they were before belongs to the comparison: the later conversation sent inside the old
+    interval only, and without it nothing queued it and it kept its crossing."""
+    import datetime as dt
+
+    from data_governance.label_lineage import cross
+    from data_governance.processors.data_lineage.traversal import Entity
+    from tests.label_lineage.test_cross import DOB, ENTITIES, SSN, T0, _trace
+    config = driver.Config(find.exact, "exact", {"agent:lab/a": "persistent"}, crossing=cross.Crossing())
+    users, both = {**ENTITIES, "u": Entity("u", "user:alice", "user")}, {"subject": SSN, "since": DOB}
+    minute = dt.timedelta(minutes=1)
+    _seed_input(configured_db, _trace("T9", [("o", "request", "u", "v", {"ssn": SSN, "dob": DOB},
+                                             [("SSN", SSN), ("DOB", DOB)])], T0, users))
+    cursor = driver.drain(0, config)
+    _seed_input(configured_db, _trace(old, [("x", "request", "v", "a", both, [])], T0 + minute, users))
+    cursor = driver.drain(cursor, config)
+    _seed_input(configured_db, _trace("M5", [("s", "request", "a", "t", both, [])], T0 + 3 * minute, users))
+    cursor = driver.drain(cursor, config)
+    crossed = ("SELECT e.trace_id, e.entity_type, e.from_trace_id FROM payload_label_edges e "
+               "JOIN label_crossings c ON c.edge_id = e.edge_id ORDER BY 1, 2")
+    assert _q(configured_db, crossed) == sorted([(old, "DOB", "T9"), (old, "SSN", "T9"),
+                                                 ("M5", "DOB", old), ("M5", "SSN", old)])
+    retime = ("UPDATE interaction_legs SET occurred_at = %s WHERE interaction_id = 'x'", (T0 + 5 * minute,))
+    move = ("UPDATE interactions SET trace_id = %s WHERE id = 'x'", (new,))
+    with psycopg.connect(configured_db) as conn:
+        for correction in (retime, move) if retimed_first else (move, retime):
+            conn.execute(*correction)
+    driver.drain(cursor, config)
+    assert _q(configured_db, "SELECT count(*) FROM label_lineage_dirty_traces") == [(0,)]
+    assert _q(configured_db, crossed) == [(new, "DOB", "T9"), (new, "SSN", "T9")]
+
+
 @pytest.mark.parametrize("correction", [
     "UPDATE interactions SET callee_entity_id = 'w' WHERE id = '1'",
     "UPDATE interaction_legs SET occurred_at = occurred_at - interval '1 hour' WHERE interaction_id = '1'",

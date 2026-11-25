@@ -228,6 +228,17 @@ def occurrences(tx: db.Transaction, trace_id: str) -> set[tuple]:
                             "WHERE trace_id = %s", (trace_id,)))
 
 
+def taken_over(tx: db.Transaction, derivation: Derivation) -> set[tuple]:
+    """The rows *derivation* is about to write that another trace's derivation wrote, in
+    the shape of :func:`occurrences`. An occurrence whose origin lies outside the
+    interactions that moved to another trace keeps its id, and the upsert takes its row
+    over. What the row was before belongs to the comparison of :func:`affected`: a leg
+    sent inside its old interval only is queued by nothing else."""
+    ids = [occurrence_id(h) for h in derivation.holdings]
+    return set(tx.fetch_all("SELECT holder_entity_id, valid_from, valid_to, to_jsonb(o)::text FROM label_occurrences o "
+                            "WHERE occurrence_id = ANY(%s) AND trace_id <> %s", (ids, derivation.trace_id)))
+
+
 # A send is read with the trace its row was written with. When its interaction has moved to another trace since,
 # the move itself queued both traces, and the new one is derived after this, reading what is held then.
 _AFFECTED_SQL = """

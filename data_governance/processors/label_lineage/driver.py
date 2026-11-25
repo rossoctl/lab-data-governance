@@ -296,7 +296,9 @@ def derive_and_persist(tx: db.Transaction, trace_id: str, config: Config,
         correct(before)
         tx.execute("SELECT pg_notify(%s, '')", (NOTIFY_CHANNEL,))
         return set()
-    changed = store.write(tx, fold.derive(trace, config.finder, config.scopes, config.crossing), config.matcher)
+    derivation = fold.derive(trace, config.finder, config.scopes, config.crossing)
+    before |= store.taken_over(tx, derivation)
+    changed = store.write(tx, derivation, config.matcher)
     correct(before)
     # The rows just written are what leg-ready's readiness waits for with the risk
     # flag on: wake it at commit instead of leaving it to its poll backstop.
