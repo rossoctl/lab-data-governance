@@ -433,6 +433,34 @@ def test_a_value_in_two_records_of_one_received_leg_is_held_in_each(records, eve
                    if e.key in second.levels}) == [("DOB", cross.CORROBORATED), ("SSN", cross.CORROBORATED)]
 
 
+def test_the_cap_counts_edges_not_the_places_a_value_is_held_at():
+    """An identifier held at two places of one received payload reaches a later send by one edge. A cap of one
+    cuts nothing then, and under a cap of two the same identifier held from another conversation draws its edge."""
+    two_places = fold.derive(_twice([{"ssn": SSN}, {"ssn": SSN, "dob": DOB}]), find.exact, crossing=ON).holdings
+    other = fold.derive(_trace("T0", [("9", "request", "a", "v", {"ssn": SSN}, [("SSN", SSN)]),
+                                      ("9", "response", "a", "v", {"ok": True}, [])], T0 - dt.timedelta(minutes=2)),
+                        find.exact, crossing=ON).holdings
+    assert [h.value for h in two_places].count(SSN) == 2 and [h.value for h in other] == [SSN]
+
+    def ssn(priors, cap: int):
+        d = fold.derive(_second(priors), find.exact, crossing=dataclasses.replace(ON, edges_per_value=cap))
+        return (sorted({(e.from_trace_id, d.levels[e.key].level) for e in d.edges
+                        if e.key in d.levels and e.unit.entity_type == "SSN"}), [m.value for m in d.capped])
+
+    assert ssn(two_places, 1) == ([("T1", cross.CORROBORATED)], [])
+    assert ssn(other + two_places, 2) == ([("T0", cross.VALUE_ONLY), ("T1", cross.CORROBORATED)], [])
+    assert ssn(other + two_places, 1) == ([("T1", cross.CORROBORATED)], [SSN])
+
+
+def test_one_holding_found_at_two_spans_of_a_payload_is_two_edges():
+    """The span reached is part of an edge: a value sent twice in one payload draws two edges from one holding,
+    and a cap of one cuts one of them."""
+    held = _holdings("T1", {"ssn": SSN}, ("SSN", SSN))
+    assert _leaving(held, {"a": SSN, "b": SSN}) == ([(SSN, cross.VALUE_ONLY, "T1")] * 2, [])
+    found, capped = _leaving(held, {"a": SSN, "b": SSN}, crossing=dataclasses.replace(ON, edges_per_value=1))
+    assert (found, capped) == ([(SSN, cross.VALUE_ONLY, "T1")], [(SSN, 1)])
+
+
 def test_nothing_is_registered_without_the_switch():
     assert fold.derive(_first(), find.exact).holdings == ()
 

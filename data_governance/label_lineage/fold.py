@@ -139,10 +139,7 @@ def derive(trace_input: TraceInput, finder: Finder,
             capped += cap
             cuts += [(key, limit) for limit in cut]
             sends.append((sender, key, leg.occurred_at))
-        by_edge: dict[tuple, list[cross.Crossed]] = {}
-        for o, c in found:
-            by_edge.setdefault(Edge(to=dataclasses.replace(o, source=None), came_from=o.source).key, []).append(c)
-        crossed = {k: _strongest(cs) for k, cs in by_edge.items()}
+        crossed = {Edge(to=dataclasses.replace(o, source=None), came_from=o.source).key: c for o, c in found}
         # a crossed occurrence carried on claims no finding of a later leg either
         on = [level_of.get(c.source.key, cross.CERTAIN) != cross.CERTAIN for c in candidates]
         held[key], leg_edges = attribute([c for c, x in zip(candidates, on) if not x], own,
@@ -187,14 +184,6 @@ def _structured(content: object) -> bool:
     """Whether a payload was projected as its serialised JSON: an object or an array
     with no prose projection. Only there can a value sit in a record (R4)."""
     return isinstance(content, (dict, list)) and not is_projectable(content)
-
-
-def _strongest(crossings: Sequence[cross.Crossed]) -> cross.Crossed:
-    """Of the crossings onto one edge (one origin held more than once on one received
-    leg), the one whose step is strongest (R3); of equal steps, the holding first by its
-    occurrence, so the choice never follows the order the priors were loaded in."""
-    top = cross.strongest(cross.step(c.level, c.holding) for c in crossings)
-    return min((c for c in crossings if cross.step(c.level, c.holding) == top), key=lambda c: c.holding.occurrence.key)
 
 
 def carry(edges: Sequence[Edge], crossed: Mapping[tuple, cross.Crossed],

@@ -344,8 +344,10 @@ def leaving(memory: Memory, crossing: Crossing, entity_id: str, output: Projecte
        is that edge already, never drawn again (R7).
     2. Assert by origin: the holdings found, grouped by the leg and record they were
        received in, under the rule table, unless they are more than the candidates
-       limit: then nothing is asserted. One occurrence per holding and span, each
-       remembering the holding's occurrence as its source.
+       limit: then nothing is asserted. One occurrence per edge, remembering its
+       holding's occurrence as its source: an origin held at several places of one
+       received leg reaches a span here by one edge, the strongest of its crossings
+       (R3), and of equal ones the holding first by its occurrence.
     3. Cap: no value is dropped for being held from many conversations; one value
        draws at most ``edges_per_value`` edges here: the surest first, by the level the
        edge carries (corroborated before value-only, so the cap does not lower the level
@@ -391,8 +393,14 @@ def leaving(memory: Memory, crossing: Crossing, entity_id: str, output: Projecte
             asserted += [(span, h, CORROBORATED) for span, h in members]
         else:
             asserted += [(span, h, VALUE_ONLY) for span, h in members if anchors(h)]
+    # One edge per span here, origin and received leg (the key of the edge the fold draws), so neither the choice
+    # nor the cap below follows how many places of that leg held the value, or the order the priors came in.
+    edges: dict[tuple, tuple] = {}
+    for a in sorted(asserted, key=lambda a: (-_RANK[step(a[2], a[1])], a[1].occurrence.key)):
+        o = a[1].occurrence
+        edges.setdefault((a[0], o.unit.key, o.at.leg, o.held_from, o.held_to), a)
     by_value: dict[str, list] = defaultdict(list)
-    for a in asserted:
+    for a in edges.values():
         by_value[a[1].value].append(a)
     asserted, capped = [], []
     for value in sorted(by_value):

@@ -105,7 +105,8 @@ the file lacks cannot be made an anchor. With it on, at each leg in wire order:
    structured payload; a value in prose or inside a string has none and is value-only at most.
    No value is dropped for being held from many conversations: one value draws at most
    `LABEL_CROSS_EDGES_PER_VALUE` (default 30) edges at one payload, the surest by the level the edge
-   carries and then the newest.
+   carries and then the newest. A value held at several places of one received leg is one edge, at
+   the strongest of their levels.
 2. **crossing edge** — one `payload_label_edges` row per occurrence that passes, from the leg that
    received it (`from_trace_id`) with its origin unit (`origin_trace_id`); its level is a `label_crossings` row, with the
    count of other conversations the value was held from; a value whose edges were capped has one
@@ -299,7 +300,8 @@ implements one (`docs/LIVE-E2E.md` numbers its live scenarios with an R too; tho
   holdings in one conversation count once). The number bounds the cost; it still chooses which
   origins are drawn, so an origin beyond it is not shown. A limit set on the leg comes first: with
   `LABEL_CROSS_CANDIDATES_PER_PAYLOAD` set, a value held very often counts toward that limit like any
-  other and can cut the leg (marked incomplete).
+  other and can cut the leg (marked incomplete). A candidate is a holding found: a value held at
+  several places of one received leg is as many candidates, though it draws one edge.
 - **R3** A value with several origins carries the strongest of their levels and is marked
   *ambiguous*; along one path the weakest step holds.
 - **R4** A value's record is the innermost object of a structured payload that holds the value as
