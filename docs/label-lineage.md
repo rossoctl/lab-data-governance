@@ -154,7 +154,8 @@ loaded bounded by the retention; time per derivation flat), and a 10 kB payload 
 holdings, for values with distinct first words and for values that all begin with one word.
 
 **The correction.** A derivation that adds, removes or changes an occurrence (a late conversation, a
-late classification, a re-derivation with a label gone) queues, in its own transaction and through
+late classification, a re-derivation with a label gone, a corrected receiver or time, a deleted leg,
+interactions that moved to another trace) queues, in its own transaction and through
 `dg_queue_label_trace`, every other conversation with a leg the entity sent strictly inside that
 occurrence's interval (`label_sends`); the dirty arm derives them again, re-reading the queue until it is
 empty or a batch is spent. Everything a match at such a leg reads from other conversations is the
