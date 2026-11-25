@@ -8,10 +8,12 @@ conditions 1 (new leg) and 2 (new classification) produce risk recomputes
 automatically — the leg-ready channel fires for exactly those two events.
 
 Two-phase, per the seam's contract: the observer call runs the engine's
-compute half — evidence gathering, fingerprint comparison, and (only when the
-evidence changed) the OPA HTTP round-trip, with no transaction held — and
-returns the engine's write half, which the drain runs inside the leg's
-delivery transaction, atomically with the cursor advance. A failed write
+compute half — evidence gathering, fingerprint comparison, and the OPA HTTP
+round-trips (the full evidence's only when the evidence changed; with
+inherited labels on, one per lower tier whose input differs, every time), with
+no transaction held — and returns the engine's write half, which the drain
+runs inside the leg's delivery transaction, atomically with the cursor
+advance. A failed write
 therefore rolls the cursor back and the leg is re-delivered: the silent-skip
 hole the issue exists to close cannot occur.
 
@@ -23,7 +25,9 @@ Failure semantics (issue #158 scope item 3 — the decisions, and why):
   stream holds at this leg and retries every wake (poll backstop). An OPA
   outage thus delays risk computation but loses nothing, and the first
   successful wake catches the stream up. Head-of-line blocking is the point:
-  order and completeness beat progress here.
+  order and completeness beat progress here. With inherited labels on, the
+  engine raises this, or the unusable answer below, only when no tier it
+  asked blocks: a block already answered is written, not held.
 - **Unusable OPA answer** (:class:`OpaResponseError` — OPA responded 2xx but
   the body has no usable decision): also a hold, NOT a skip. It means the
   loaded policy is broken (the shipped policy's fallback rule makes a missing
@@ -41,12 +45,14 @@ Failure semantics (issue #158 scope item 3 — the decisions, and why):
   errors would trade a visible crash for silent data loss.
 
 Backpressure (scope item 4): one *potential* OPA round-trip per ready leg per
-drain (batch ≤ ``_DRAIN_BATCH``), bounded by ``RISK_OPA_TIMEOUT_SECONDS`` ×
-retries each. The evidence fingerprint keeps this sub-linear in steady state:
-a re-delivered or unchanged-evidence leg reuses the cached decision with no
-HTTP call at all, so bursts of legs for already-evaluated interactions drain
-at DB speed. If sustained OPA latency ever dominates, the batch size — not
-this seam — is the tuning knob.
+drain (batch ≤ ``_DRAIN_BATCH``), up to one per tier with inherited labels on,
+bounded by ``RISK_OPA_TIMEOUT_SECONDS`` × retries each. The evidence
+fingerprint keeps this sub-linear in steady state: a re-delivered or
+unchanged-evidence leg reuses the cached full-evidence decision, so with
+inherited labels off it makes no HTTP call at all and bursts of legs for
+already-evaluated interactions drain at DB speed; with them on, a lower tier
+whose input differs is still asked. If sustained OPA latency ever dominates,
+the batch size — not this seam — is the tuning knob.
 """
 
 from __future__ import annotations
