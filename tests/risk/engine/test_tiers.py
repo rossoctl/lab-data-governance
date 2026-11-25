@@ -306,3 +306,38 @@ def test_a_full_allow_is_deferred_when_a_lower_tier_cannot_be_asked(interaction:
         _compute(monkeypatch, _evidence(inherited=conv), _LowerTiersTimeOut(full_answered=not cached))
     assert _rows(interaction) == []
 
+
+def test_a_full_block_is_recorded_at_the_first_tier_that_has_the_full_evidence(interaction: str, monkeypatch) -> None:
+    """The cross switch on and nothing crossed into the leg: tier 1's input is the full evidence's, so the full block
+    is known at tier 1 without asking. Tier 0 timing out does not move it to tier 2."""
+    inside = labels.Inherited(mode="on", cross=True, by_leg={"request": [INSIDE]})
+    _compute(monkeypatch, _evidence(inherited=inside), _LowerTiersTimeOut())
+    assert [(e, t) for _v, e, _r, t, _late in _rows(interaction)] == [("block", 1)]
+
+
+class _InOrder(_Policy):
+    """Answers in the order it is asked (the full evidence first, then tier 0, tier 1): a decision named by the
+    call, or a timeout for ``None``."""
+
+    def __init__(self, *answers: str | None) -> None:
+        super().__init__()
+        self._answers = answers
+
+    def evaluate(self, *, interaction_id: str, opa_input: dict) -> OpaDecision:
+        answer = self._answers[len(self.calls)]
+        self.calls.append(opa_input)
+        if answer is None:
+            raise OpaTimeoutError("policy unreachable")
+        return OpaDecision(risk_level="high", enforcement_type=answer, allowed_actions=[], explanation=None,
+                           triggered_rules=[f"call-{len(self.calls)}"], confidence=0.5, policy_version="1")
+
+
+@pytest.mark.parametrize("full, rules", [("allow", ["call-2"]), ("block", ["call-1"])])
+def test_a_lower_tier_that_cannot_be_asked_keeps_the_block_an_earlier_tier_gave(interaction: str, monkeypatch,
+                                                                                full, rules) -> None:
+    """Three distinct inputs: the full evidence answers, tier 0 blocks, tier 1 times out. The block stands, decided
+    at tier 0; among two blocks the full evidence's is carried."""
+    policy = _InOrder(full, "block", None)
+    _compute(monkeypatch, _evidence(inherited=BOTH), policy)
+    assert len(policy.calls) == 3
+    assert [(e, r, t) for _v, e, r, t, _late in _rows(interaction)] == [("block", rules, 0)]

@@ -36,7 +36,11 @@ GitHub clones only, and `run-all.sh` runs the whole experiment and checks each s
 **The tier.** Leg-ready asks the policy per tier of evidence on one snapshot (classification; with
 `RISK_INHERITED_LABELS=on` the labels known inside the conversation; with `LABEL_CROSS_CONVERSATION=on` too the
 crossed labels), keeps the strictest decision, and records the tier that decided it: the first tier that blocks, else
-the highest asked (`interaction_risk_tiers`, one row per record version, `0` with inherited labels off). A version
+the highest asked (`interaction_risk_tiers`, one row per record version, `0` with inherited labels off). When a lower
+tier cannot be asked, a block already answered stands, at the first tier that blocked; if only the full evidence's
+answer blocks, the record says the first tier past the failure that has the full evidence (the highest, unless
+nothing crossed into the leg), and that tier is not revised when the policy answers again (the record is unchanged,
+so no version and no tier row is written). A version
 stricter than the latest earlier one that evidenced the same legs is a late finding (`late` on its row, leg-ready's
 `late_findings_total`); it does not reach back. What is built is the tiers at the level of the decision record. What
 is not: an answer before label lineage is ready. A record is still written only once its leg is ready with all the

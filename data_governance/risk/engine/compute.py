@@ -240,9 +240,11 @@ def _decide(*, interaction_id: str, opa_client: OpaClient, evidence) -> tuple[ut
     With nothing inherited every tier's input is the same: one decision.
 
     A lower tier the policy cannot answer (:class:`~.opa.OpaError`) never discards a
-    block already known: the full evidence's block stands, decided at the highest
-    tier (what is known). Any other full decision is deferred with the error, as
-    before: the missing tier could still be stricter."""
+    block already known: when a lower tier answered so far or the full evidence
+    blocks, the decision is taken from those answers by the same rule, the full
+    evidence counting at the first tier past them whose input is the full evidence's
+    (the highest, unless nothing crossed into the leg). Otherwise it is deferred with
+    the error, as before: the missing tier could still be stricter."""
     views = labels.tiers(evidence.inherited)
     top = _get_or_refresh_decision(interaction_id=interaction_id, opa_client=opa_client, evidence=evidence)
     inputs = [_opa_input(evidence, view) for view in views]
@@ -256,9 +258,11 @@ def _decide(*, interaction_id: str, opa_client: OpaClient, evidence) -> tuple[ut
             else:
                 decisions.append(_ask(opa_client, interaction_id, opa_input))
     except OpaError:
-        if top.enforcement_type != "block":
+        decision, tier = utils.strictest(decisions + [top])
+        if decision.enforcement_type != "block":
             raise
-        return top, len(views) - 1
+        full_at = next(k for k in range(len(decisions), len(inputs)) if inputs[k] == inputs[-1])
+        return decision, tier if tier < len(decisions) else full_at
     return utils.strictest(decisions + [top])
 
 

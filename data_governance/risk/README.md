@@ -104,7 +104,8 @@ flowchart TB
    every computation, a cache hit included. With OPA unreachable a cached full block still stands;
    a cached full decision is written from the cache when no lower tier needs asking (nothing
    inherited, or every lower tier's input equal to the full one); any other is deferred (the
-   stream holds), since a lower tier it could not ask could be stricter.
+   stream holds), since a lower tier it could not ask could be stricter. A block a lower tier
+   gave before another could not be asked stands too, at the first tier that blocked.
    The digest covers payload identity, classification details, raw anchor
    facts and the full OPA input, including detected and inherited entities.
    Whitelist changes that alter derived categories, trust levels or event
