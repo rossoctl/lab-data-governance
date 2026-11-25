@@ -12,7 +12,8 @@ At each payload-bearing leg, in :func:`wire_order`:
    is routed but holds nothing.
 2. **find** — the finder, once per input, returns candidate occurrences here.
 3. **attribute** — one owner per span (:func:`attribute`).
-4. **summarize** — the leg's edges become its :class:`~.summary.LegSummary`.
+4. **carry** — with a crossing, how surely each value is its unit's (:func:`carry`).
+5. **summarize** — the leg's edges become its :class:`~.summary.LegSummary`.
 
 What the fold never does: look inside a finder, guess a parent, read a seq
 threshold, order by ``seq`` alone, or stop at an absent payload.
@@ -22,17 +23,21 @@ from __future__ import annotations
 
 import dataclasses
 import datetime as dt
+import logging
 from collections.abc import Mapping, Sequence
 
 from data_governance.interaction_order import LegOrderEvent, LegOrderKey, leg_positions
-from data_governance.processors.classification.projection import project
+from data_governance.processors.classification.projection import is_projectable, project
 from data_governance.processors.data_lineage import memory
 from data_governance.processors.data_lineage.traversal import Entity, Leg, inbound_sets
 
+from . import cross
 from .find import Finder
 from .summary import Derivation, Edge, LegSummary, status_of, summarize
 from .units import LegKey, Occurrence, ProjectedPayload, Site, Unit, at_origin, units_of
 from .value import find_all
+
+log = logging.getLogger(__name__)
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -51,15 +56,16 @@ class WireLeg(Leg):
 class TraceInput:
     """One trace as the fold reads it. *payloads* maps a content hash to the stored
     content; *findings* maps the hash of every CLASSIFIED payload to its findings (a
-    hash absent there is unclassified). *priors* — occurrences at other traces'
-    payloads — is how a later conversation joins; it must be empty in one."""
+    hash absent there is unclassified). *priors* — what persistent entities received
+    in other conversations (:class:`.cross.Holding`) — is how a later conversation
+    joins; it is read only by a cross-conversation derivation."""
 
     trace_id: str
     legs: Sequence[WireLeg]
     entities: Mapping[str, Entity]
     payloads: Mapping[str, object]
     findings: Mapping[str, Sequence[Mapping]]
-    priors: Sequence[Occurrence] = ()
+    priors: Sequence[cross.Holding] = ()
 
 
 def wire_order(legs: Sequence[WireLeg]) -> list[WireLeg]:
@@ -78,11 +84,16 @@ def wire_order(legs: Sequence[WireLeg]) -> list[WireLeg]:
 
 
 def derive(trace_input: TraceInput, finder: Finder,
-           declared: Mapping[str, str] = memory.NO_DECLARATION) -> Derivation:
+           declared: Mapping[str, str] = memory.NO_DECLARATION,
+           crossing: cross.Crossing | None = None) -> Derivation:
     """Derive the label lineage of one trace; *declared* is the memory scope declared
-    per entity natural key (:func:`.memory.parse_scopes`)."""
-    if trace_input.priors:
-        raise ValueError("priors from other conversations are not read in one conversation")
+    per entity natural key (:func:`.memory.parse_scopes`). With *crossing* (the
+    cross-conversation switch on), at each leg in wire order a payload a persistent
+    entity sends is first matched against what it holds (:func:`.cross.leaving`), and
+    what a persistent entity receives is then registered with it; without, the fold
+    is the conversation's alone."""
+    if trace_input.priors and crossing is None:
+        raise ValueError("priors from other conversations are read only with the cross-conversation switch on")
     ordered = wire_order(trace_input.legs)
     inbound = inbound_sets(ordered, dict(trace_input.entities), pair_responses=True,
                            accumulates=lambda e: memory.mixes_calls(e, declared))
@@ -91,6 +102,16 @@ def derive(trace_input: TraceInput, finder: Finder,
     held: dict[LegKey, tuple[Occurrence, ...]] = {}
     summaries: dict[LegKey, LegSummary] = {}
     edges: list[Edge] = []
+    known = cross.Memory(trace_input.priors) if crossing else None
+    levels: dict[tuple, cross.Crossed] = {}
+    level_of: dict[tuple, str] = {}
+    carried: dict[tuple, cross.Carried] = {}
+    commons: list[cross.Common] = []
+    holdings: list[cross.Holding] = []
+
+    def persistent(entity_id: str) -> bool:
+        return is_persistent(trace_input.entities, entity_id, declared)
+
     for leg in ordered:
         if leg.payload_hash is None:
             continue
@@ -100,15 +121,137 @@ def derive(trace_input: TraceInput, finder: Finder,
         findings = trace_input.findings.get(leg.payload_hash)
         own = units_of(findings or (), output.text, site)
         candidates = [c for k in inbound.get(key, ()) for c in finder(held.get(k, ()), output)]
-        held[key], leg_edges = attribute(candidates, own)
+        sender, receiver = ends(leg)
+        found: list[tuple[Occurrence, cross.Crossed]] = []
+        if known is not None and leg.occurred_at is None and (persistent(sender) or persistent(receiver)):
+            log.debug("leg %s %s has no event time: not matched, not registered", *key)
+        elif known is not None and persistent(sender):
+            found, common = cross.leaving(known, crossing, sender, output, leg.occurred_at, inbound.get(key, ()))
+            commons += common
+        by_edge: dict[tuple, list[cross.Crossed]] = {}
+        for o, c in found:
+            by_edge.setdefault(Edge(to=dataclasses.replace(o, source=None), came_from=o.source).key, []).append(c)
+        crossed = {k: _strongest(cs) for k, cs in by_edge.items()}
+        # a crossed occurrence carried on claims no finding of a later leg either
+        on = [level_of.get(c.source.key, cross.CERTAIN) != cross.CERTAIN for c in candidates]
+        held[key], leg_edges = attribute([c for c, x in zip(candidates, on) if not x], own,
+                                         [o for o, _ in found] + [c for c, x in zip(candidates, on) if x])
+        levels.update((e.key, crossed[e.key]) for e in leg_edges if e.key in crossed)
+        if known is not None:
+            carried.update(carry(leg_edges, crossed, level_of))
+        if known is not None and leg.occurred_at is not None and persistent(receiver):
+            here = _received(receiver, _every_place(held[key], finder, output), own, level_of, leg.occurred_at,
+                             crossing, records=cross.records(output.text) if _structured(trace_input.payloads.get(
+                                 leg.payload_hash)) else {})
+            for h in here:
+                known.add(h)
+            holdings += here
         edges.extend(leg_edges)
         summaries[key] = summarize(key, leg.payload_hash, leg.seq, classified=findings is not None,
                                    edges=leg_edges, unanchored=sum(not u.anchored for u in own))
     return Derivation(trace_id=trace_input.trace_id, edges=tuple(edges), legs=summaries,
-                      occurrences=held, status=status_of(summaries, len(edges)))
+                      occurrences=held, status=status_of(summaries, len(edges)),
+                      levels=levels, carried=carried, commons=tuple(commons), holdings=tuple(holdings))
 
 
-def attribute(candidates: Sequence[Occurrence], own: Sequence[Unit]) -> tuple[tuple[Occurrence, ...], list[Edge]]:
+def ends(leg: Leg) -> tuple[str, str]:
+    """(sender, receiver): a request is sent by its caller, a response by its callee."""
+    if leg.leg_type == "request":
+        return leg.caller_entity_id, leg.callee_entity_id
+    return leg.callee_entity_id, leg.caller_entity_id
+
+
+def is_persistent(entities: Mapping[str, Entity], entity_id: str, declared: Mapping[str, str]) -> bool:
+    """Whether *entity_id* remembers across conversations (:func:`.memory.scope`)."""
+    entity = entities.get(entity_id)
+    return entity is not None and memory.scope(entity, declared) == "persistent"
+
+
+def _structured(content: object) -> bool:
+    """Whether a payload was projected as its serialised JSON: an object or an array
+    with no prose projection. Only there can a value sit in a record (R4)."""
+    return isinstance(content, (dict, list)) and not is_projectable(content)
+
+
+def _strongest(crossings: Sequence[cross.Crossed]) -> cross.Crossed:
+    """Of the crossings onto one edge (one origin held more than once on one received
+    leg), the one whose step is strongest (R3); of equal steps, the holding first by its
+    occurrence, so the choice never follows the order the priors were loaded in."""
+    top = cross.strongest(cross.step(c.level, c.holding) for c in crossings)
+    return min((c for c in crossings if cross.step(c.level, c.holding) == top), key=lambda c: c.holding.occurrence.key)
+
+
+def carry(edges: Sequence[Edge], crossed: Mapping[tuple, cross.Crossed],
+          level_of: dict[tuple, str]) -> dict[tuple, cross.Carried]:
+    """How surely each value these *edges* (into one leg) reach is its unit's, and the
+    edges whose value rests on a crossing (R3).
+
+    An origin, and whatever reaches a leg inside the conversation from one, is
+    :data:`.cross.CERTAIN`. A crossing edge's step is the weakest of its rule level and
+    the level its holding was registered with (a holding that was itself crossed); any
+    other edge carries its carrier's level on. An occurrence takes the strongest of its
+    edges' steps: of two paths of one origin the better holds, so an origin known inside
+    the conversation is certain however else it also arrives. *level_of* (occurrence key
+    -> level) is filled in for the legs after this one.
+
+    Of the occurrences on one span that are not certain, the value carries the strongest
+    level, and is ambiguous when they are of more than one origin unit. Every edge into
+    such an occurrence maps to that."""
+    for e in edges:
+        if e.key in crossed:
+            step = cross.step(crossed[e.key].level, crossed[e.key].holding)
+        else:
+            step = level_of.get(e.came_from.key, cross.CERTAIN)
+        level_of[e.to.key] = cross.strongest((level_of.get(e.to.key, step), step))
+    on_span: dict[tuple[int, int] | None, list[Occurrence]] = {}
+    for o in {e.to.key: e.to for e in edges}.values():
+        if level_of[o.key] != cross.CERTAIN:
+            on_span.setdefault(o.span, []).append(o)
+    value = {span: cross.Carried(cross.strongest(level_of[o.key] for o in occs), len({o.unit.key for o in occs}) > 1)
+             for span, occs in on_span.items()}
+    return {e.key: value[e.to.span] for e in edges if level_of[e.to.key] != cross.CERTAIN}
+
+
+def _every_place(occurrences: Sequence[Occurrence], finder: Finder, output: ProjectedPayload) -> list[Occurrence]:
+    """*occurrences* at one payload, and each further place of that payload where the
+    finder finds the value of a unit that originates there. Equal findings of one
+    payload are one unit, at its first place (:func:`.units.units_of`); what an entity
+    receives is the value at every place it sits, each with the record of that place
+    (R4). The unit stays one origin, and the leg's own occurrences are untouched."""
+    places: dict[tuple, Occurrence] = {}
+    for o in (*occurrences, *finder([o for o in occurrences if o.at == o.unit.origin], output)):
+        places.setdefault(o.key, o)
+    return list(places.values())
+
+
+def _received(entity_id: str, occurrences: Sequence[Occurrence], own: Sequence[Unit], level_of: Mapping[tuple, str],
+              t: dt.datetime, crossing: cross.Crossing,
+              records: Mapping[tuple[int, int], tuple[int, int]]) -> list[cross.Holding]:
+    """What a persistent *entity_id* holds after receiving these *occurrences* at *t*:
+    every labelled value, with the record it sat in, valid for the retention, and how
+    the leg knew its label (crossed, with the level it reached this leg with,
+    :func:`carry`; else classified, when a finding of this leg is the value, whether it
+    originates here or was confirmed here; else inherited). A value with no run of
+    letters or digits cannot be found by the exact finder's boundary rule, so it is not
+    held."""
+    out = []
+    for occ in occurrences:
+        if occ.span is None or cross.core(occ.held) is None:
+            continue
+        level: str | None = level_of.get(occ.key, cross.CERTAIN)
+        if level != cross.CERTAIN:
+            evidence = "crossed"
+        elif any(u.anchored and _inside(u, occ) for u in own):
+            evidence, level = "classified", None
+        else:
+            evidence, level = "inherited", None
+        out.append(cross.Holding(entity_id, dataclasses.replace(occ, source=None), records.get(occ.span),
+                                 t, t + crossing.retention, evidence, level))
+    return out
+
+
+def attribute(candidates: Sequence[Occurrence], own: Sequence[Unit],
+              crossed: Sequence[Occurrence] = ()) -> tuple[tuple[Occurrence, ...], list[Edge]]:
     """One owner per span: the occurrences at this payload and the edges into it.
 
     The clauses, in order:
@@ -125,16 +268,22 @@ def attribute(candidates: Sequence[Occurrence], own: Sequence[Unit]) -> tuple[tu
     (d) every finding not claimed is a new unit, with its own occurrence.
 
     Only a candidate that keeps its span under (b) can claim a finding under (a).
+    *crossed* — candidates from another conversation (:func:`.cross.leaving`), and
+    candidates carrying a crossed label on (:func:`carry`) — take part in every clause
+    but (a): a finding at the leg stays its own origin beside a crossed label on its
+    span, separate evidence that is never weakened.
 
     Ambiguity is recorded, never resolved: candidates of DIFFERENT types on one span
     (the same four digits read as an SSN suffix in one place and a card code in
     another) both stay, two edges and two labels. A later change may add a context
     tie-break (the same JSON key path) as a further clause; none is removed.
     """
-    spanned = [c for c in candidates if c.span is not None]
-    survivors = [c for c in candidates if not any(_nests_in(c, d) for d in spanned)]
+    pool = [*candidates, *crossed]
+    spanned = [c for c in pool if c.span is not None]
+    survivors = [c for c in pool if not any(_nests_in(c, d) for d in spanned)]
+    from_elsewhere = {id(c) for c in crossed}
     claimed = {u.key for u in own if u.anchored
-               and any(_inside(u, c) for c in survivors if c.span is not None)}
+               and any(_inside(u, c) for c in survivors if c.span is not None and id(c) not in from_elsewhere)}
     occurrences: dict[tuple, Occurrence] = {}
     edges: dict[tuple, Edge] = {}
     for c in survivors:

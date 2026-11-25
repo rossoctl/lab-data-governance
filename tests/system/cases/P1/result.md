@@ -33,9 +33,9 @@ verdict at 5: expected off=allow / conv=block / cross=block, observed off=allow 
 | 2 | A>T1 | RESTRICTED SSN=123-45-6789 | s1=123-45-6789 (SSN, from 1) | — |
 | 3 | T1>V1 | RESTRICTED SSN=123-45-6789 | s1=123-45-6789 (SSN, from 2) | — |
 | 4 | V1>T1 | RESTRICTED MRN=4471820 | — | — |
-| 5 | T1>V2⚑ | PUBLIC  | s1=123-45-6789 (SSN, from 2), s2=4471820 (MRN, from 4) | critical block ['T-SENS'] v1 |
+| 5 | T1>V2⚑ | PUBLIC  | s2=4471820 (MRN, from 4), s1=123-45-6789 (SSN, from 2) | critical block ['T-SENS'] v1 |
 | 6 | V2>T1 | PUBLIC  | — | — |
-| 7 | T1>A | PUBLIC  | s1=123-45-6789 (SSN, from 2), s2=4471820 (MRN, from 4) | — |
+| 7 | T1>A | PUBLIC  | s2=4471820 (MRN, from 4), s1=123-45-6789 (SSN, from 2) | — |
 | 8 | A>U | PUBLIC  | — | — |
 
 Risk observer calls: 11

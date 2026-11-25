@@ -65,6 +65,5 @@ classifier:
     - s5
   authored: true
 notes: 'Conversation 1 sends the SSN and the patient''s name; V2 returns the name alone. A person''s name does not anchor:
-  no crossing, allow. The name is PII, so a wrong crossing would block. Green on this branch only because nothing crosses
-  at all here; the case means something once the crossing core exists, and its deliberate break (the anchor rule off) must
-  turn it red.'
+  no crossing, allow. The name is PII, so a wrong crossing would block. Its deliberate break (the anchor rule off) turns it
+  red.'

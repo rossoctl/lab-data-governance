@@ -1,6 +1,6 @@
 # K20 — M+1 earlier conversations
 
-cell `across/common/beyond-M`  ·  status **PENDING**  ·  classifier **authored**: the model's findings subtracted at legs [32, 33, 34, 35]
+cell `across/common/beyond-M`  ·  status **GREEN**  ·  classifier **authored**: the model's findings subtracted at legs [32, 33, 34, 35]
 
 ```
 U>A[s1 -], A>T2[s1 -], T2>V2[s1 -], V2>T2[-], T2>V2[s1 -], V2>T2[-], T2>V2[s1 -], V2>T2[-], T2>A[-], A>U[-] ~2min> U>A[s1 -], A>T2[s1 -], T2>V2[s1 -], V2>T2[-], T2>A[-], A>U[-] ~2min> U>A[s1 -], A>T2[s1 -], T2>V2[s1 -], V2>T2[-], T2>A[-], A>U[-] ~2min> U>A[s1 -], A>T2[s1 -], T2>V2[s1 -], V2>T2[-], T2>A[-], A>U[-] ~2min> U>A[-], A>T2[-], T2>V2[-], V2>T2[s1@subject -], T2>A[s1@subject -], A>T3[s1@subject -], T3>V3[s1@subject -]⚑, V3>T3[-], T3>A[-], A>U[-]
@@ -61,8 +61,6 @@ SSN     s1    ·      ·      ·      ┈┈┈┈┈┈○┈┈┈┈┈┈○
 verdict at 35: expected off=allow / conv=allow / cross=allow, observed off=allow / conv=allow / cross=allow
 ```
 
-**Reasons.** pending: the common-value count is not on this branch: the crossing core draws the crossing and the edges that rest on it, with the count by distinct earlier conversation valid at the payload's time (R2) and its mark on the leg · marks at 32: want [common 4], got []
-
 **Rows (cross run).**
 
 | leg | who | classification | inherited labels (from leg) | risk |
@@ -105,6 +103,8 @@ verdict at 35: expected off=allow / conv=allow / cross=allow, observed off=allow
 | 36 | V3>T3 | PUBLIC  | — | — |
 | 37 | T3>A | PUBLIC  | — | — |
 | 38 | A>U | PUBLIC  | — | — |
+
+Marks (cross run): leg 32 [common 4]
 
 Risk observer calls: 48
 

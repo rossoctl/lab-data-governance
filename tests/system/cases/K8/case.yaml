@@ -97,5 +97,4 @@ classifier:
 notes: 'Conversation 1 sends the whole record (SSN, MRN, birthdate, diagnosis) to V2; V2 returns the birthdate and the diagnosis.
   Two plain values of one record corroborate each other, but neither is an anchoring identifier: no crossing, allow (twins
   and households share exactly such pairs). Both labels are PI, so T-SENS would allow even if they crossed: the edges carry
-  the claim. Green on this branch only because nothing crosses at all here; the case means something once the crossing core
-  exists, and its deliberate break (the anchor rule off) must turn it red.'
+  the claim. Its deliberate break (the anchor rule off) turns it red.'

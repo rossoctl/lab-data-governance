@@ -11,8 +11,12 @@ from __future__ import annotations
 
 import dataclasses
 from collections.abc import Mapping, Sequence
+from typing import TYPE_CHECKING
 
 from .units import LegKey, Occurrence, Unit
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from .cross import Carried, Common, Crossed, Holding
 
 #: Sensitivity levels, lowest first (the classifier's ladder).
 LEVELS: tuple[str, ...] = ("PUBLIC", "INTERNAL", "CONFIDENTIAL", "RESTRICTED")
@@ -20,15 +24,19 @@ LEVELS: tuple[str, ...] = ("PUBLIC", "INTERNAL", "CONFIDENTIAL", "RESTRICTED")
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class Edge:
-    """One unit reaching one payload through one hop. ``from_trace_id`` is set when
-    the carrier is a leg of another trace (never, in one conversation);
-    ``recombined`` when fragments of the origin united at the destination (never,
-    for whole values)."""
+    """One unit reaching one payload through one hop: a crossing when the carrier is
+    a leg of another trace (:attr:`from_trace_id`); ``recombined`` when fragments of
+    the origin united at the destination (never, for whole values)."""
 
     to: Occurrence
     came_from: Occurrence
-    from_trace_id: str | None = None
     recombined: bool = False
+
+    @property
+    def from_trace_id(self) -> str | None:
+        """The carrier's trace when it is not the edge's (never, in one conversation)."""
+        t = self.came_from.at.trace_id
+        return None if t == self.to.at.trace_id else t
 
     @property
     def unit(self) -> Unit:
@@ -88,11 +96,20 @@ class TraceStatus:
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class Derivation:
+    """One trace derived. With the cross-conversation switch on, also: the level of
+    each crossing edge (by :attr:`Edge.key`), how the value is known at the to leg of
+    every edge that rests on a crossing (``carried``), the common values at its leaving
+    legs, and what its persistent entities received (empty otherwise)."""
+
     trace_id: str
     edges: tuple[Edge, ...]
     legs: Mapping[LegKey, LegSummary]
     occurrences: Mapping[LegKey, tuple[Occurrence, ...]]
     status: TraceStatus
+    levels: Mapping[tuple, Crossed] = dataclasses.field(default_factory=dict)
+    carried: Mapping[tuple, Carried] = dataclasses.field(default_factory=dict)
+    commons: tuple[Common, ...] = ()
+    holdings: tuple[Holding, ...] = ()
 
 
 def highest(levels: Sequence[str]) -> str | None:

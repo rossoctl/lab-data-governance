@@ -1,24 +1,38 @@
 """Writing a :class:`~data_governance.label_lineage.summary.Derivation` to the four
-tables of migration 0024, and reading back what risk needs to know changed.
+tables of migration 0024 and the three of 0031, and reading back what risk needs to
+know changed.
 
 The rows mirror the dataclasses: an edge row is the edge's two occurrences
 flattened, a leg row is a :class:`LegSummary`, the status row is the trace's
 :class:`TraceStatus`. Keys are deterministic — ``edge_id`` is a uuid5 of the edge's
 natural key, the leg row is keyed by its leg — so writing one derivation twice is
 the same rows, and the trace-scoped delete is by set membership, never by seq.
+
+A crossing edge is an edge row like any other; its level and the common values of
+a leaving leg are ``label_crossings`` rows, what the trace's persistent entities
+received ``label_occurrences`` rows, and every edge whose value rests on a crossing
+has a ``label_crossed_edges`` row with how surely it is the label's there. A
+derivation without the cross-conversation switch produces none, so writing it deletes
+the trace's rows there and writes none.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import uuid
 
 from data_governance import db
+from data_governance.label_lineage.cross import Holding, core, core_hash
 from data_governance.label_lineage.summary import Derivation, Edge, LegSummary
 
 #: The namespace edge ids are minted in (uuid5 of "data-governance:label-lineage:edge"
 #: under the URL namespace). Fixed: changing it renames every stored edge.
 NS_LABELS = uuid.UUID("2472ae9a-b655-531d-a17a-b966d624ad0d")
+
+#: The namespace occurrence and crossing ids are minted in (uuid5 of
+#: "data-governance:label-lineage:crossing" under the URL namespace). Fixed.
+NS_CROSSINGS = uuid.uuid5(uuid.NAMESPACE_URL, "data-governance:label-lineage:crossing")
 
 
 def edge_id(edge: Edge) -> str:
@@ -67,6 +81,7 @@ INSERT INTO payload_label_edges (
 ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
           %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
 ON CONFLICT (edge_id) DO UPDATE SET
+    from_trace_id = EXCLUDED.from_trace_id,
     to_payload_hash = EXCLUDED.to_payload_hash, from_payload_hash = EXCLUDED.from_payload_hash,
     unit_text = EXCLUDED.unit_text, unit_value = EXCLUDED.unit_value,
     regulatory_tags = EXCLUDED.regulatory_tags, sensitivity_level = EXCLUDED.sensitivity_level,
@@ -116,14 +131,110 @@ def _edge_row(edge: Edge, matcher: str, seq: int) -> tuple:
     )
 
 
+def value_hash(value: str) -> str:
+    return hashlib.sha256(value.encode()).hexdigest()
+
+
+def occurrence_id(h: Holding) -> str:
+    """The occurrence's id: entity / leg / origin unit / span / held run."""
+    o = h.occurrence
+    return str(uuid.uuid5(NS_CROSSINGS, "/".join([
+        "occurrence", h.entity_id, ":".join(o.at.leg), ":".join(map(str, o.unit.key)),
+        f"{o.span[0]}:{o.span[1]}", str(o.held_from), str(o.held_to)])))
+
+
+_OCCURRENCE_SQL = """
+INSERT INTO label_occurrences (
+    occurrence_id, entity_id, trace_id, interaction_id, leg_type, payload_hash,
+    value_text, value_hash, core_hash, word_count, span_start, span_end, record_start, record_end,
+    origin_trace_id, origin_interaction_id, origin_leg_type, origin_payload_hash,
+    unit_start, unit_end, unit_text, unit_value, entity_type, regulatory_tags, sensitivity_level, category,
+    held_from, held_to, evidence, level, valid_from, valid_to
+) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+          %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+ON CONFLICT (occurrence_id) DO UPDATE SET
+    trace_id = EXCLUDED.trace_id,
+    payload_hash = EXCLUDED.payload_hash, record_start = EXCLUDED.record_start, record_end = EXCLUDED.record_end,
+    unit_text = EXCLUDED.unit_text, regulatory_tags = EXCLUDED.regulatory_tags,
+    sensitivity_level = EXCLUDED.sensitivity_level, category = EXCLUDED.category,
+    evidence = EXCLUDED.evidence, level = EXCLUDED.level,
+    valid_from = EXCLUDED.valid_from, valid_to = EXCLUDED.valid_to
+"""
+
+_CROSSING_SQL = """
+INSERT INTO label_crossings (
+    crossing_id, trace_id, interaction_id, leg_type, value_hash, conversations, edge_id, occurrence_id, level
+) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+ON CONFLICT (crossing_id) DO UPDATE SET
+    conversations = EXCLUDED.conversations, occurrence_id = EXCLUDED.occurrence_id, level = EXCLUDED.level
+"""
+
+
+def _occurrence_row(h: Holding) -> tuple:
+    o, u = h.occurrence, h.occurrence.unit
+    record = h.record or (None, None)
+    held_core, words = core(h.value)       # never None: the fold holds no value without a word
+    return (
+        occurrence_id(h), h.entity_id, o.at.trace_id, *o.at.leg, o.at.payload_hash,
+        h.value, value_hash(h.value), core_hash(held_core), words, *o.span, *record,
+        u.origin.trace_id, u.origin.interaction_id, u.origin.leg_type, u.origin.payload_hash,
+        u.value.start, u.value.end, u.text, u.value.canonical, u.entity_type, list(u.regulatory_tags),
+        u.sensitivity_level, u.category, o.held_from, o.held_to, h.evidence, h.level, h.valid_from, h.valid_to,
+    )
+
+
+def _crossing_rows(derivation: Derivation) -> list[tuple]:
+    t = derivation.trace_id
+    rows = []
+    for e in derivation.edges:
+        c = derivation.levels.get(e.key)
+        if c is not None:
+            eid = edge_id(e)
+            rows.append((str(uuid.uuid5(NS_CROSSINGS, f"crossing/{eid}")), t, *e.to_key,
+                         value_hash(c.holding.value), c.conversations, eid, occurrence_id(c.holding), c.level))
+    for m in derivation.commons:
+        vh = value_hash(m.value)
+        rows.append((str(uuid.uuid5(NS_CROSSINGS, f"common/{t}/{':'.join(m.leg)}/{vh}")), t, *m.leg,
+                     vh, m.conversations, None, None, None))
+    return rows
+
+
+_CARRIED_SQL = """
+INSERT INTO label_crossed_edges (edge_id, trace_id, level, ambiguous) VALUES (%s, %s, %s, %s)
+ON CONFLICT (edge_id) DO UPDATE SET trace_id = EXCLUDED.trace_id, level = EXCLUDED.level,
+    ambiguous = EXCLUDED.ambiguous
+"""
+
+
+def _carried_rows(derivation: Derivation) -> list[tuple]:
+    return [(edge_id(e), derivation.trace_id, c.level, c.ambiguous)
+            for e in derivation.edges if (c := derivation.carried.get(e.key)) is not None]
+
+
+def _carried_by_interaction(rows) -> dict[str, set[tuple]]:
+    out: dict[str, set[tuple]] = {}
+    for interaction_id, *row in rows:
+        out.setdefault(interaction_id, set()).add(tuple(row))
+    return out
+
+
+def _replace(tx: db.Transaction, table: str, key: str, trace_id: str, rows: list[tuple], sql: str) -> None:
+    tx.execute_many(sql, rows)
+    tx.execute(f"DELETE FROM {table} WHERE trace_id = %s AND NOT ({key} = ANY(%s::text[]))",
+               (trace_id, [r[0] for r in rows]))
+
+
 def write(tx: db.Transaction, derivation: Derivation, matcher: str) -> set[str]:
     """Persist *derivation* within *tx* and return the interactions whose inherited
     summary differs from the one stored before: a leg that had a row and now reads
     differently, a leg with no row before that now has edges (a decision may
-    already have been made without them), or a leg that lost its row while
-    something had reached it."""
+    already have been made without them), a leg that lost its row while
+    something had reached it, or one whose carried crossed labels changed."""
     trace_id = derivation.trace_id
     before = read_summaries(tx, trace_id)
+    carried_before = _carried_by_interaction(tx.fetch_all(
+        "SELECT e.to_interaction_id, c.edge_id, c.level, c.ambiguous FROM label_crossed_edges c "
+        "JOIN payload_label_edges e ON e.edge_id = c.edge_id WHERE c.trace_id = %s", (trace_id,)))
     seq_of = {key: leg.seq for key, leg in derivation.legs.items()}
     edges = {edge_id(e): e for e in derivation.edges}
     tx.execute_many(_EDGE_SQL, [_edge_row(e, matcher, seq_of[e.to_key]) for e in edges.values()])
@@ -143,10 +254,20 @@ def write(tx: db.Transaction, derivation: Derivation, matcher: str) -> set[str]:
         "  WHERE kept.interaction_id = m.interaction_id AND kept.leg_type = m.leg_type::text)",
         (trace_id, [k[0] for k in keys], [k[1] for k in keys]),
     )
+    _replace(tx, "label_occurrences", "occurrence_id", trace_id,
+             [_occurrence_row(h) for h in derivation.holdings], _OCCURRENCE_SQL)
+    _replace(tx, "label_crossings", "crossing_id", trace_id, _crossing_rows(derivation), _CROSSING_SQL)
+    carried = _carried_rows(derivation)
+    _replace(tx, "label_crossed_edges", "edge_id", trace_id, carried, _CARRIED_SQL)
     s = derivation.status
     tx.execute(_STATUS_SQL, (trace_id, s.status, s.unclassified_legs, s.unanchored_findings,
                              s.derived_legs, s.edge_count, matcher))
     changed = {key[0] for key, leg in derivation.legs.items()
                if (before[key] != _summary(leg) if key in before else leg.edge_count > 0)}
     changed |= {key[0] for key, row in before.items() if key not in derivation.legs and row[-1]}
+    # how surely a carried label is the value's is what a decision reads too (it moves without the summary)
+    to_of = {edge_id(e): e.to_key[0] for e in derivation.edges}
+    carried_after = _carried_by_interaction((to_of[r[0]], r[0], r[2], r[3]) for r in carried)
+    changed |= {i for i in carried_before.keys() | carried_after.keys()
+                if carried_before.get(i) != carried_after.get(i)}
     return changed

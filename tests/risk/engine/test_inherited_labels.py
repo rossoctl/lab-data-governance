@@ -5,7 +5,10 @@
   lineage — built here from the same evidence.
 - ``on``: the labels that reached a leg's payload join that flow as ONE
   document-level data item; only whole values whose origin is in the trace.
-- ``all``: rejected at startup until cross-conversation lineage exists.
+- ``on`` with ``LABEL_CROSS_CONVERSATION=on``: an edge whose value rests on a crossing
+  joins the flow as a second item, and the flow states how surely in ``crossed``; with
+  the cross switch off, everything is as under ``on`` alone.
+- ``all``: rejected at startup; the cross-conversation switch is its own.
 """
 
 from __future__ import annotations
@@ -157,6 +160,86 @@ def test_on_forwards_only_whole_values_from_this_trace(edge: labels.InheritedEdg
 
 def test_an_origin_named_by_its_own_trace_id_is_this_trace() -> None:
     assert labels.forwarded(_edge(origin_trace_id="T"), "on")
+
+
+# --- on, across conversations ----------------------------------------------------------------------
+
+
+def _crossed(**fields) -> labels.InheritedEdge:
+    return _edge(origin_trace_id="another-trace", crossed_level="value_only", ambiguous=True, **fields)
+
+
+def test_cross_off_is_byte_identical_to_on_alone_even_when_crossed_rows_are_handed_over() -> None:
+    """With the cross switch off, the level read beside an edge changes nothing: an edge of this trace is forwarded
+    as today (a crossing inside one conversation, R7), one from another conversation is not."""
+    edges = [_edge(crossed_level="corroborated"), _crossed(matched_start=60, matched_end=71), _edge(matched_start=80,
+                                                                                                    matched_end=91)]
+    plain = [dataclasses.replace(e, crossed_level=None, ambiguous=False) for e in edges]
+    assert (_artefacts(_evidence(labels.Inherited(mode="on", by_leg={"request": edges})))
+            == _artefacts(_evidence(labels.Inherited(mode="on", by_leg={"request": plain}))))
+
+
+def test_cross_on_with_nothing_crossed_is_byte_identical_too() -> None:
+    by_leg = {"request": [_edge()]}
+    assert (_artefacts(_evidence(labels.Inherited(mode="on", by_leg=by_leg, cross=True)))
+            == _artefacts(_evidence(labels.Inherited(mode="on", by_leg=by_leg))))
+
+
+def test_cross_on_adds_the_crossed_item_and_the_flow_states_how_surely() -> None:
+    inherited = labels.Inherited(mode="on", cross=True, by_leg={"request": [
+        _edge(matched_start=80, matched_end=91),                       # known inside the conversation
+        _crossed(), _crossed(),                                         # one value, two origins
+        _edge(crossed_level="corroborated", entity_type="MRN", matched_text="MRN-4471", matched_start=40,
+              matched_end=48),                                          # a crossing inside one conversation (R7)
+    ]})
+    opa_input = json.loads(_artefacts(_evidence(inherited))[0])
+    request = opa_input["flows"]["request"]
+    own, inside, crossed = request["data_items"]
+    assert [e["start"] for e in inside["entities"]] == [80]
+    assert crossed == {"entities": [
+        {"entity_type": "SSN", "regulatory_tags": ["PII"], "classification_level": "RESTRICTED",
+         "text": "123-45-6789", "start": 20, "end": 31},
+        {"entity_type": "MRN", "regulatory_tags": ["PII"], "classification_level": "RESTRICTED",
+         "text": "MRN-4471", "start": 40, "end": 48}],
+        "list_of_entities": ["SSN", "MRN"], "classification_level": "RESTRICTED", "regulatory_tags": ["PII"]}
+    assert request["crossed"] == {"levels": ["corroborated", "value_only"], "ambiguous": True, "count": 3,
+                                  "regulatory_tags": ["PII"], "max_level": "RESTRICTED"}
+    assert "crossed" not in opa_input["flows"]["response"]
+    from tests.risk.engine.test_utils import _opa_input_validator
+    _opa_input_validator().validate(opa_input)
+
+
+def test_cross_on_moves_the_fingerprint_and_joins_the_record() -> None:
+    off = _evidence(labels.Inherited(mode="on", by_leg={"request": [_crossed()]}))
+    on = _evidence(labels.Inherited(mode="on", cross=True, by_leg={"request": [_crossed()]}))
+    assert _artefacts(off) == _base(off)
+    _, fp, record = _artefacts(on)
+    assert fp != _base(on)[1]
+    summary = json.loads(json.loads(record)[0]["classification_summary"])
+    assert summary["request"]["crossed"] == {"levels": ["value_only"], "ambiguous": True, "count": 1,
+                                            "regulatory_tags": ["PII"], "max_level": "RESTRICTED"}
+    assert "inherited" not in summary["request"]
+
+
+def test_inherited_labels_off_forwards_nothing_crossed() -> None:
+    off = _evidence(labels.Inherited(mode="off", cross=True, by_leg={"request": [_crossed()]}))
+    assert _artefacts(off) == _base(off)
+
+
+def test_the_cross_switch_is_read_by_label_lineage_s_parser() -> None:
+    config.cross_conversation.cache_clear()
+    try:
+        assert config.cross_conversation() is False
+    finally:
+        config.cross_conversation.cache_clear()
+
+
+def test_a_bad_cross_switch_stops_leg_ready_with_the_message_before_any_db_work() -> None:
+    env = {**os.environ, "LABEL_CROSS_CONVERSATION": "yes", "DATABASE_URL": "postgres://unused:1/x"}
+    result = subprocess.run([sys.executable, "-m", "data_governance.processors.leg_ready"],
+                            env=env, capture_output=True, text=True, check=False)
+    assert result.returncode == 2 and "LABEL_CROSS_CONVERSATION" in result.stderr
+    assert "Traceback" not in result.stderr
 
 
 # --- all ---------------------------------------------------------------------------------------------

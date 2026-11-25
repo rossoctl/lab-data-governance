@@ -29,11 +29,6 @@ expect:
   marks:
     '32':
     - common 4
-  pending:
-    reason: 'the common-value count is not on this branch: the crossing core draws the crossing and the edges that rest on
-      it, with the count by distinct earlier conversation valid at the payload''s time (R2) and its mark on the leg'
-    marks:
-    - 32
 classifier:
   must_see:
     '1':

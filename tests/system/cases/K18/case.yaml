@@ -74,6 +74,46 @@ expect:
       s3:
       - classified DOB
       - crossed co
+    '23':
+      s1:
+      - inherited
+      - crossed co
+      s2:
+      - inherited
+      - crossed co
+      s3:
+      - inherited
+      - crossed co
+    '24':
+      s1:
+      - inherited
+      - crossed co
+      s2:
+      - inherited
+      - crossed co
+      s3:
+      - inherited
+      - crossed co
+    '25':
+      s1:
+      - inherited
+      - crossed co
+      s2:
+      - inherited
+      - crossed co
+      s3:
+      - inherited
+      - crossed co
+    '26':
+      s1:
+      - inherited
+      - crossed co
+      s2:
+      - inherited
+      - crossed co
+      s3:
+      - inherited
+      - crossed co
     '27':
       s1:
       - inherited
@@ -84,17 +124,6 @@ expect:
       s3:
       - inherited
       - crossed co
-  pending:
-    reason: 'no crossing on this branch: the crossing core draws the crossing and the edges that rest on it; the level on
-      its way carries crossed and its level to every later leg and into the policy input. The verdicts and the conversation''s
-      own edges already match'
-    missing:
-    - s1 11>22 co
-    - s2 11>22 co
-    - s3 11>22 co
-    evidence:
-    - 22
-    - 27
 classifier:
   must_see:
     '7':
@@ -144,5 +173,5 @@ classifier:
     - s3
   authored: true
 notes: 'K1 with V2''s answer under the keys the model recognises: the classifier labels the three at leg 22 too. The leg shows
-  both, classified and crossed, corroborated; neither changes the other. At the flagged leg both reach it: inherited (the
+  both, classified and crossed, corroborated; neither changes the other. On every later leg both reach it: inherited (the
   label classified at 22) and crossed. The conversation''s own edges from 22 are drawn in every mode, so conv already blocks.'

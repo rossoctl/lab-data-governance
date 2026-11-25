@@ -5,7 +5,8 @@ receiver and the real processors (interactions, data lineage, classification, la
 leg-ready with the risk observer) against a real Postgres and a real OPA loaded with the suite's one
 rule (T-SENS, `rules.py`: a PII label, own or inherited, to an external destination is blocked), and
 the result is read back from the tables. Each case runs three times, in about two seconds per run:
-`off` (inherited labels off), `conv` (on, the cross-conversation switch off) and `cross` (both on). No
+`off` (inherited labels off, the cross-conversation switch on), `conv` (inherited labels on, the
+cross-conversation switch off) and `cross` (both on). No
 cluster, no live app, no mock of the system: the only stand-in is the classifier's own recorded output,
 replayed through its own seam.
 
@@ -50,15 +51,22 @@ The keys of a case across conversations (`cases.py` shows each; R1–R10 are the
 
 - **`expect.cross`**: what the `cross` run draws beside `expect.edges`. A crossing carries its level,
   `s1 11>22 vo` (value-only) or `co` (corroborated); the edges that rest on it inside the conversation
-  carry none (`s1 22>23`). The `off` and `conv` runs must draw exactly `expect.edges`, never pending.
+  carry none (`s1 22>23`). The `conv` run must draw exactly `expect.edges`, and the `off` run exactly
+  what the `cross` run draws (inherited labels off changes the verdict only); no pending block excuses either.
 - **`expect.evidence`**: at a leg, per unit, how the cross run knows it: `classified SSN` (the type the
   model gave the unit's own bytes there; R8 states it at the leg the partner received the value),
   `inherited`, `crossed vo|co`, with ` ambiguous` for several origins. A stated cell is compared exactly;
-  `[]` says nothing reaches it; a crossed label drawn at a cell the case does not state is wrong. Read from the rows (`engine.evidence_at`): today classified and
-  inherited; a crossing's level from its row once the crossing core writes it, and a crossed label carried
-  on inside the conversation once that is written.
+  `[]` says nothing reaches it; a crossed label drawn at a cell the case does not state is wrong, so the cell at
+  the to leg of every edge in `expect.cross` states a kind (checked from the files, for a held case too). Read from the
+  rows (`engine.evidence_at`): `classified` from the findings at the leg, and one kind per edge row into it,
+  `crossed L [ambiguous]` from the edge's `label_crossed_edges` row (the value's level at that leg, which at
+  a crossing can differ from the crossing's own level in `expect.cross`), else `inherited`. The edge set keeps
+  no origin, but an extra crossed origin turns the cell ambiguous, so it is red where the case states one
+  origin; a fabricated extra origin from the same carrier leg at a cell already stated ambiguous is not seen
+  (a known limit).
 - **`expect.marks`**: at a leg, `common 4` (a common value and its count) or `incomplete payload_bytes`
-  (a limit that cut the result). Every mark drawn must be stated. No row writes one on this branch.
+  (a limit that cut the result). Every mark drawn must be stated. `common N` is read from its crossing
+  row; no row writes `incomplete` on this branch.
 - **`steps`**: `send: 17-32` (legs, a range in its own direction: `32-1` is reversed), `drain` (every
   drain on from where it stopped), `derive: 2` (the conversation queued again through the production
   correction queue, `dg_queue_label_trace`), `reclassify: {7: [s1]}`, `cross: 'on'`. By default: send
@@ -72,12 +80,12 @@ The keys of a case across conversations (`cases.py` shows each; R1–R10 are the
 - **`config`** (`{payload_bytes: 16}`): a limit, applied through the production configuration.
 - **`expect.verdict`** per mode, or a decision history per mode: `[allow tier 1, block tier 2]`.
 
-A case that needs a production path this branch lacks (the cross switch, a limit, a
-reclassification, the tiers: `engine.NOT_ON_BRANCH`, one row each naming the path
-and where the engine applies it) is **held**: not run, and PENDING only when `expect.pending.held` names
-exactly those paths. The change that builds a path removes its row and the case runs from then on. The
-`cross` run sets the cross-conversation switch through `engine.switches` once it exists;
-until then it runs the branch as `conv` does.
+A case that needs a production path this branch lacks (a limit, a reclassification, the tiers:
+`engine.NOT_ON_BRANCH`, one row each naming the path and where the engine applies it) is **held**: not
+run, and PENDING only when `expect.pending.held` names exactly those paths; here that is K23a-c (limits),
+K25 (reclassify), K29 and K30 (tiers). The change that builds a path removes its row and the case runs
+from then on. `engine.switches` sets the cross-conversation switch per run (on in `off` and `cross`, off
+in `conv`), and a `cross` step switches it inside a run.
 
 ## Run
 
@@ -135,8 +143,8 @@ controls on the memoryless rule of #348, P1–P3: a tool that calls two partners
 callers of one tool in flight, and the same with one value in both calls (`T1(A1)>V1` names the call a
 request belongs to). K8–K30 are the cases across conversations, most of them K0's
 conversations or more of them: the rule, the level on its way, the common value, scope, limits, order and
-correction, switches and tiers. Each case's `notes` says what it proves (and, for a case green only
-because nothing crosses yet, which deliberate break will make it mean something); the `cell` groups them.
+correction, switches and tiers. Each case's `notes` says what it proves and, for a case that draws no
+crossing, which deliberate break turns it red; the `cell` groups them.
 
 ## The grid
 
@@ -158,8 +166,9 @@ sends every span before the processors run, so that record evidences the exchang
 renderer refuses a flagged exchange whose response carries a unit, and the judge one whose response the
 model labelled, so the verdict rests on the request alone.
 
-- **GREEN**: every mode's verdict matches `expect.verdict`, the `off` and `conv` runs drew exactly
-  `expect.edges`, the `cross` run exactly those and `expect.cross`, with the stated evidence and marks.
+- **GREEN**: every mode's verdict matches `expect.verdict`, the `conv` run drew exactly `expect.edges`,
+  the `cross` run exactly those and `expect.cross`, with the stated evidence and marks, and the `off` run
+  exactly what the `cross` run drew.
 - **PENDING**: the case states, in `expect.pending`, a reason and exactly what this branch gets wrong in
   the cross run (`missing` and `extra` edges, `verdict` modes, `evidence` and `marks` legs), and the run
   differs in exactly that; or it is held (`held`). A pending case that passes, or differs in any other
@@ -171,8 +180,8 @@ model labelled, so the verdict rests on the request alone.
   edge with an end on no line leg, an edge carrying a type its unit does not list or evidence that is not a
   whole match of its value, no risk record or disagreeing ones at the flagged leg, a labelled response in the
   flagged exchange), when an edge is drawn by two rows of one label type, origin and place in the receiving
-  payload (the edge set would hide it), when the classifier premise is broken in any run, or when the `off` or
-  `conv` run drew other edges than `expect.edges`.
+  payload (the edge set would hide it), when the classifier premise is broken in any run, or when the `conv`
+  run drew other edges than `expect.edges` or the `off` run other edges than the `cross` run.
 
 ## Files
 

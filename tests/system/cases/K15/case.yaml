@@ -77,6 +77,5 @@ classifier:
 notes: 'Conversation 1 sends the MRN under external_id; at leg 11, where V2 receives it, the model labels it an operational
   identifier (OPID), not a person identifier. Whether a value anchors follows the type it was received with (R8): no crossing,
   allow. The model''s findings on the MRN at legs 7-10 are subtracted (authored): it reads it as OPID there too, except at
-  leg 8 (DLN), which would give the value a second origin of another type. Green on this branch only because nothing crosses
-  at all here; the case means something once the crossing core exists, and its deliberate break (the anchor rule off) must
-  turn it red.'
+  leg 8 (DLN), which would give the value a second origin of another type. Its deliberate break (the anchor rule off) turns
+  it red.'

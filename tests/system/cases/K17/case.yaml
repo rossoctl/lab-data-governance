@@ -133,54 +133,6 @@ expect:
     '43':
       s1:
       - crossed vo
-  pending:
-    reason: 'no crossing on this branch: the crossing core draws the crossing and the edges that rest on it; the level on
-      its way carries crossed and its level to every later leg and into the policy input, so the cross run blocks at the flagged
-      leg. The off and conv runs already match'
-    missing:
-    - s1 11>22 co
-    - s2 11>22 co
-    - s3 11>22 co
-    - s1 22>23
-    - s1 23>24
-    - s1 24>25
-    - s1 25>26
-    - s1 26>27
-    - s2 22>23
-    - s2 23>24
-    - s2 24>25
-    - s2 25>26
-    - s2 26>27
-    - s3 22>23
-    - s3 23>24
-    - s3 24>25
-    - s3 25>26
-    - s3 26>27
-    - s1 23>26
-    - s2 23>26
-    - s3 23>26
-    - s1 27>38 vo
-    - s1 38>39
-    - s1 39>40
-    - s1 40>41
-    - s1 41>42
-    - s1 42>43
-    - s1 39>42
-    verdict:
-    - cross
-    evidence:
-    - 22
-    - 23
-    - 24
-    - 25
-    - 26
-    - 27
-    - 38
-    - 39
-    - 40
-    - 41
-    - 42
-    - 43
 classifier:
   must_see:
     '7':

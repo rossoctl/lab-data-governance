@@ -37,9 +37,9 @@ verdict at 11: expected off=allow / conv=block / cross=block, observed off=allow
 | 6 | V1>T1 | PUBLIC  | — | — |
 | 7 | T1>A | PUBLIC  | — | — |
 | 8 | A>L | RESTRICTED DOB=1961-03-14 MRN=4471820 SSN=123-45-6789 | s3=1961-03-14 (DOB, from 1), s2=4471820 (MRN, from 1), s1=123-45-6789 (SSN, from 1) | — |
-| 9 | L>A | PUBLIC  | s3=1961-03-14 (DOB, from 8), s2=4471820 (MRN, from 8), s1=123-45-6789 (SSN, from 8) | — |
-| 10 | A>T2 | PUBLIC  | s3=1961-03-14 (DOB, from 1), s2=4471820 (MRN, from 1), s1=123-45-6789 (SSN, from 1), s3=1961-03-14 (DOB, from 9), s2=4471820 (MRN, from 9), s1=123-45-6789 (SSN, from 9) | — |
-| 11 | T2>V2⚑ | PUBLIC  | s3=1961-03-14 (DOB, from 10), s2=4471820 (MRN, from 10), s1=123-45-6789 (SSN, from 10) | critical block ['T-SENS'] v1 |
+| 9 | L>A | PUBLIC  | s2=4471820 (MRN, from 8), s3=1961-03-14 (DOB, from 8), s1=123-45-6789 (SSN, from 8) | — |
+| 10 | A>T2 | PUBLIC  | s2=4471820 (MRN, from 9), s2=4471820 (MRN, from 1), s3=1961-03-14 (DOB, from 9), s3=1961-03-14 (DOB, from 1), s1=123-45-6789 (SSN, from 9), s1=123-45-6789 (SSN, from 1) | — |
+| 11 | T2>V2⚑ | PUBLIC  | s2=4471820 (MRN, from 10), s3=1961-03-14 (DOB, from 10), s1=123-45-6789 (SSN, from 10) | critical block ['T-SENS'] v1 |
 | 12 | V2>T2 | PUBLIC  | — | — |
 | 13 | T2>A | PUBLIC  | — | — |
 | 14 | A>L | PUBLIC  | — | — |

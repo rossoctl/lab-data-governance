@@ -166,7 +166,9 @@ def classification_summary(
     never defaulted to "none" (explicit issue requirement).
 
     *inherited* (``RISK_INHERITED_LABELS=on``) adds an ``inherited`` entry to a
-    leg that forwarded labels reached; without any, the summary is unchanged.
+    leg that forwarded labels reached, and a ``crossed`` entry
+    (:func:`labels.crossed_summary`) to one crossed labels reached; without any, the
+    summary is unchanged.
     """
     summary: dict[str, dict[str, Any]] = {}
     for leg_type, value in classifications.items():
@@ -179,6 +181,9 @@ def classification_summary(
         reached = inherited.forwarded(leg_type) if inherited is not None else []
         if reached:
             summary[leg_type]["inherited"] = labels.summary(reached)
+        crossed = labels.crossed_summary(inherited.crossed(leg_type)) if inherited is not None else None
+        if crossed is not None:
+            summary[leg_type]["crossed"] = crossed
     return summary
 
 
@@ -510,7 +515,11 @@ def build_opa_input(
     ``data_items`` one more item: the labels that REACHED that leg's payload
     through label lineage (:func:`labels.data_item`), so a rule on
     ``regulatory_tags`` / ``classification_level`` fires on an inherited label
-    exactly as on a detected one. ``None`` (off) leaves the input unchanged.
+    exactly as on a detected one. ``None`` (off) leaves the input unchanged. With
+    the cross-conversation switch on, the labels that rest on a crossing are a
+    further item of their own, after it, and the flow's ``crossed`` field
+    (:func:`labels.crossed_summary`) says how surely: the levels, whether ambiguous.
+    A rule on the labels fires on a crossed label as on any other.
     """
     if internal_patterns is None:
         internal_patterns = INTERNAL_URL_WHITELIST_PATTERNS
@@ -545,9 +554,13 @@ def build_opa_input(
             ),
             "requested_actions": [_LEG_TYPE_TO_ACTION[leg_type]],
         }
-        item = labels.data_item(inherited.forwarded(leg_type)) if inherited is not None else None
-        if item is not None:
-            flow["data_items"].append(item)
+        if inherited is not None:
+            reached = inherited.crossed(leg_type)
+            flow["data_items"] += [item for item in (labels.data_item(inherited.forwarded(leg_type)),
+                                                     labels.data_item(reached)) if item is not None]
+            crossed = labels.crossed_summary(reached)
+            if crossed is not None:
+                flow["crossed"] = crossed
         if source is not None:
             flow["data_sources"] = [_data_source(source)]
         if destination is not None:
