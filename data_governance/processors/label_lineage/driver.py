@@ -176,21 +176,29 @@ def load_trace(tx: db.Transaction, trace_id: str, config: Config | None = None) 
                            findings=findings, priors=priors, held_elsewhere=held)
 
 
+# Which conversation an occurrence belongs to is the trace of its receiving interaction now, read from
+# ``interactions``; its origin's trace likewise. The row's own ``trace_id`` and ``origin_trace_id`` say who wrote
+# it: when interactions move to another trace they follow only once that trace is derived, and read from the row a
+# moved conversation's own occurrences were another conversation's, and another's were its own.
+#
 # K: the most words among the occurrences the load below could return for these sends (the same window), so a
 # long value that expired, or one held only in this conversation, does not raise the cost of every later send.
 _LONGEST_SQL = """
-SELECT max(word_count) FROM label_occurrences
- WHERE holder_entity_id = %s AND trace_id <> %s AND valid_from < %s AND valid_to > %s
+SELECT max(o.word_count) FROM label_occurrences o JOIN interactions i ON i.id = o.interaction_id
+ WHERE o.holder_entity_id = %s AND i.trace_id <> %s AND o.valid_from < %s AND o.valid_to > %s
 """
 
 _PRIORS_SQL = """
-SELECT holder_entity_id, trace_id, interaction_id, leg_type::text, payload_hash, value_text, span_start, span_end,
-       record_start, record_end, origin_trace_id, origin_interaction_id, origin_leg_type::text,
-       origin_payload_hash, unit_start, unit_end, unit_text, unit_value, entity_type, regulatory_tags,
-       sensitivity_level, category, held_from, held_to, label_basis, level, valid_from, valid_to
-  FROM label_occurrences
- WHERE holder_entity_id = %s AND core_hash = ANY(%s) AND trace_id <> %s
-   AND valid_from < %s AND valid_to > %s
+SELECT o.holder_entity_id, i.trace_id, o.interaction_id, o.leg_type::text, o.payload_hash, o.value_text,
+       o.span_start, o.span_end, o.record_start, o.record_end, coalesce(oi.trace_id, o.origin_trace_id),
+       o.origin_interaction_id, o.origin_leg_type::text, o.origin_payload_hash, o.unit_start, o.unit_end,
+       o.unit_text, o.unit_value, o.entity_type, o.regulatory_tags, o.sensitivity_level, o.category, o.held_from,
+       o.held_to, o.label_basis, o.level, o.valid_from, o.valid_to
+  FROM label_occurrences o
+  JOIN interactions i ON i.id = o.interaction_id
+  LEFT JOIN interactions oi ON oi.id = o.origin_interaction_id
+ WHERE o.holder_entity_id = %s AND o.core_hash = ANY(%s) AND i.trace_id <> %s
+   AND o.valid_from < %s AND o.valid_to > %s
 """
 
 
@@ -204,7 +212,9 @@ def load_priors(tx: db.Transaction, trace_id: str, legs: list[fold.WireLeg], ent
     exactly the held values present, whatever and however much the sender holds. K is
     taken from the other conversations' occurrences valid in that window only, through
     the index on (entity, valid_to). Cost per payload: its words times K hashes and
-    index probes; the index on (entity, core_hash, valid_to) keeps expired ones out."""
+    index probes; the index on (entity, core_hash, valid_to) keeps expired ones out.
+    "Another conversation" is decided by the receiving interaction's trace in
+    ``interactions``, and that is the trace the holding is returned with."""
     sent = [leg for leg in legs if leg.occurred_at is not None and leg.payload_hash is not None
             and fold.is_persistent(entities, fold.ends(leg)[0], config.scopes)]
     rows: list[tuple] = []

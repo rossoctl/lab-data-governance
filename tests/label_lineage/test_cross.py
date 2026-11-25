@@ -380,6 +380,37 @@ def test_what_a_persistent_entity_receives_is_registered_with_its_record_and_int
     assert {(h.valid_from, h.valid_to) for h in d.holdings} == {(T0, T0 + ON.retention)}
 
 
+def _twice(records: list[dict], every: bool = True):
+    """A first conversation in which v receives *records*, classified at every place a value sits, or at its
+    first place only (what ``_findings`` marks)."""
+    t = _trace("T1", [("1", "request", "a", "v", records, []), ("1", "response", "a", "v", {"ok": True}, [])], T0)
+    text = project(records)
+    places = [(kind, value, at) for kind, value in (("SSN", SSN), ("DOB", DOB))
+              for at in range(len(text)) if text.startswith(value, at)]
+    if not every:
+        places = [next(p for p in places if p[0] == kind) for kind in ("SSN", "DOB")]
+    t.findings[t.legs[0].payload_hash] = [
+        {"entity_type": kind, "text": value, "start": at, "end": at + len(value), "regulatory_tags": ["PII"],
+         "sensitivity_level": "RESTRICTED"} for kind, value, at in places]
+    return t
+
+
+@pytest.mark.parametrize("every", [True, False], ids=["classified-at-each-place", "classified-at-the-first"])
+@pytest.mark.parametrize("records", [[{"ssn": SSN}, {"ssn": SSN, "dob": DOB}], [{"ssn": SSN, "dob": DOB}, {"ssn": SSN}]],
+                         ids=["alone-first", "alone-last"])
+def test_a_value_in_two_records_of_one_received_leg_is_held_in_each(records, every):
+    """Equal findings are one origin, at its first place (and the classifier may mark that place only). Held there
+    only, the identifier is alone in its record when that place is the record without the date, and the later
+    conversation draws it value-only and drops the date: the answer followed the order of the records."""
+    first = fold.derive(_twice(records, every), find.exact, crossing=ON)
+    assert sum(len(os) for os in first.occurrences.values()) == 2      # the leg's own occurrences: one per value
+    assert sorted((h.value, h.record is not None) for h in first.holdings) == [(SSN, True), (SSN, True), (DOB, True)]
+    assert len({h.record for h in first.holdings}) == 2
+    second = fold.derive(_second(first.holdings), find.exact, crossing=ON)
+    assert sorted({(e.to.unit.entity_type, second.levels[e.key].level) for e in second.edges
+                   if e.key in second.levels}) == [("DOB", cross.CORROBORATED), ("SSN", cross.CORROBORATED)]
+
+
 def test_nothing_is_registered_without_the_switch():
     assert fold.derive(_first(), find.exact).holdings == ()
 
@@ -554,6 +585,37 @@ def test_one_origin_through_two_carriers_is_not_ambiguous():
     d = fold.derive(_second(held), find.exact, crossing=ON)
     at_return = [row for row in _carried(d) if row[1] == ("2", "response")]
     assert [row[4:] for row in at_return] == [(cross.VALUE_ONLY, (cross.VALUE_ONLY, False))] * 2
+
+
+WITH_DOB, ALONE = {"ssn": SSN, "dob": DOB}, {"ssn": SSN}
+
+
+# The projection sorts keys: {"since": .., "subject": ..} returns the DOB first, {"id": .., "since": ..} the SSN.
+@pytest.mark.parametrize("priors", [list, lambda h: h[::-1]], ids=["as-registered", "reversed"])
+@pytest.mark.parametrize("returned", [{"subject": SSN, "since": DOB}, {"id": SSN, "since": DOB}],
+                         ids=["dob-first-in-return", "ssn-first-in-return"])
+@pytest.mark.parametrize("records, level", [([WITH_DOB, ALONE], cross.CORROBORATED),
+                                            ([ALONE, WITH_DOB], cross.CORROBORATED),
+                                            ([ALONE, ALONE], cross.VALUE_ONLY)],
+                         ids=["dob-record-first", "alone-first", "both-alone"])
+def test_one_origin_held_twice_on_one_leg_crosses_at_its_strongest(records, level, returned, priors):
+    """The SSN held twice on one received leg, in a record with its DOB and alone: both holdings cross onto one
+    edge, and whatever the order, the strongest holds; of equal ones, the one first in the received payload."""
+    first = _trace("Z1", [("0", "request", "u", "a", {"ssn": SSN}, [("SSN", SSN)]),
+                          ("1", "request", "a", "v", records, [("DOB", DOB)] if WITH_DOB in records else []),
+                          ("1", "response", "a", "v", {"ok": 1}, [])], T0, USER)
+    held = fold.derive(first, find.exact, crossing=ON).holdings
+    ssn = [h for h in held if h.value == SSN]
+    assert len(ssn) == 2 and len({h.occurrence.unit.key for h in ssn}) == 1
+    kept = next((h for h in ssn if any(x.value == DOB and x.record == h.record for x in held)),
+                min(ssn, key=lambda h: h.occurrence.span))
+    second = _trace("A2", [("2", "request", "a", "v", {"q": "lookup"}, []),
+                           ("2", "response", "a", "v", returned, []),
+                           ("3", "request", "a", "t", returned, [])], T0 + dt.timedelta(minutes=5), USER)
+    d = fold.derive(dataclasses.replace(second, priors=tuple(priors(held))), find.exact, crossing=ON)
+    (edge,) = [e for e in d.edges if e.unit.entity_type == "SSN" and e.key in d.levels]
+    assert (d.levels[edge.key].level, d.levels[edge.key].holding) == (level, kept)
+    assert sorted(d.carried[e.key].level for e in d.edges if e.unit.entity_type == "SSN") == [level, level]
 
 
 def test_a_value_known_inside_the_conversation_too_is_certain_and_reads_inherited():

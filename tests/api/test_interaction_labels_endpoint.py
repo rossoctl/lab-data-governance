@@ -16,6 +16,7 @@ from starlette.requests import Request
 
 from data_governance import retrieval
 from data_governance.api import SpansApiServer, _interaction_labels_handler, build_app
+from data_governance.retrieval.labels import MAX_ROUTE_COUNT
 
 pytest.importorskip("httpx")
 import httpx  # noqa: E402
@@ -105,9 +106,50 @@ def test_labels_wire_shape(seeded, api_server):
                  "caller": "booking-agent", "callee": "create-booking",
                  "text": "BK-2850EB", "start": 16, "end": 25, "role": "here", "excerpt": None},
             ]],
+            "route_count": 1,
+            "carriers": [
+                {"trace_id": _TID, "interaction_id": _ORIGIN, "leg_type": "request"},
+                {"trace_id": _TID, "interaction_id": _IX, "leg_type": "request"},
+            ],
         }],
     }
     assert (opid["entity_type"], opid["found_here"], opid["carried_in"]) == ("OPID", True, [])
+
+
+def test_a_route_count_too_large_for_json_saturates_and_the_response_encodes(configured_db, api_server):
+    # 15,000 diamonds in series: each holding p<i> reaches p<i+1> directly and
+    # through m<i> (an LLM round trip, say), so the routes double at every step
+    # and 2**15000 end at the last holding — 4,516 digits, past what json.dumps
+    # converts (4,300), and past what a JavaScript reader holds exactly (2**53).
+    k = 15_000
+    cols = ("edge_id, trace_id, to_interaction_id, to_leg_type, to_payload_hash, from_interaction_id, "
+            "from_leg_type, from_payload_hash, origin_interaction_id, origin_leg_type, origin_payload_hash, "
+            "unit_start, unit_end, unit_text, unit_value, entity_type, regulatory_tags, sensitivity_level, "
+            "matched_text, matched_start, matched_end, matcher, match_kind, score, held_from, held_to, seq")
+
+    def edge(eid: str, to: str, frm: str) -> list:
+        return [eid, "t-dia", f"ix-{to}", "request", to, f"ix-{frm}", "request", frm, "ix-p0", "request", "p0",
+                0, 9, "BK-2850EB", "BK-2850EB", "PID", "{PII}", "RESTRICTED", "BK-2850EB", 0, 9,
+                "exact", "whole", 1, 0, 9, 1]
+
+    with psycopg.connect(configured_db) as conn:
+        conn.execute(
+            "INSERT INTO interactions (id, trace_id, caller_entity_id, callee_entity_id, summary) "
+            "VALUES (%s, 't-dia', 'e1', 'e2', 'x')", (f"ix-p{k}",))
+        conn.execute(
+            "INSERT INTO interaction_legs (interaction_id, leg_type, occurred_at, payload_hash, error, seq) "
+            "VALUES (%s, 'request', now(), %s, false, 1)", (f"ix-p{k}", f"p{k}"))
+        with conn.cursor() as cur, cur.copy(f"COPY payload_label_edges ({cols}) FROM STDIN") as copy:
+            for i in range(k):
+                for row in (edge(f"d{i}", f"p{i + 1}", f"p{i}"), edge(f"a{i}", f"m{i}", f"p{i}"),
+                            edge(f"b{i}", f"p{i + 1}", f"m{i}")):
+                    copy.write_row(row)
+        conn.commit()
+        conn.execute("ANALYZE payload_label_edges")  # as autovacuum would after a bulk load
+    resp = httpx.get(f"{_base_url(api_server)}/api/traces/t-dia/interactions/ix-p{k}/labels", timeout=60)
+    assert resp.status_code == 200
+    (origin,) = resp.json()["legs"][0]["labels"][0]["carried_in"]
+    assert origin["route_count"] == MAX_ROUTE_COUNT == 2**53 - 1
 
 
 def test_unknown_interaction_is_empty_not_404(seeded, api_server):

@@ -5,8 +5,10 @@ from __future__ import annotations
 import dataclasses
 
 from .cases import MODES, Case, fmt_edges
-from .engine import NOT_ON_BRANCH, Observation
+from .classify import UncalibratedPayload, recorded_findings
+from .engine import NOT_ON_BRANCH, LegRows, Observation, flagged_response_problems
 from .grid import render_grid
+from .render import render
 
 
 @dataclasses.dataclass
@@ -41,6 +43,37 @@ def premise(case: Case, on: Observation, cells=None) -> list[str]:
                                  f"found {sorted(c['findings'])}" if want else
                                  f"leg {leg_index}: the model DID label {u} ({_types(case, u)}); "
                                  f"the case assumed it would not")
+    return notes
+
+
+def calibration_problems(case: Case) -> list[str]:
+    """What the case's files say against each other, read without a run: every payload calibrated and the authored
+    record the one the case states now (:func:`classify.recorded_findings`), the classifier premise the case
+    starts with (the files hold the first classification; a reclassify step replaces rows, not files), the types
+    the evidence states (R8), a kind stated wherever a crossing reaches (a run draws one there, and is red on a
+    crossed label at a cell the case does not state), and nothing labelled in the flagged exchange's response. A
+    held case is judged on this and on its ``pending.held``."""
+    renderer = render(case.id, case.units, case.line)
+    try:
+        found = recorded_findings(case, renderer)
+    except (ValueError, UncalibratedPayload) as exc:
+        return [f"calibration: {exc.args[0]}"]
+    except KeyError as exc:
+        return [f"calibration: findings.json has no {exc.args[0]!r}"]
+    except OSError as exc:
+        return [f"calibration: {exc}"]
+    legs = {i: LegRows(i, None, "request", None, {"findings": f}, [], None) for i, f in found.items()}
+    notes = premise(case, Observation("files", legs, set(), [], None, {}, 0), (case.must_see, case.must_miss))
+    if case.line.sink:
+        notes += flagged_response_problems(renderer.rendered, legs, case.line.sink.index)
+    for i, cells in case.evidence.items():
+        for unit, kinds in cells.items():
+            got = {f"classified {t}" for t, text in found[i] if text == case.values[unit]}
+            if got != {k for k in kinds if k.startswith("classified")}:
+                notes.append(f"leg {i} {unit} states {sorted(kinds)}, the model gave {sorted(got)}")
+    reached = {(to, unit) for unit, _, to, _ in case.cross}
+    notes += [f"leg {to} {unit}: a crossing reaches it and expect.evidence states no kind there"
+              for to, unit in sorted(reached) if not case.evidence.get(to, {}).get(unit)]
     return notes
 
 
@@ -129,7 +162,11 @@ def judge(case: Case, runs: dict[str, Observation]) -> Outcome:
 
 def judge_held(case: Case) -> Outcome:
     """A case that needs production paths this branch lacks is not run. It is PENDING when its pending block names
-    exactly those paths, and RED otherwise: never skipped in silence."""
+    exactly those paths and its files agree (:func:`calibration_problems`), and RED otherwise: never skipped in
+    silence."""
+    problems = calibration_problems(case)
+    if problems:
+        return Outcome(case, {}, "RED", problems, (set(), set()), [])
     needs = case.uses & set(NOT_ON_BRANCH)
     stated = case.pending.held if case.pending else frozenset()
     if stated == needs:

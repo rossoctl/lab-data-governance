@@ -56,7 +56,8 @@ The keys of a case across conversations (`cases.py` shows each; R1–R10 are the
 - **`expect.evidence`**: at a leg, per unit, how the cross run knows it: `classified SSN` (the type the
   model gave the unit's own bytes there; R8 states it at the leg the partner received the value),
   `inherited`, `crossed vo|co`, with ` ambiguous` for several origins. A stated cell is compared exactly;
-  `[]` says nothing reaches it; a crossed label drawn at a cell the case does not state is wrong. Read from the
+  `[]` says nothing reaches it; a crossed label drawn at a cell the case does not state is wrong, so the cell at
+  the to leg of every edge in `expect.cross` states a kind (checked from the files, for a held case too). Read from the
   rows (`engine.evidence_at`): `classified` from the findings at the leg, and one kind per edge row into it,
   `crossed L [ambiguous]` from the edge's `label_crossed_edges` row (the value's level at that leg, which at
   a crossing can differ from the crossing's own level in `expect.cross`), else `inherited`. The edge set keeps
@@ -142,8 +143,9 @@ classification row, is red: the case would test something other than it says.
 calibration runs the real model, then subtracts its findings on the case's units at the `must_miss`
 legs (never invents one), records in `findings.json` which values it removed from which payload, and
 the report says "authored" on the case. Every run checks that record against the case's current
-`must_miss`; a case edited since calibration fails until it is recalibrated. Decided 2026-11-09: the
-real model labels an SSN or a date by value under any key (the calibration shows it often labels the
+`must_miss`, and a held case is checked from its files the same way; a case edited since calibration
+fails until it is recalibrated. Decided 2026-11-09: the real model labels an SSN or a date by value
+under any key (the calibration shows it often labels the
 MRN too), so a wire-level classifier alone already blocks them; label lineage's claim does not depend
 on where one model happens to miss. The real-model cases (C1, C2, K0) keep the plumbing honest.
 
@@ -193,9 +195,9 @@ model labelled, so the verdict rests on the request alone.
   `incomplete run: leg_ready stopped at cursor 8 of 16`), when the rows cannot be read (a leg not derived, an
   edge with an end on no line leg, an edge carrying a type its unit does not list or evidence that is not a
   whole match of its value, no risk record or disagreeing ones at the flagged leg, a labelled response in the
-  flagged exchange), when an edge is drawn by two rows of one label type (the edge set would hide it),
-  when the classifier premise is broken in any run, or when the `conv` run drew other edges than
-  `expect.edges` or the `off` run other edges than the `cross` run.
+  flagged exchange), when an edge is drawn by two rows of one label type, origin and place in the receiving
+  payload (the edge set would hide it), when the classifier premise is broken in any run, or when the `conv`
+  run drew other edges than `expect.edges` or the `off` run other edges than the `cross` run.
 
 ## Files
 

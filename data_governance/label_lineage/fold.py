@@ -139,7 +139,10 @@ def derive(trace_input: TraceInput, finder: Finder,
             capped += cap
             cuts += [(key, limit) for limit in cut]
             sends.append((sender, key, leg.occurred_at))
-        crossed = {Edge(to=dataclasses.replace(o, source=None), came_from=o.source).key: c for o, c in found}
+        by_edge: dict[tuple, list[cross.Crossed]] = {}
+        for o, c in found:
+            by_edge.setdefault(Edge(to=dataclasses.replace(o, source=None), came_from=o.source).key, []).append(c)
+        crossed = {k: _strongest(cs) for k, cs in by_edge.items()}
         # a crossed occurrence carried on claims no finding of a later leg either
         on = [level_of.get(c.source.key, cross.CERTAIN) != cross.CERTAIN for c in candidates]
         held[key], leg_edges = attribute([c for c, x in zip(candidates, on) if not x], own,
@@ -152,9 +155,9 @@ def derive(trace_input: TraceInput, finder: Finder,
                 if at is not None:
                     crossed_at[e.to.key] = max(at, crossed_at.get(e.to.key, at))
         if known is not None and leg.occurred_at is not None and persistent(receiver):
-            here = _received(receiver, held[key], own, level_of, crossed_at, leg.occurred_at, crossing,
-                             records=cross.records(output.text) if _structured(trace_input.payloads.get(
-                                 leg.payload_hash)) else {})
+            here = _received(receiver, _every_place(held[key], finder, output), own, level_of, crossed_at,
+                             leg.occurred_at, crossing, records=cross.records(output.text) if _structured(
+                                 trace_input.payloads.get(leg.payload_hash)) else {})
             for h in here:
                 known.add(h)
             holdings += here
@@ -186,6 +189,14 @@ def _structured(content: object) -> bool:
     return isinstance(content, (dict, list)) and not is_projectable(content)
 
 
+def _strongest(crossings: Sequence[cross.Crossed]) -> cross.Crossed:
+    """Of the crossings onto one edge (one origin held more than once on one received
+    leg), the one whose step is strongest (R3); of equal steps, the holding first by its
+    occurrence, so the choice never follows the order the priors were loaded in."""
+    top = cross.strongest(cross.step(c.level, c.holding) for c in crossings)
+    return min((c for c in crossings if cross.step(c.level, c.holding) == top), key=lambda c: c.holding.occurrence.key)
+
+
 def carry(edges: Sequence[Edge], crossed: Mapping[tuple, cross.Crossed],
           level_of: dict[tuple, str]) -> dict[tuple, cross.Carried]:
     """How surely each value these *edges* (into one leg) reach is its unit's, and the
@@ -204,8 +215,7 @@ def carry(edges: Sequence[Edge], crossed: Mapping[tuple, cross.Crossed],
     such an occurrence maps to that."""
     for e in edges:
         if e.key in crossed:
-            c = crossed[e.key]
-            step = cross.weakest(c.level, c.holding.level if c.holding.label_basis == "crossed" else cross.CERTAIN)
+            step = cross.step(crossed[e.key].level, crossed[e.key].holding)
         else:
             step = level_of.get(e.came_from.key, cross.CERTAIN)
         level_of[e.to.key] = cross.strongest((level_of.get(e.to.key, step), step))
@@ -216,6 +226,18 @@ def carry(edges: Sequence[Edge], crossed: Mapping[tuple, cross.Crossed],
     value = {span: cross.Carried(cross.strongest(level_of[o.key] for o in occs), len({o.unit.key for o in occs}) > 1)
              for span, occs in on_span.items()}
     return {e.key: value[e.to.span] for e in edges if level_of[e.to.key] != cross.CERTAIN}
+
+
+def _every_place(occurrences: Sequence[Occurrence], finder: Finder, output: ProjectedPayload) -> list[Occurrence]:
+    """*occurrences* at one payload, and each further place of that payload where the
+    finder finds the value of a unit that originates there. Equal findings of one
+    payload are one unit, at its first place (:func:`.units.units_of`); what an entity
+    receives is the value at every place it sits, each with the record of that place
+    (R4). The unit stays one origin, and the leg's own occurrences are untouched."""
+    places: dict[tuple, Occurrence] = {}
+    for o in (*occurrences, *finder([o for o in occurrences if o.at == o.unit.origin], output)):
+        places.setdefault(o.key, o)
+    return list(places.values())
 
 
 def _received(entity_id: str, occurrences: Sequence[Occurrence], own: Sequence[Unit], level_of: Mapping[tuple, str],

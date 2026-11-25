@@ -80,7 +80,8 @@ def test_the_load_and_the_replace_are_indexed(migrated_dsn: str) -> None:
     with psycopg.connect(migrated_dsn) as conn:
         defs = " ".join(r[0] for r in conn.execute(
             "SELECT indexdef FROM pg_indexes WHERE tablename = ANY(%s)", (list(TABLES),)).fetchall())
-    for cols in ("(holder_entity_id, core_hash, valid_to)", "(holder_entity_id, valid_to) INCLUDE (word_count, valid_from, trace_id)",
+    for cols in ("(holder_entity_id, core_hash, valid_to)",
+                 "(holder_entity_id, valid_to) INCLUDE (word_count, valid_from, interaction_id)",
                  "(trace_id)"):
         assert cols in defs, cols
     assert "value_hash)" not in defs and "first_word" not in defs
@@ -96,15 +97,15 @@ def test_downgrade_drops_the_tables_and_upgrade_restores_them(pg_dsn: str, monke
     cfg = _alembic_config()
     command.upgrade(cfg, "head")
     assert set(TABLES) <= _tables(pg_dsn)
-    command.downgrade(cfg, "0029_hash_evidence_fingerprints")
+    command.downgrade(cfg, "0030_label_edges_holding_index")
     assert not (set(TABLES) & _tables(pg_dsn)) and "payload_label_edges" in _tables(pg_dsn)
     command.upgrade(cfg, "head")
     assert set(TABLES) <= _tables(pg_dsn)
 
 
-def test_0031_follows_0029_in_the_chain() -> None:
+def test_0031_follows_0030_in_the_chain() -> None:
     from alembic.config import Config
     from alembic.script import ScriptDirectory
 
     script = ScriptDirectory.from_config(Config("alembic.ini"))
-    assert script.get_revision("0031_label_crossings").down_revision == "0029_hash_evidence_fingerprints"
+    assert script.get_revision("0031_label_crossings").down_revision == "0030_label_edges_holding_index"
