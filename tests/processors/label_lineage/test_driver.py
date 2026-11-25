@@ -820,6 +820,60 @@ def test_the_holdings_count_reads_a_holding_s_conversation_from_its_interaction(
     assert _q(configured_db, "SELECT count(*) FROM label_crossings WHERE cut IS NOT NULL") == [(0,)]
 
 
+@pytest.mark.parametrize("correction", [
+    "UPDATE interactions SET callee_entity_id = 'w' WHERE id = '1'",
+    "UPDATE interaction_legs SET occurred_at = occurred_at - interval '1 hour' WHERE interaction_id = '1'",
+    "DELETE FROM interaction_legs WHERE interaction_id = '1' AND leg_type = 'request'",
+], ids=["another-callee", "an-hour-earlier", "the-leg-deleted"])
+def test_a_fresh_conversation_derived_before_a_correction_is_replayed_is_derived_again(configured_db: str,
+                                                                                       correction: str) -> None:
+    """a sends v an SSN and its date of birth. A correction then takes that receipt from v: another callee, a time
+    so much earlier that the retention is over, or the leg deleted. A fresh conversation in which v returns both
+    arrives before the correction is replayed, and the processor derives the legs that are ready first: it crosses
+    with what v held. The replay changes v's holdings and queues it, in the same wake, and nothing crosses."""
+    import dataclasses
+
+    from data_governance.label_lineage import cross
+    from data_governance.processors.data_lineage.traversal import Entity
+    from tests.label_lineage.test_cross import ENTITIES, _first, _second
+    config = driver.Config(find.exact, "exact", crossing=cross.Crossing())
+    entities = {**ENTITIES, "w": Entity("w", "service:other", "service")}
+    _seed_input(configured_db, dataclasses.replace(_first(), trace_id="Z1", entities=entities))
+    cursor = driver.drain(0, config)
+    with psycopg.connect(configured_db) as conn:
+        conn.execute(correction)
+    assert _q(configured_db, "SELECT trace_id FROM label_lineage_dirty_traces") == [("Z1",)]
+    _seed_input(configured_db, _second())
+    driver.drain(cursor, config)
+    assert _q(configured_db, "SELECT count(*) FROM label_lineage_dirty_traces") == [(0,)]
+    assert _crossings(configured_db) == []
+
+
+def test_a_fresh_conversation_derived_before_a_correction_that_adds_a_holding_is_derived_again(
+        configured_db: str) -> None:
+    """The other way: a sent the SSN and its date of birth to w, and a correction makes v the callee. A fresh
+    conversation in which v returns both is derived before the replay and crosses with nothing; the replay
+    registers what v holds and queues it, and both values cross."""
+    import dataclasses
+
+    from data_governance.label_lineage import cross
+    from data_governance.processors.data_lineage.traversal import Entity
+    from tests.label_lineage.test_cross import ENTITIES, _first, _second
+    config = driver.Config(find.exact, "exact", crossing=cross.Crossing())
+    entities = {**ENTITIES, "w": Entity("w", "service:other", "service")}
+    _seed_input(configured_db, dataclasses.replace(_first(), trace_id="Z1", entities=entities))
+    with psycopg.connect(configured_db) as conn:
+        conn.execute("UPDATE interactions SET callee_entity_id = 'w' WHERE id = '1'")
+    cursor = driver.drain(0, config)
+    assert _q(configured_db, "SELECT DISTINCT holder_entity_id FROM label_occurrences") == [("w",)]
+    with psycopg.connect(configured_db) as conn:
+        conn.execute("UPDATE interactions SET callee_entity_id = 'v' WHERE id = '1'")
+    _seed_input(configured_db, _second())
+    driver.drain(cursor, config)
+    assert _q(configured_db, "SELECT count(*) FROM label_lineage_dirty_traces") == [(0,)]
+    assert _crossings(configured_db) == [("DOB", "Z1", "corroborated"), ("SSN", "Z1", "corroborated")]
+
+
 CROSS_TABLES = ("label_occurrences", "label_crossings", "label_crossed_edges")
 
 
