@@ -164,7 +164,7 @@ the final rows do not depend on which conversation was derived first. A conversa
 once at a time (the queue's key), and a changed summary or level reaches the decision through
 `risk_recompute_requests` as a new version. The correction runs with the switch off too: a derivation
 then deletes the trace's occurrences, and what rested on them is queued (with the switch always off, a
-read of an empty table and a delete per derivation). It terminates because a match reads only occurrences
+read of an empty table and two deletes per derivation). It terminates because a match reads only occurrences
 strictly earlier in event time, and an occurrence whose label arrived through a crossing begins no
 earlier than that crossing (its `valid_from` is the later of the leg that received it and the crossing),
 so a clock that stamps a received leg before the crossing that fed it cannot make the correction go

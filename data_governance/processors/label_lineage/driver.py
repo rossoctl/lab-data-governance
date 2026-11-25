@@ -277,8 +277,8 @@ def derive_and_persist(tx: db.Transaction, trace_id: str, config: Config,
     (:func:`.store.affected`): queued now, or added to *corrections* for the caller to
     queue at the end of its transaction. The correction runs whatever the switch says: a
     derivation with it off deletes the trace's occurrences, and what rested on them is
-    queued too. With the switch always off that is a read of an empty table and a delete
-    per derivation."""
+    queued too. With the switch always off that is a read of an empty table and two
+    deletes per derivation."""
 
     def correct(before: set[tuple]) -> None:
         traces = store.affected(tx, trace_id, before)
