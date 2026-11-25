@@ -228,6 +228,8 @@ def occurrences(tx: db.Transaction, trace_id: str) -> set[tuple]:
                             "WHERE trace_id = %s", (trace_id,)))
 
 
+# A send is read with the trace its row was written with. When its interaction has moved to another trace since,
+# the move itself queued both traces, and the new one is derived after this, reading what is held then.
 _AFFECTED_SQL = """
 SELECT DISTINCT s.trace_id
   FROM label_sends s

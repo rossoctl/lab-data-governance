@@ -793,6 +793,33 @@ def test_a_conversation_crosses_with_a_holding_that_moved_out_of_it(configured_d
         (old, "DOB", new, "corroborated"), (old, "SSN", new, "corroborated")]
 
 
+@pytest.mark.parametrize("moved, sender_in, held", [("trace_id = 'Z7'", "A7", 0), ("id = '0'", "Z7", 2)],
+                         ids=["the-whole-conversation", "the-receiving-interaction"])
+def test_the_holdings_count_reads_a_holding_s_conversation_from_its_interaction(configured_db: str, moved: str,
+                                                                               sender_in: str, held: int) -> None:
+    """The holdings limit counts what other conversations hold with the sender. u gives a an SSN and a date of
+    birth, and a sends both to t; then interactions move to another trace, and the holdings' rows name the old
+    one until the new one is derived. Moved whole, the conversation's holdings are its own and none is another's;
+    when only the receiving interaction moved, both are another conversation's."""
+    from data_governance.label_lineage import cross
+    from data_governance.processors.data_lineage.traversal import Entity
+    from tests.label_lineage.test_cross import DOB, ENTITIES, SSN, T0, _trace
+    config = driver.Config(find.exact, "exact", {"agent:lab/a": "persistent"},
+                           crossing=cross.Crossing(holdings_limit=2))
+    _seed_input(configured_db, _trace("Z7", [("0", "request", "u", "a", {"ssn": SSN, "dob": DOB},
+                                              [("SSN", SSN), ("DOB", DOB)]),
+                                             ("1", "request", "a", "t", {"subject": SSN, "since": DOB}, [])], T0,
+                                      {**ENTITIES, "u": Entity("u", "user:alice", "user")}))
+    cursor = driver.drain(0, config)
+    with psycopg.connect(configured_db) as conn:
+        conn.execute(f"UPDATE interactions SET trace_id = 'A7' WHERE {moved}")
+    assert _q(configured_db, "SELECT DISTINCT trace_id FROM label_occurrences") == [("Z7",)]
+    with db.transaction() as tx:
+        assert driver.load_trace(tx, sender_in, config).held_elsewhere == {("1", "request"): held}
+    driver.drain(cursor, config)
+    assert _q(configured_db, "SELECT count(*) FROM label_crossings WHERE cut IS NOT NULL") == [(0,)]
+
+
 CROSS_TABLES = ("label_occurrences", "label_crossings", "label_crossed_edges")
 
 

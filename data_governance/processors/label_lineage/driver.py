@@ -232,8 +232,8 @@ def load_priors(tx: db.Transaction, trace_id: str, legs: list[fold.WireLeg], ent
 
 _HELD_SQL = """
 SELECT count(*) FROM (
-    SELECT 1 FROM label_occurrences
-     WHERE holder_entity_id = %s AND trace_id <> %s AND valid_to > %s AND valid_from < %s
+    SELECT 1 FROM label_occurrences o JOIN interactions i ON i.id = o.interaction_id
+     WHERE o.holder_entity_id = %s AND i.trace_id <> %s AND o.valid_to > %s AND o.valid_from < %s
      LIMIT %s) held
 """
 
@@ -242,7 +242,8 @@ def held_elsewhere(tx: db.Transaction, trace_id: str, legs: list[fold.WireLeg], 
                    config: Config) -> dict[tuple[str, str], int]:
     """Per leg a persistent entity sends, how many occurrences other conversations hold
     with it valid at the leg's time, counted no further than one past the holdings
-    limit (all the limit needs to know)."""
+    limit (all the limit needs to know). "Other conversations" as in
+    :func:`load_priors`: by the receiving interaction's trace in ``interactions``."""
     limit = config.crossing.holdings_limit + 1
     out = {}
     for leg in legs:

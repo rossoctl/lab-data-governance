@@ -17,7 +17,7 @@ value, as in 0031).
 
 The count of what an entity holds at a payload's time, which the holdings limit
 compares, is served by 0031's ``label_occurrences_valid_idx`` (entity, valid_to,
-including valid_from and trace_id), so it needs no index of its own.
+including valid_from and interaction_id), so it needs no index of its own.
 
 The downgrade deletes the cut rows (derived, re-derivable) before it restores the
 NOT NULLs, so it leaves exactly the schema of 0031.
