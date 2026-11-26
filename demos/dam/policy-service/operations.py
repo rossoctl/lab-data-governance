@@ -1,8 +1,8 @@
 """The operations of an MCP tool call, from the shape of its arguments only.
 
 Some tools do several things through their arguments: GitHub's ``issue_write`` creates an issue,
-or, with ``method: update``, closes it, reopens it, reassigns it or edits it, in one call. A
-description ("it never reassigns issues") and the company policy ("only testers close an issue")
+or, with ``method: update``, closes it, reopens it, reassigns it, relabels it or edits it, in one
+call. A description ("it never relabels issues") and the company policy ("only testers close an issue")
 speak of those operations, so each call is decided per operation, named ``<tool>.<operation>``,
 the names aiac decides from (aiac ``demo/dam/github-mcp-tools.json``). A call that does several
 at once yields all of them, and each must be allowed. A shape nothing here knows is the operation
@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from typing import Any
 
-ISSUE_EDIT_FIELDS = ("title", "body", "labels", "milestone", "type", "duplicate_of")
+ISSUE_EDIT_FIELDS = ("title", "body", "milestone", "type", "duplicate_of")
 
 
 def operations_of(tool: str, arguments: Any) -> list[str]:
@@ -39,6 +39,8 @@ def operations_of(tool: str, arguments: Any) -> list[str]:
         ops.append("issue_write.unknown")
     if "assignees" in args:
         ops.append("issue_write.assign")
+    if "labels" in args:
+        ops.append("issue_write.label")
     if any(field in args for field in ISSUE_EDIT_FIELDS):
         ops.append("issue_write.edit")
     return ops or ["issue_write.edit"]

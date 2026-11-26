@@ -16,11 +16,11 @@ agents := {
 generated := {
 	"agent_w": {
 		"name": "issue-workbench", "connection": "github-mcp", "host": host,
-		"allow": {"issue_read", "add_issue_comment", "issue_write.assign"},
+		"allow": {"issue_read", "add_issue_comment", "issue_write.label"},
 		"reasons": {
 			"issue_read": "github-mcp.issue_read for agent issue-workbench is allowed: agent states that it reads and summarizes issues.",
 			"add_issue_comment": "github-mcp.add_issue_comment for agent issue-workbench is allowed: agent states that it posts comments.",
-			"issue_write.assign": "github-mcp.issue_write.assign for agent issue-workbench is allowed: agent states that it assigns an issue back and forth.",
+			"issue_write.label": "github-mcp.issue_write.label for agent issue-workbench is allowed: agent states that it hands an issue back and forth with its labels.",
 			"issue_write.close": "github-mcp.issue_write.close for agent issue-workbench is denied: the policy prohibits it, agent specifically states that it never closes issues.",
 		},
 	},
@@ -31,7 +31,7 @@ generated := {
 			"issue_read": "github-mcp.issue_read for agent qa-signoff is allowed: agent states that it reads an issue and its history.",
 			"add_issue_comment": "github-mcp.add_issue_comment for agent qa-signoff is allowed: agent states that it posts the sign-off comment.",
 			"issue_write.close": "github-mcp.issue_write.close for agent qa-signoff is allowed: agent states that it closes the issue as completed, or as not planned.",
-			"issue_write.assign": "github-mcp.issue_write.assign for agent qa-signoff is denied: the policy prohibits it, agent specifically states that it never reassigns issues.",
+			"issue_write.label": "github-mcp.issue_write.label for agent qa-signoff is denied: the policy prohibits it, agent specifically states that it never relabels issues.",
 		},
 	},
 }
@@ -43,8 +43,8 @@ company := {
 	"status": "applied",
 	"role_rules": [
 		{
-			"id": "R1", "text": "Developers and testers may read issues, comment on them and assign them.",
-			"operations": ["github-mcp.issue_read", "github-mcp.add_issue_comment", "github-mcp.issue_write.assign"],
+			"id": "R1", "text": "Developers and testers may read issues, comment on them and label them.",
+			"operations": ["github-mcp.issue_read", "github-mcp.add_issue_comment", "github-mcp.issue_write.label"],
 			"agents": [], "roles": ["developer", "tester"], "holders": ["alice", "bob"],
 		},
 		{
@@ -72,8 +72,8 @@ decide(c, inp) := d if {
 # Act 2: from each agent's description alone.
 
 test_act2_workbench_ping_pong_allowed if {
-	decide(no_company, call("agent-w", "issue_write", ["issue_write.assign"], ["alice"])).allow
-	decide(no_company, call("agent-w", "issue_write", ["issue_write.assign"], ["bob"])).allow
+	decide(no_company, call("agent-w", "issue_write", ["issue_write.label"], ["alice"])).allow
+	decide(no_company, call("agent-w", "issue_write", ["issue_write.label"], ["bob"])).allow
 }
 
 test_act2_workbench_close_denied_by_description if {
@@ -83,9 +83,9 @@ test_act2_workbench_close_denied_by_description if {
 }
 
 test_act2_signoff_reassign_denied_by_description if {
-	d := decide(no_company, call("agent-q", "issue_write", ["issue_write.assign"], ["bob"]))
+	d := decide(no_company, call("agent-q", "issue_write", ["issue_write.label"], ["bob"]))
 	not d.allow
-	contains(d.reason, "never reassigns")
+	contains(d.reason, "never relabels")
 }
 
 test_act2_alice_closes_through_signoff if {
@@ -110,8 +110,8 @@ test_act3_bob_signs_off_with_data_rules if {
 }
 
 test_act3_ping_pong_still_allowed if {
-	decide(company, call("agent-w", "issue_write", ["issue_write.assign"], ["alice"])).allow
-	decide(company, call("agent-w", "issue_write", ["issue_write.assign"], ["bob"])).allow
+	decide(company, call("agent-w", "issue_write", ["issue_write.label"], ["alice"])).allow
+	decide(company, call("agent-w", "issue_write", ["issue_write.label"], ["bob"])).allow
 }
 
 test_act3_description_still_decides_first if {
@@ -151,7 +151,7 @@ test_unavailable_company_policy_denies if {
 }
 
 test_a_call_doing_two_operations_needs_both if {
-	not decide(no_company, call("agent-q", "issue_write", ["issue_write.close", "issue_write.assign"], ["bob"])).allow
+	not decide(no_company, call("agent-q", "issue_write", ["issue_write.close", "issue_write.label"], ["bob"])).allow
 }
 
 test_not_a_tool_call_passes if {

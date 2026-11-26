@@ -35,14 +35,14 @@ MODULES = {
     "agent-w": ("issue-workbench", {
         "issue_read": ("allow", "github-mcp.issue_read for agent issue-workbench is allowed: agent states that it reads and summarizes issues."),
         "add_issue_comment": ("allow", "github-mcp.add_issue_comment for agent issue-workbench is allowed: agent states that it posts comments."),
-        "issue_write.assign": ("allow", "github-mcp.issue_write.assign for agent issue-workbench is allowed: agent states that it assigns an issue back and forth."),
+        "issue_write.label": ("allow", "github-mcp.issue_write.label for agent issue-workbench is allowed: agent states that it hands an issue back and forth with its labels."),
         "issue_write.close": ("deny", "github-mcp.issue_write.close for agent issue-workbench is denied: the policy prohibits it, agent specifically states that it never closes issues."),
     }),
     "agent-q": ("qa-signoff", {
         "issue_read": ("allow", "github-mcp.issue_read for agent qa-signoff is allowed: agent states that it reads an issue and its history."),
         "add_issue_comment": ("allow", "github-mcp.add_issue_comment for agent qa-signoff is allowed: agent states that it posts the sign-off comment."),
         "issue_write.close": ("allow", "github-mcp.issue_write.close for agent qa-signoff is allowed: agent states that it closes the issue as completed."),
-        "issue_write.assign": ("deny", "github-mcp.issue_write.assign for agent qa-signoff is denied: the policy prohibits it, agent specifically states that it never reassigns issues."),
+        "issue_write.label": ("deny", "github-mcp.issue_write.label for agent qa-signoff is denied: the policy prohibits it, agent specifically states that it never relabels issues."),
     }),
 }
 
@@ -50,8 +50,8 @@ COMPANY = {
     "version": 1,
     "status": "applied",
     "role_rules": [
-        {"id": "R1", "text": "Developers and testers may read issues, comment on them and assign them.",
-         "operations": ["github-mcp.issue_read", "github-mcp.add_issue_comment", "github-mcp.issue_write.assign"],
+        {"id": "R1", "text": "Developers and testers may read issues, comment on them and label them.",
+         "operations": ["github-mcp.issue_read", "github-mcp.add_issue_comment", "github-mcp.issue_write.label"],
          "agents": [], "roles": ["developer", "tester"], "holders": ["alice", "bob"]},
         {"id": "R2", "text": "Only testers close an issue.", "operations": ["github-mcp.issue_write.close"],
          "agents": [], "roles": ["tester"], "holders": ["bob"]},
@@ -187,18 +187,18 @@ def world(opa, monkeypatch):
 
 ISSUE = {"owner": "s-and-p-team", "repo": "demo-public", "issue_number": 1}
 CLOSE = {**ISSUE, "method": "update", "state": "closed", "state_reason": "completed"}
-ASSIGN = {**ISSUE, "method": "update", "assignees": ["bob"]}
+LABEL = {**ISSUE, "method": "update", "labels": ["ready for testing"]}
 SIGN_OFF_WITH_EMAIL = {**ISSUE, "body": "Verified. Alice Mayer resolved it; reach Alice at alice.mayer@company.com."}
 SIGN_OFF = {**ISSUE, "body": "Verified on Safari 17 and 18, fixed in PR #12."}
 
 
 def test_act2_each_agent_keeps_to_its_description(world):
     world.company(NO_COMPANY)
-    assert world.call("agent-w", "issue_write", ASSIGN, ["alice"])[0] == 200
+    assert world.call("agent-w", "issue_write", LABEL, ["alice"])[0] == 200
     status, reason = world.call("agent-w", "issue_write", CLOSE, ["bob"])
     assert status == 403 and "never closes issues" in reason
-    status, reason = world.call("agent-q", "issue_write", ASSIGN, ["bob"])
-    assert status == 403 and "never reassigns" in reason
+    status, reason = world.call("agent-q", "issue_write", LABEL, ["bob"])
+    assert status == 403 and "never relabels" in reason
 
 
 def test_act2_gaps_the_company_policy_closes(world):
@@ -216,7 +216,7 @@ def test_act3_the_company_policy_decides_who_and_what_data(world):
     assert '"Personal data and restricted data must not be sent to an untrusted external destination."' in reason
     assert world.call("agent-q", "add_issue_comment", SIGN_OFF, ["bob"])[0] == 200
     assert world.call("agent-q", "issue_write", CLOSE, ["bob"])[0] == 200
-    assert world.call("agent-w", "issue_write", ASSIGN, ["alice"])[0] == 200
+    assert world.call("agent-w", "issue_write", LABEL, ["alice"])[0] == 200
 
 
 def test_two_people_get_only_what_both_may(world):

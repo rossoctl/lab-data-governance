@@ -71,12 +71,12 @@ Everything fails closed: DAM, OPA, Keycloak or data governance unreachable is a 
 
 Two agents, owned by Alice, with Bob as an editor on both:
 
-- **`issue-workbench`**: "Helps the team work on issues in the s-and-p-team demo repositories. It reads and summarizes issues, posts comments, and assigns an issue back and forth between the developer and the tester. It never closes issues."
-- **`qa-signoff`**: "Final QA review. It reads an issue and its history, posts the sign-off comment, and closes the issue as completed, or as not planned. It never reassigns issues and never changes what an issue says."
+- **`issue-workbench`**: "Helps the team work on issues in the s-and-p-team demo repositories. It reads and summarizes issues, posts comments, and hands an issue back and forth between the developer and the tester with its labels, ready for testing or needs a fix. It never closes issues."
+- **`qa-signoff`**: "Final QA review. It reads an issue and its history, posts the sign-off comment, and closes the issue as completed, or as not planned. It never relabels issues and never changes what an issue says."
 
 The company security policy:
 
-> Developers and testers may read issues, comment on them and assign them. Only testers close an issue, and the QA sign-off agent is used by testers only. Personal data and restricted data must not be sent to an untrusted external destination.
+> Developers and testers may read issues, comment on them and label them. Only testers close an issue, and the QA sign-off agent is used by testers only. Personal data and restricted data must not be sent to an untrusted external destination.
 
 Three acts, the same requests each time: Sentry off; Sentry on with an empty company policy (each agent keeps to its description); Sentry on with the company policy (Alice is refused the sign-off agent, and a sign-off that names Alice with her email is refused for its personal data).
 
