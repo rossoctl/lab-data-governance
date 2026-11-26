@@ -6,20 +6,32 @@ controller:
     host: mcp-policy.sentry-dam.svc.cluster.local
     port: 9191
     timeoutSeconds: 10
-    # Sentry's two components, each a switch in the agent's MCP policy enforcement card.
-    checks:
-      - id: aiac
-        label: Automated access control management (aiac)
-        description: Which tools the agent may use, decided from its description and the organisation policy.
-      - id: dg
-        label: Data governance (dg)
-        description: Which data may go where. Blocks personal or restricted data sent to an untrusted destination.
+    # What the agent's enforcement card calls the policy service.
+    name: Sentry
+    description: >-
+      Decide every MCP tool call the agent makes from its own description and
+      the company security policy: which operations it may make, who may ask
+      for them, and which data may go where. Experimental.
+    # The Secret (release namespace) whose token Sentry presents to read whom
+    # an agent acts for and the company security policy; deploy.sh makes it.
+    serviceTokenSecret: mcp-policy-service-token
   gatewayEgress:
     peers:
       - namespace: sentry-dam
         podLabels:
           app: mcp-policy
         ports: [9191]
+# The people of the demo: Alice Mayer develops, Bob Segal tests. Their roles
+# are Keycloak realm roles, which the company security policy names.
+keycloak:
+  extraRealmRoles:
+    - name: developer
+      description: Works on issues and their fixes
+    - name: tester
+      description: Verifies fixes and signs issues off
+  extraTestUsers:
+    - {username: alice, password: alice, firstName: Alice, lastName: Mayer, realmRoles: [developer]}
+    - {username: bob, password: bob, firstName: Bob, lastName: Segal, realmRoles: [tester]}
 # Show the feature's switch in the Experimental features tab (the default),
 # so the demo can turn it on and off per user.
 features:

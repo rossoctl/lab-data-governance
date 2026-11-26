@@ -1,15 +1,18 @@
 # Sentry's MCP policy service (the PDP) for DAM's experimental MCP policy
-# enforcement. Sentry has two components, each on or off per agent
-# (ConfigMap mcp-policy-config): aiac (which tools an agent may use) and dg
-# (which data may go where). One pod, three containers:
-# - server: server.py and dg_check.py (from a ConfigMap, stock python image).
-#   For each MCP tool call it asks OPA for aiac's decision, then dg's verdict
-#   service (namespace data-governance) about the call's data.
+# enforcement. A call goes through only if the agent's description and the
+# company security policy (written in DAM) both allow it. One pod, three
+# containers:
+# - server: server.py, operations.py and dg_check.py (from a ConfigMap, stock
+#   python image). For each MCP tool call it reads whom the agent acts for
+#   from DAM, asks OPA, and, when the company policy has data rules, asks data
+#   governance's verdict service (namespace data-governance) about the data.
 # - opa: evaluates opa/mcp.rego; it holds no data of its own.
-# - onboarder: aiac's demo/dam/controller.py on the aiac image. It watches
-#   DAM's Agent resources and writes each enforcing agent's decisions, derived
-#   from its description, into OPA, and keeps them in ConfigMap mcp-policy-data.
-# deploy.sh creates the ConfigMaps and the LLM Secret. Outside the mesh: an
+# - onboarder: aiac's demo/dam/controller.py on the aiac image. It decides each
+#   enforcing agent's operations from its description, splits the company
+#   policy into role rules and data rules, reads the roles' holders from
+#   Keycloak, writes all of it into OPA and keeps it in ConfigMap
+#   mcp-policy-data.
+# deploy.sh creates the ConfigMaps and the Secrets. Outside the mesh: an
 # agent gateway reaches it through the `controller.gatewayEgress.peers` entry
 # in dam-values.yaml.
 apiVersion: v1
@@ -49,6 +52,10 @@ spec:
               value: "http://127.0.0.1:8181"
             - name: DG_VERDICT_SECRET
               valueFrom: {secretKeyRef: {name: dg-verdict-secret, key: secret}}
+            - name: DAM_API_URL
+              value: "http://platform-apiserver.default.svc:4000"
+            - name: MCP_POLICY_SERVICE_TOKEN
+              valueFrom: {secretKeyRef: {name: mcp-policy-service-token, key: token}}
           ports:
             - name: http
               containerPort: 9191
@@ -115,6 +122,20 @@ spec:
               valueFrom: {secretKeyRef: {name: aiac-dam-llm, key: LLM_MODEL}}
             - name: LLM_API_KEY
               valueFrom: {secretKeyRef: {name: aiac-dam-llm, key: LLM_API_KEY}}
+            - name: DAM_API_URL
+              value: "http://platform-apiserver.default.svc:4000"
+            - name: MCP_POLICY_SERVICE_TOKEN
+              valueFrom: {secretKeyRef: {name: mcp-policy-service-token, key: token}}
+            - name: DG_RULES_FILE
+              value: /dg/rules_source.json
+            - name: KEYCLOAK_URL
+              value: "http://platform-keycloak.default.svc:8080"
+            - name: KEYCLOAK_REALM
+              value: platform
+            - name: KEYCLOAK_CLIENT_ID
+              value: sentry-policy
+            - name: KEYCLOAK_CLIENT_SECRET
+              valueFrom: {secretKeyRef: {name: sentry-policy-keycloak, key: secret}}
           resources:
             requests:
               cpu: 50m
@@ -124,6 +145,8 @@ spec:
           volumeMounts:
             - name: onboarder
               mountPath: /dam
+            - name: dg-rules
+              mountPath: /dg
       volumes:
         - name: app
           configMap:
@@ -134,6 +157,9 @@ spec:
         - name: onboarder
           configMap:
             name: aiac-dam-onboarder
+        - name: dg-rules
+          configMap:
+            name: dg-rules-source
 ---
 apiVersion: v1
 kind: Service
@@ -187,7 +213,7 @@ metadata:
 rules:
   - apiGroups: [""]
     resources: ["configmaps"]
-    resourceNames: ["mcp-policy-data", "mcp-policy-config"]
+    resourceNames: ["mcp-policy-data"]
     verbs: ["get", "patch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1

@@ -9,13 +9,17 @@ A 2xx answer allows the request; any other status denies it, and its status,
 body and ``x-mcp-policy-*`` headers reach the agent.
 
 Each MCP JSON-RPC message is logged as one JSON line (host, JSON-RPC method,
-tool name, argument keys; never argument values). With ``OPA_URL`` set
-(stage 2), each message is decided by OPA's ``data.dam.mcp.decision``, whose
-data aiac writes from the agent's description; the agent comes from the
-check path. A deny
-answers 403 with a JSON-RPC error that carries the reason. OPA unreachable or
-answering nothing is a deny: the service fails closed. Without ``OPA_URL``
-(stage 1) every request is allowed, to observe.
+tool name, argument keys, operations, the people the agent acts for; never
+argument values). Each tools/call is decided by OPA's ``data.dam.mcp.decision``
+on its operations (``operations.py``: ``issue_write`` as close, assign, edit,
+...) and the people the agent acts for, which DAM's relay records
+(``DAM_API_URL``, ``MCP_POLICY_SERVICE_TOKEN``). OPA holds what each agent's
+description grants and the company security policy's role rules; when the
+call is allowed and the company policy has data rules, data governance
+(``dg_check.py``) judges the data against those rules. A deny answers 403 with
+a JSON-RPC error that carries the reason, which names the agent's description
+or the company policy. Anything unreachable, or answering nothing, is a deny:
+the service fails closed.
 
 Standard library only, so it runs from a ConfigMap on a stock python image.
 """
@@ -34,17 +38,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 import dg_check
+from operations import operations_of
 
 LOG = logging.getLogger("mcp-policy")
 PORT = int(os.environ.get("PORT", "9191"))
 CHECK_PREFIX = "/check"
 OPA_URL = os.environ.get("OPA_URL", "").rstrip("/")
 DECISION_PATH = "/v1/data/dam/mcp/decision"
-DEFAULT_CONFIG: dict[str, Any] = {
-    "default": {"aiac": "on", "dg": "on"},
-    "agents": {},
-    "connections": {"api.githubcopilot.com": "github-mcp"},
-}
 
 # The hosts that speak MCP: a request to one of them must carry readable JSON-RPC or nothing.
 MCP_HOSTS = {h.strip().lower() for h in os.environ.get("MCP_HOSTS", "api.githubcopilot.com").split(",") if h.strip()}
@@ -104,52 +104,39 @@ def describe(message: dict[str, Any]) -> dict[str, Any]:
         out["tool"] = params.get("name")
         args = params.get("arguments")
         out["arg_keys"] = sorted(args) if isinstance(args, dict) else []
+        out["operations"] = operations_of(str(params.get("name", "")), args)
     return out
 
 
-_config_lock = threading.Lock()
-_config_cache: tuple[float, dict[str, Any]] = (0.0, DEFAULT_CONFIG)
-CONFIG_TTL_SECONDS = 2.0
+CONNECTIONS = {"api.githubcopilot.com": "github-mcp"}
+DAM_API_URL = os.environ.get("DAM_API_URL", "").rstrip("/")
+DAM_API_TOKEN = os.environ.get("MCP_POLICY_SERVICE_TOKEN", "")
+ACTING_FOR_TTL_SECONDS = 1.0
+_acting_lock = threading.Lock()
+_acting_cache: dict[str, tuple[float, list[str]]] = {}
 
 
-def config() -> dict[str, Any]:
-    """Which of Sentry's components check which agent, as the onboarder publishes it in OPA
-    (``data.dam.config``, from ConfigMap ``mcp-policy-config``), cached for two seconds.
-
-    {"default": {"aiac": "on"|"off", "dg": "on"|"off"},
-     "agents": {"<agent name or id>": {"aiac": ..., "dg": ...}},
-     "connections": {"<MCP host>": "<connection name>"}}
-    Nothing published, or OPA unreachable: both components stay on (the safe side).
-    """
-    global _config_cache
-    with _config_lock:
-        fetched_at, cached = _config_cache
-        if time.monotonic() - fetched_at < CONFIG_TTL_SECONDS:
-            return cached
-        loaded: dict[str, Any] = {}
-        if OPA_URL:
-            try:
-                with urllib.request.urlopen(f"{OPA_URL}/v1/data/dam/config", timeout=2) as response:
-                    loaded = json.load(response).get("result") or {}
-            except (OSError, ValueError):
-                loaded = {}
-        merged = {**DEFAULT_CONFIG, **loaded}
-        merged["default"] = {**DEFAULT_CONFIG["default"], **loaded.get("default", {})}
-        merged["agents"] = loaded.get("agents", {}) if isinstance(loaded.get("agents"), dict) else {}
-        if merged != cached:
-            LOG.info(json.dumps({"event": "config", "config": merged}))
-        _config_cache = (time.monotonic(), merged)
-        return merged
-
-
-def components_for(agent_id: str, agent_name: str, from_path: set[str] | None) -> dict[str, bool]:
-    """Which of Sentry's components apply: the owner's switches in DAM, as the gateway names them
-    in the check path; a path without them (an older gateway) falls back to the config here."""
-    if from_path is not None:
-        return {c: c in from_path for c in ("aiac", "dg")}
-    cfg = config()
-    chosen = {**cfg["default"], **cfg["agents"].get(agent_id, {}), **cfg["agents"].get(agent_name, {})}
-    return {c: str(chosen.get(c, "on")).lower() != "off" for c in ("aiac", "dg")}
+def acting_for(agent_id: str) -> list[str] | None:
+    """The usernames of the people the agent acts for right now, from DAM's relay (cached for a
+    second); ``None`` when DAM cannot say, which the policy treats as nobody it can allow."""
+    with _acting_lock:
+        hit = _acting_cache.get(agent_id)
+        if hit and time.monotonic() - hit[0] < ACTING_FOR_TTL_SECONDS:
+            return hit[1]
+    if not DAM_API_URL:
+        return None
+    request = urllib.request.Request(
+        f"{DAM_API_URL}/internal/mcp-policy/agents/{urllib.parse.quote(agent_id)}/acting-for",
+        headers={"authorization": f"Bearer {DAM_API_TOKEN}", "accept": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=2) as response:
+            people = sorted({str(p["username"]) for p in json.load(response).get("people", [])})
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    with _acting_lock:
+        _acting_cache[agent_id] = (time.monotonic(), people)
+    return people
 
 
 def agent_name(agent_id: str) -> str:
@@ -164,28 +151,23 @@ def agent_name(agent_id: str) -> str:
         return agent_id
 
 
-def split_check_path(raw: str) -> tuple[str, set[str] | None, str]:
-    """``/check/<agent id>/<checks>/<original path>`` -> (agent id, checks, original path).
-
-    The gateway's controller writes the agent id and the checks that apply to it (``aiac,dg``,
-    or ``none``), the owner's switches in DAM; the agent's own path only follows them. ``None``
-    for the checks means a path without the segment, from a gateway rendered before it existed.
-    """
+def split_check_path(raw: str) -> tuple[str, str]:
+    """``/check/<agent id>/<original path>`` -> (agent id, original path). The gateway's controller
+    writes the agent id; the agent's own path only follows it, so it cannot name another agent."""
     if not raw.startswith(CHECK_PREFIX + "/"):
-        return "", None, raw
+        return "", raw
     agent, _, rest = raw[len(CHECK_PREFIX) + 1:].partition("/")
-    segment, _, after = rest.partition("/")
-    if segment == "none":
-        return agent, set(), "/" + after
-    if segment and all(c and c.replace("-", "").isalnum() and c.islower() for c in segment.split(",")):
-        return agent, set(segment.split(",")), "/" + after
-    return agent, None, "/" + rest
+    return agent, "/" + rest
 
 
-def opa_decision(agent: str, host: str, message: dict[str, Any]) -> dict[str, Any]:
-    """OPA's decision for one JSON-RPC message; a failure is a deny."""
+def opa_decision(agent: str, host: str, message: dict[str, Any], people: list[str] | None) -> dict[str, Any]:
+    """OPA's decision for one JSON-RPC message, on the call's operations and the people the agent
+    acts for; a failure is a deny. An allowed call names the company's data rules that apply
+    (``data_rules``: dg rule id -> the policy sentence)."""
     params = message.get("params") if isinstance(message.get("params"), dict) else {}
-    query = {"input": {"agent": agent, "host": host, "rpc": message.get("method"), "tool": params.get("name")}}
+    tool = str(params.get("name", ""))
+    query = {"input": {"agent": agent, "host": host, "rpc": message.get("method"), "tool": tool,
+                       "operations": operations_of(tool, params.get("arguments")), "people": people}}
     request = urllib.request.Request(
         OPA_URL + DECISION_PATH,
         data=json.dumps(query).encode(),
@@ -217,7 +199,7 @@ class Handler(BaseHTTPRequestHandler):
     def _check(self) -> None:
         length = int(self.headers.get("content-length") or 0)
         body = self.rfile.read(length) if length else b""
-        agent, path_checks, path = split_check_path(self.path)
+        agent, path = split_check_path(self.path)
         host = self.headers.get("host", "")
         unreadable = ""
         try:
@@ -233,21 +215,22 @@ class Handler(BaseHTTPRequestHandler):
             reasons.append(denied[1])
         calls = [m for m in messages if m.get("method") == "tools/call"]
         name = agent_name(agent) if calls else agent
-        components = components_for(agent, name, path_checks)
-        connection = config()["connections"].get(host.split(":")[0].lower(), host)
+        people = acting_for(agent) if calls else []
+        connection = CONNECTIONS.get(host.split(":")[0].lower(), host)
         checked: list[dict[str, Any]] = []
         for message in [] if unreadable else calls:
-            if components["aiac"]:
-                verdict = opa_decision(agent, host, message) if OPA_URL else {"allow": False, "reason": "aiac is on but has no decision point"}
-                reasons.append(str(verdict.get("reason", "")))
-                checked.append({"component": "aiac", "allow": bool(verdict.get("allow"))})
-                if not verdict.get("allow"):
-                    denied = (message, str(verdict.get("reason", "denied")))
-                    break
-            if components["dg"]:
-                verdict = dg_check.judge(name, connection, host, self.command, path, body, message)
+            verdict = opa_decision(agent, host, message, people) if OPA_URL else {
+                "allow": False, "reason": "the policy has no decision point, so nothing allows it"}
+            reasons.append(str(verdict.get("reason", "")))
+            checked.append({"check": "access", "allow": bool(verdict.get("allow"))})
+            if not verdict.get("allow"):
+                denied = (message, str(verdict.get("reason", "denied")))
+                break
+            data_rules = verdict.get("data_rules") if isinstance(verdict.get("data_rules"), dict) else {}
+            if data_rules:
+                verdict = dg_check.judge(name, connection, host, self.command, path, body, message, data_rules)
                 reasons.append(verdict["reason"])
-                checked.append({"component": "dg", "allow": verdict["allow"], **verdict.get("dg", {})})
+                checked.append({"check": "data", "allow": verdict["allow"], **verdict.get("dg", {})})
                 if not verdict["allow"]:
                     denied = (message, verdict["reason"])
                     break
@@ -255,7 +238,7 @@ class Handler(BaseHTTPRequestHandler):
             "decision": "deny" if denied else "allow",
             "agent": agent,
             "agent_name": name,
-            "components": components,
+            "people": people,
             "checked": checked,
             "method": self.command,
             "host": host,

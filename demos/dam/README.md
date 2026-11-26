@@ -1,13 +1,15 @@
-# Sentry on DAM: aiac and dg on an agent's MCP tool calls
+# Sentry on DAM: every MCP tool call, by the agent's intent and the company's policy
 
 This demo puts **Sentry** in front of a [DAM](https://github.com/dam-agents/dam) agent's MCP tool calls.
+A call goes through only if both of these allow it:
 
-Sentry has two components:
+- **The agent's intent: its description**, which its owner writes.
+  Sentry decides each operation from it, down to what one tool does: `issue_write` closing an issue is decided apart from `issue_write` reassigning it.
+- **The company security policy**, which an operator writes once, in plain language, on DAM's Operator page.
+  Sentry splits it into rules about who may do what, decided by the Keycloak roles of the person who asked the agent, and rules about which data may go where, decided by data classification.
 
-- **aiac (automated access control).** It decides which tools an agent may use, from the agent's own description and the organisation's policy.
-- **dg (data governance).** It decides which data may go where, from Sentry's classifier and risk rules.
-
-Each component is on or off per agent, live, with switches in the agent's DAM settings.
+Sentry has two components, aiac (automated access control management) and dg (data governance).
+Which one decides a rule follows from the rule; an agent has one switch, **Sentry**, and every reason names the agent's description or the company policy.
 
 ## Why this exists
 
@@ -26,63 +28,57 @@ agent ─▶ DAM gateway ─▶ DAM ext_authz (owner's rules, holds)
 
 ### DAM side (branch `sentry-dam` of DAM, local only)
 
-- **The setting.** The experimental per-agent setting `mcpPolicyEnforcement`, the switch "MCP policy enforcement" under the agent's **Network access**.
+- **The switch.** The experimental per-agent setting `mcpPolicyEnforcement`, shown under the agent's **Network access** with the name the install gives it (Helm `controller.mcpPolicy.name`, here "Sentry").
   It shows only to an owner who turned on the `mcp-policy-enforcement` experimental feature.
-- **What the PEP does.** The agent's gateway adds a second ext_authz in Envoy HTTP mode.
-  It runs on every credentialed, non-model chain, after DAM's own check and before the credential is injected.
-- **The check switches.** While enforcement is on, the card shows one switch per check that the install declares (Helm `controller.mcpPolicy.checks`).
-  Here those are **Automated access control (aiac)** and **Data governance (dg)**.
-  Each is on until the owner turns it off (Agent spec `mcpPolicyDisabledChecks`).
-  DAM gives the ids no meaning of its own.
-- **What the PDP receives.** The whole body, as `POST /check/<agent id>/<aiac,dg|none><path>`.
-  The controller sets the agent id and the checks that apply, and the agent cannot change either.
-- **The answer.** A 2xx response allows the request.
-  Any other status denies it, and the agent receives the reason.
+- **What the PEP does.** The agent's gateway adds a second ext_authz in Envoy HTTP mode, on every credentialed, non-model chain, after DAM's own check and before the credential is injected.
+  It sends the whole body as `POST /check/<agent id><path>`; the controller sets the agent id, which the agent cannot change.
+  A 2xx response allows the request; any other status denies it, and the agent receives the reason.
+- **Whom the agent acts for.** DAM's chat relay already stamps the signed-in person on every prompt.
+  It also records, per agent, the people whose turns are open (a prompt opens a turn, a steer joins it, the prompt's answer closes it).
+  Sentry reads that list at `GET /internal/mcp-policy/agents/<id>/acting-for`, with a token (Helm `controller.mcpPolicy.serviceTokenSecret`).
+  A call is allowed only when every person on the list may make it, so the agent cannot gain anyone's permissions.
+- **The company security policy.** A card on the Operator page, stored with a version; Sentry reads it at `GET /internal/mcp-policy/company-policy`.
+- **The people.** Keycloak realm roles `developer` and `tester` (Helm `keycloak.extraRealmRoles`), and the users `alice` (Alice Mayer, developer) and `bob` (Bob Segal, tester); `dev` is the operator.
 
 ### Sentry's MCP policy service (this directory)
 
-It is one pod in namespace `sentry-dam`, with three containers:
+One pod in namespace `sentry-dam`, three containers:
 
-- **`server`** (`policy-service/server.py`, `policy-service/dg_check.py`) is the PDP.
-  - It reads each JSON-RPC message strictly. An unreadable body to an MCP host is denied.
-  - For each `tools/call`, it asks **aiac** (OPA) and then **dg**. The first deny wins.
-  - Handshake messages pass.
-- **`opa`** evaluates `opa/mcp.rego` over aiac's decisions.
+- **`server`** (`policy-service/`) is the PDP.
+  - It reads each JSON-RPC message strictly; an unreadable body to an MCP host is denied.
+  - For each `tools/call` it derives the call's operations (`operations.py`, from the shape of the arguments only), reads whom the agent acts for from DAM, and asks OPA.
+  - When OPA allows and the company policy has data rules, data governance judges the data (`dg_check.py`): it emits the lineage request span and polls dg's verdict, and only the dg rules the company policy maps onto can deny.
+- **`opa`** evaluates `opa/mcp.rego`: the agent's standing, its description's decision for each operation, then the company policy's role rules.
 - **`onboarder`** is aiac's `demo/dam/controller.py`, in the aiac repository.
-  - It watches DAM's Agent resources.
-  - For every enforcing agent with aiac on, it derives a decision per GitHub MCP tool from the agent's description and the policy (`demo/dam/policy.md`), using aiac's Policy Rules Builder.
-  - It re-onboards when the description changes. While an agent is pending, its tool calls are denied.
+  - For every enforcing agent, it decides each operation from the agent's description and the organisation policy (`demo/dam/policy.md`), with aiac's Policy Rules Builder.
+  - It splits each new version of the company policy once, with one LLM pass (`demo/dam/company_policy.py`), into role rules on operations and agents, and data rules mapped onto dg's catalogue (DG-001, ...); a sentence neither kind expresses is kept as unmatched.
+  - It reads the holders of the role rules' roles from Keycloak (client `sentry-policy`) on every loop, so a change of who holds a role needs no LLM.
+  - While an agent or the company policy is being decided, calls are denied.
 
-**dg** is Sentry's data governance stack in namespace `data-governance`: Postgres, receiver, interactions, classification, leg-ready, OPA and verdict.
-For each tool call that aiac allows, the PDP does two things, as the Cortex `lineage-telemetry` and `sentry-gate` plugins would:
-
-1. It emits the lineage wire contract's request span (v1.8.1, OTLP protobuf), with the call's arguments.
-2. It long-polls the verdict.
-
-A `block` verdict, from shipped rules DG-001 and DG-004, denies the call.
-
-Every reason names the policy and the data or the agent's own words, never a component:
+Every reason names the agent's description or the company policy, never a mechanism:
 
 ```
-Denied by policy: github-mcp.issue_write for agent issue-triage-test is denied: the policy prohibits it,
-agent specifically states that it reports on issues and never changes repositories or issues.
+Denied by policy: github-mcp.issue_write.close for agent issue-workbench is denied: the policy prohibits it,
+agent specifically states that it never closes issues.
 
-Denied by policy: github-mcp.search_issues for agent issue-triage-test is denied: the policy prohibits
-sending personal data and restricted data to api.githubcopilot.com, an untrusted external destination,
-and the request carries a government ID or a person's name: {"query": "[person.govID] [person.govID]", ...}
+Denied by policy: github-mcp.issue_write.close for agent qa-signoff, asked by alice, is denied: the company
+security policy states "The QA sign-off agent is used by testers only."
 ```
 
-Everything fails closed. A component that cannot be reached denies.
+Everything fails closed: DAM, OPA, Keycloak or data governance unreachable is a deny.
 
-## Turn components on and off
+## The story
 
-1. Open the agent's settings, then **Network access**.
-2. Under **MCP policy enforcement**, switch **Automated access control (aiac)** or **Data governance (dg)**.
+Two agents, owned by Alice, with Bob as an editor on both:
 
-Each change restarts the agent's network access for 5 to 15 seconds.
-With aiac off, any tool is allowed, subject to dg.
-With dg off, no data is checked.
-With aiac off, the onboarder stops deriving decisions for the agent.
+- **`issue-workbench`**: "Helps the team work on issues in the s-and-p-team demo repositories. It reads and summarizes issues, posts comments, and assigns an issue back and forth between the developer and the tester. It never closes issues."
+- **`qa-signoff`**: "Final QA review. It reads an issue and its history, posts the sign-off comment, and closes the issue as completed, or as not planned. It never reassigns issues and never changes what an issue says."
+
+The company security policy:
+
+> Developers and testers may read issues, comment on them and assign them. Only testers close an issue, and the QA sign-off agent is used by testers only. Personal data and restricted data must not be sent to an untrusted external destination.
+
+Three acts, the same requests each time: Sentry off; Sentry on with an empty company policy (each agent keeps to its description); Sentry on with the company policy (Alice is refused the sign-off agent, and a sign-off that names Alice with her email is refused for its personal data).
 
 ## Deploy on a local DAM install
 
@@ -112,13 +108,14 @@ With aiac off, the onboarder stops deriving decisions for the agent.
    ```
 
 4. **The policy service.** Run `demos/dam/deploy.sh`.
-   It copies dg's verdict secret and the LiteLLM key, never printing them, and seeds `mcp-policy-config` and `mcp-policy-data`.
+   It copies dg's verdict secret and the LiteLLM key, makes the service token (restarting DAM's api-server once) and the Keycloak client `sentry-policy`, never printing any of them, and seeds `mcp-policy-data`.
 
 5. **In DAM**, set up the connection and the agent:
    - **The connection.** Add an MCP server, `github-mcp`, for `https://api.githubcopilot.com/mcp/`.
      Under Advanced, set Header `Authorization` to `Bearer <fine-grained PAT>`.
      The PAT's owner is `s-and-p-team`, with Issues read and write on `demo-public` and `demo-private`.
-   - **The agent.** Create an agent with a description, grant it `github-mcp`, and turn on **MCP policy enforcement**.
+   - **The agents.** Signed in as Alice, create `issue-workbench` and `qa-signoff` with the descriptions above, grant them `github-mcp`, add `bob@platform.local` to each one's People, and turn on **Sentry**.
+   - **The company policy.** Signed in as `dev`, write it on the Operator page.
 
 Use the `s-and-p-team` organisation's repositories, not personal ones.
 dg's classifier treats a personal account name, such as an `owner` argument, as a person's name.
@@ -127,18 +124,27 @@ That would block every call.
 Watch what happens:
 
 ```sh
-kubectl -n sentry-dam logs deploy/mcp-policy -c onboarder -f   # aiac onboarding
+kubectl -n sentry-dam logs deploy/mcp-policy -c onboarder -f   # descriptions and the company policy
 kubectl -n sentry-dam logs deploy/mcp-policy -c server -f      # each decision
+```
+
+## Tests
+
+```sh
+opa test demos/dam/opa                                   # the story's decisions, as a table
+~/development/sentry/aiac/.venv/bin/pytest demos/dam/tests -c /dev/null --rootdir demos/dam   # the PDP over HTTP, real OPA
 ```
 
 ## Files
 
 | file | what |
 |---|---|
-| `policy-service/server.py` | the PDP: strict JSON-RPC, components config, aiac then dg |
-| `policy-service/dg_check.py` | dg: lineage request span (protobuf), verdict poll, refusal wording |
-| `opa/mcp.rego` | aiac's decisions as an OPA policy |
+| `policy-service/server.py` | the PDP: strict JSON-RPC, whom the agent acts for, OPA, then data governance |
+| `policy-service/operations.py` | a call's operations, from the shape of its arguments |
+| `policy-service/dg_check.py` | data governance: lineage request span (protobuf), verdict poll, refusal wording |
+| `opa/mcp.rego`, `opa/mcp_test.rego` | the decision: description, then the company policy's role rules; its table tests |
 | `opa/build_data.py`, `decisions/` | the seed of `mcp-policy-data` |
+| `tests/` | the PDP through its HTTP interface |
 | `k8s/policy-service.yaml` | the pod, RBAC and Service |
 | `deploy.sh`, `deploy-dg.sh` | deploy the policy service, deploy dg |
-| `dam-values.yaml` | DAM Helm values: where the PDP is, its checks (aiac, dg), and gateway egress to it |
+| `dam-values.yaml` | DAM Helm values: where the PDP is, its name, its token, the roles and the people |

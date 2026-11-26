@@ -56,19 +56,6 @@ CONTEXT_ONLY_LABELS = {
     "person.employment", "person.organization", "person.operationalID", "person.places",
     "person.dates", "person.demographics", "finance.data", "medical.codes", "medical.data",
 }
-# What the policy protects, by the rule that fired (the shipped catalog's ids).
-RULE_GROUNDS = {
-    "DG-001": "personal data",
-    "DG-002": "health data",
-    "DG-004": "restricted data",
-}
-# The company policy each shipped rule enforces, as the refusal states it.
-RULE_POLICY = {
-    "DG-001": "personal data must not be sent to an untrusted external destination",
-    "DG-002": "health data must not be shared outside the company",
-    "DG-004": "restricted data must not be sent to an untrusted external destination",
-}
-
 
 # --- protobuf, the few OTLP fields the contract uses ------------------------------------------
 
@@ -210,32 +197,13 @@ def _labels_in_words(labels: list[str]) -> str:
     return _join(words) if words else "sensitive data"
 
 
-def _policy(rules: list[str], host: str) -> str:
-    """What company policy states, for the rules that fired: one statement when they protect
-    the same kind of destination ("personal data and restricted data must not be sent to an
-    untrusted external destination such as <host>"), else each statement in turn."""
-    statements = [RULE_POLICY[r] for r in rules if r in RULE_POLICY]
-    if not statements:
-        return f"sensitive data must not be sent to {host}"
-    external = " must not be sent to an untrusted external destination"
-    if all(st.endswith(external) for st in statements):
-        kinds = [st[: -len(external)] for st in statements]
-        return f"{_join(list(dict.fromkeys(kinds)))}{external} such as {host}"
-    return _join(statements)
-
-
-def _grounds(rules: list[str]) -> str:
-    grounds: list[str] = []
-    for rule in rules:
-        ground = RULE_GROUNDS.get(rule, "sensitive data")
-        if ground not in grounds:
-            grounds.append(ground)
-    return _join(grounds) if grounds else "sensitive data"
-
-
 def judge(agent: str, connection: str, host: str, method: str, path: str, body: bytes,
-          message: dict[str, Any]) -> dict[str, Any]:
+          message: dict[str, Any], policy: dict[str, str]) -> dict[str, Any]:
     """dg's decision on one tools/call: {"allow": bool, "reason": str, "dg": {...}}.
+
+    ``policy`` is the company security policy's data rules: each dg catalogue rule it maps onto,
+    with the policy sentence it comes from. Only those rules decide: a verdict that blocks on
+    other rules alone allows, and the reason quotes the company's own sentence.
 
     Fails closed: a span that cannot be sent, a verdict that does not come, or one Sentry's policy
     service cannot read, is a deny. The reason names the policy and the data, never a component.
@@ -253,15 +221,19 @@ def judge(agent: str, connection: str, host: str, method: str, path: str, body: 
                 "reason": f"{subject} is denied: the data governance check is unavailable ({type(err).__name__}), so nothing allows it"}
 
     state, verdict = answer.get("state"), answer.get("verdict")
-    info = {**key, "state": state, "verdict": verdict, "rules": answer.get("rules"), "labels": answer.get("labels")}
-    if state == "decided" and verdict not in DENY_ON:
-        return {"allow": True, "dg": info, "reason": f"{subject}: data governance found nothing the policy prohibits"}
+    fired = [r for r in (answer.get("rules") or []) if r in policy]
+    info = {**key, "state": state, "verdict": verdict, "rules": answer.get("rules"), "labels": answer.get("labels"),
+            "enforced": fired}
+    if state == "decided" and (verdict not in DENY_ON or not fired):
+        return {"allow": True, "dg": info, "reason": f"{subject}: the company security policy prohibits none of the data"}
 
     try:
         if state == "decided":
             what = _labels_in_words(answer.get("labels") or [])
             flagged = answer.get("redacted_payload")
-            reason = (f"{subject} is denied: company policy states that {_policy(answer.get('rules') or [], host)}, "
+            sentences = list(dict.fromkeys(policy[r] for r in fired))
+            stated = " ".join(f'"{x}"' for x in sentences)
+            reason = (f"{subject} is denied: the company security policy states {stated}, "
                       f"and the request carries {what}" + (f": {flagged}" if flagged else ""))
         elif state == "unjudged":
             reason = f"{subject} is denied: data governance could not read the whole request ({answer.get('reason')})"
