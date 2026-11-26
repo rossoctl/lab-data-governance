@@ -76,6 +76,9 @@ if ! kc get secret sentry-policy-keycloak -n sentry-dam -o name | grep -q secret
       id=$($K create clients --config /tmp/kcadm.config -r platform -s clientId=sentry-policy -s publicClient=false \
         -s serviceAccountsEnabled=true -s standardFlowEnabled=false -s directAccessGrantsEnabled=false -i)
     fi
+    # The Admin REST API takes only tokens with the kc-admin-api scope (Keycloak 26.8.2+).
+    scope=$($K get client-scopes --config /tmp/kcadm.config -r platform --fields id,name --format csv --noquotes | grep ",kc-admin-api$" | cut -d, -f1)
+    $K update "clients/$id/default-client-scopes/$scope" --config /tmp/kcadm.config -r platform >/dev/null
     $K add-roles --config /tmp/kcadm.config -r platform --uusername service-account-sentry-policy \
       --cclientid realm-management --rolename view-users --rolename view-realm >/dev/null
     $K get "clients/$id/client-secret" --config /tmp/kcadm.config -r platform --fields value --format csv --noquotes
