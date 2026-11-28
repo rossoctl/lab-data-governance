@@ -1,0 +1,578 @@
+[
+ {
+  "n": 1,
+  "beat": "title",
+  "text": "DAM runs AI agents for the long haul.",
+  "start": 0.4,
+  "end": 3.3,
+  "hold": 0.0
+ },
+ {
+  "n": 2,
+  "beat": "arch",
+  "text": "This is how DAM works at the moment.",
+  "start": 3.9,
+  "end": 6.325,
+  "hold": 0.0
+ },
+ {
+  "n": 3,
+  "beat": "arch",
+  "text": "Each agent works in its own secure micro-VM, and everything it does goes through a gateway that holds its credentials and enforces its owner's network rules.",
+  "start": 6.625,
+  "end": 17.075,
+  "hold": 1.0
+ },
+ {
+  "n": 4,
+  "beat": "keycloak",
+  "text": "Our demo has two people, who sign in to DAM through its Keycloak.",
+  "start": 18.675,
+  "end": 22.9,
+  "hold": 0.0
+ },
+ {
+  "n": 5,
+  "beat": "keycloak",
+  "text": "Alice Mayer is a developer.",
+  "start": 23.2,
+  "end": 25.45,
+  "hold": 1.0
+ },
+ {
+  "n": 6,
+  "beat": "keycloak",
+  "text": "Bob Segal is a tester.",
+  "start": 26.75,
+  "end": 28.75,
+  "hold": 1.0
+ },
+ {
+  "n": 7,
+  "beat": "cast",
+  "text": "They share two agents. Alice owns them, and Bob is an editor on both.",
+  "start": 30.35,
+  "end": 35.075,
+  "hold": 0.0
+ },
+ {
+  "n": 8,
+  "beat": "cast",
+  "text": "The first, issue-workbench, is where they work on issues together.",
+  "start": 35.375,
+  "end": 39.575,
+  "hold": 0.0
+ },
+ {
+  "n": 9,
+  "beat": "desc-w",
+  "text": "Its description reads: Helps the team work on issues in the team's demo repositories. It reads and summarizes issues, posts comments, and hands an issue back and forth between the developer and the tester with its labels, ready for testing or needs a fix. It never closes issues.",
+  "start": 40.175,
+  "end": 58.65,
+  "hold": 0.0
+ },
+ {
+  "n": 10,
+  "beat": "cast",
+  "text": "So Alice fixes an issue and hands it to Bob for testing, and Bob sends it back if it still fails.",
+  "start": 59.25,
+  "end": 65.6,
+  "hold": 0.0
+ },
+ {
+  "n": 11,
+  "beat": "cast",
+  "text": "The second, qa-signoff, is for the final review.",
+  "start": 65.9,
+  "end": 69.45,
+  "hold": 0.0
+ },
+ {
+  "n": 12,
+  "beat": "desc-q",
+  "text": "Its description reads: Final QA review. It reads an issue and its history, posts the sign-off comment, and closes the issue as completed, or as not planned. It never relabels issues and never changes what an issue says.",
+  "start": 70.05,
+  "end": 84.95,
+  "hold": 0.0
+ },
+ {
+  "n": 13,
+  "beat": "cast",
+  "text": "So once a fix is verified, the tester signs it off and closes the issue there.",
+  "start": 85.55,
+  "end": 90.65,
+  "hold": 0.5
+ },
+ {
+  "n": 14,
+  "beat": "login",
+  "text": "Alice and Bob each sign in to DAM. From here on, we follow them side by side.",
+  "start": 91.75,
+  "end": 97.125,
+  "hold": 1.0
+ },
+ {
+  "n": 15,
+  "beat": "intro",
+  "text": "In DAM, each agent shows its description, and Bob, added to its people as an editor.",
+  "start": 98.725,
+  "end": 104.625,
+  "hold": 1.0
+ },
+ {
+  "n": 16,
+  "beat": "act1",
+  "text": "Act one: DAM as it is, with no Sentry.",
+  "start": 106.225,
+  "end": 109.325,
+  "hold": 0.0
+ },
+ {
+  "n": 17,
+  "beat": "a1-handover",
+  "text": "Alice asks the workbench, using the GitHub tool, on issue one: comment that the fix is in PR twelve, ready for testing, and label the issue ready for testing.",
+  "start": 109.925,
+  "end": 120.575,
+  "hold": 0.1
+ },
+ {
+  "n": 18,
+  "beat": "a1-handover",
+  "text": "Both calls go through, as they should.",
+  "start": 120.975,
+  "end": 123.5,
+  "hold": 1.5
+ },
+ {
+  "n": 19,
+  "beat": "a1-sendback",
+  "text": "Bob tests it, and it still fails on Safari seventeen. So Bob asks the workbench to comment just that, and to label the issue needs a fix.",
+  "start": 125.6,
+  "end": 134.975,
+  "hold": 0.4
+ },
+ {
+  "n": 20,
+  "beat": "a1-sendback",
+  "text": "That works too: this back and forth is what the workbench is for.",
+  "start": 135.675,
+  "end": 139.825,
+  "hold": 1.5
+ },
+ {
+  "n": 21,
+  "beat": "a1-closehere",
+  "text": "Alice pushes another fix, and this time it works. So Bob asks the workbench to close the issue as completed, because it works now.",
+  "start": 141.925,
+  "end": 150.475,
+  "hold": 0.0
+ },
+ {
+  "n": 22,
+  "beat": "a1-closehere",
+  "text": "It closes, but it is marked yellow: Bob used the wrong agent. The workbench is for the back and forth between developer and tester, and its description says it never closes issues. The close belongs in qa-signoff.",
+  "start": 150.775,
+  "end": 164.75,
+  "hold": 1.5
+ },
+ {
+  "n": 23,
+  "beat": "reopen",
+  "text": "For the sake of the demo, we reopen the issue after each close, so we can try each way of closing it.",
+  "start": 166.85,
+  "end": 173.075,
+  "hold": 0.0
+ },
+ {
+  "n": 24,
+  "beat": "a1-close",
+  "text": "Next, Alice asks qa-signoff to close the issue as completed.",
+  "start": 173.675,
+  "end": 178.275,
+  "hold": 2.4
+ },
+ {
+  "n": 25,
+  "beat": "a1-close",
+  "text": "It closes, and it is yellow again. Alice is the developer, and proper procedure has the tester verify a fix and close the issue, not the developer who made it.",
+  "start": 180.975,
+  "end": 191.25,
+  "hold": 1.5
+ },
+ {
+  "n": 26,
+  "beat": "a1-signoff",
+  "text": "Then Bob asks qa-signoff, on issue one, to comment: sign-off, verified; Alice resolved it; for any questions, reach Alice at her email. And then to close the issue.",
+  "start": 193.35,
+  "end": 204.475,
+  "hold": 2.9
+ },
+ {
+  "n": 27,
+  "beat": "a1-signoff",
+  "text": "It is posted to a public GitHub issue, personal data and all. Yellow: this data should not leave the company.",
+  "start": 207.675,
+  "end": 215.0,
+  "hold": 1.5
+ },
+ {
+  "n": 28,
+  "beat": "act1end",
+  "text": "Every request went through. There are no restrictions on agent activity, either by intent or by security considerations.",
+  "start": 217.1,
+  "end": 225.225,
+  "hold": 0.5
+ },
+ {
+  "n": 29,
+  "beat": "plug",
+  "text": "This is where Sentry comes in.",
+  "start": 226.325,
+  "end": 228.625,
+  "hold": 0.0
+ },
+ {
+  "n": 30,
+  "beat": "plug",
+  "text": "We've added an MCP policy enforcement point to DAM's gateway: every MCP tool call an agent makes is checked there, before its credential is attached.",
+  "start": 228.925,
+  "end": 239.3,
+  "hold": 0.0
+ },
+ {
+  "n": 31,
+  "beat": "plug",
+  "text": "Sentry's capabilities cover both the agent's intent and the company's policy, for access control and for data governance.",
+  "start": 239.6,
+  "end": 247.7,
+  "hold": 0.0
+ },
+ {
+  "n": 32,
+  "beat": "plug",
+  "text": "We first turn Sentry on without any company policy in place, and see the effect.",
+  "start": 248.0,
+  "end": 253.175,
+  "hold": 0.0
+ },
+ {
+  "n": 33,
+  "beat": "plug",
+  "text": "Alice turns Sentry on for both agents. Each gateway restarts, with the policy check in place.",
+  "start": 253.475,
+  "end": 259.8,
+  "hold": 0.0
+ },
+ {
+  "n": 34,
+  "beat": "onboard",
+  "text": "Sentry reads each agent's description and decides its operations, down to what a single tool does.",
+  "start": 260.4,
+  "end": 266.975,
+  "hold": 0.0
+ },
+ {
+  "n": 35,
+  "beat": "onboard",
+  "text": "The workbench may comment and relabel, but not close. qa-signoff may comment and close, but not relabel.",
+  "start": 267.275,
+  "end": 274.55,
+  "hold": 0.0
+ },
+ {
+  "n": 36,
+  "beat": "onboard",
+  "text": "Sentry writes each agent's rules as Rego, which OPA evaluates on every call, before the call leaves the gateway.",
+  "start": 274.85,
+  "end": 282.825,
+  "hold": 1.5
+ },
+ {
+  "n": 37,
+  "beat": "act2",
+  "text": "Act two: Sentry, from each agent's description, starting again from the open issue.",
+  "start": 284.925,
+  "end": 290.55,
+  "hold": 0.0
+ },
+ {
+  "n": 38,
+  "beat": "a2-handover",
+  "text": "Alice asks for the same hand-over: comment that the fix is in PR twelve, and label the issue ready for testing.",
+  "start": 291.15,
+  "end": 298.625,
+  "hold": 3.3
+ },
+ {
+  "n": 39,
+  "beat": "a2-handover",
+  "text": "Sentry checks both calls against the workbench's description, and allows them.",
+  "start": 302.225,
+  "end": 307.1,
+  "hold": 1.5
+ },
+ {
+  "n": 40,
+  "beat": "a2-sendback",
+  "text": "Bob sends the issue back the same way: it still fails on Safari seventeen, so the label is needs a fix.",
+  "start": 309.2,
+  "end": 316.425,
+  "hold": 2.6
+ },
+ {
+  "n": 41,
+  "beat": "a2-sendback",
+  "text": "That is allowed too.",
+  "start": 319.325,
+  "end": 321.125,
+  "hold": 1.5
+ },
+ {
+  "n": 42,
+  "beat": "a2-closehere",
+  "text": "Again, after another fix, Bob asks the workbench to close the issue as completed, because it works now.",
+  "start": 323.225,
+  "end": 330.125,
+  "hold": 0.8
+ },
+ {
+  "n": 43,
+  "beat": "a2-closehere",
+  "text": "This time, it is denied. The reason quotes the agent's own description: it never closes issues.",
+  "start": 331.225,
+  "end": 337.8,
+  "hold": 2.0
+ },
+ {
+  "n": 44,
+  "beat": "a2-relabel",
+  "text": "Bob then tries to send it back through qa-signoff instead, setting the label back to needs a fix.",
+  "start": 340.4,
+  "end": 346.675,
+  "hold": 1.3
+ },
+ {
+  "n": 45,
+  "beat": "a2-relabel",
+  "text": "This is denied as well: qa-signoff never relabels issues.",
+  "start": 348.275,
+  "end": 352.775,
+  "hold": 2.0
+ },
+ {
+  "n": 46,
+  "beat": "a2-close",
+  "text": "Then Alice asks qa-signoff to close the issue as completed.",
+  "start": 355.375,
+  "end": 359.7,
+  "hold": 2.7
+ },
+ {
+  "n": 47,
+  "beat": "a2-close",
+  "text": "This is allowed, but it is still yellow. Proper procedure has the tester verify a fix and close the issue, not the developer. That is company procedure, and it has to be enforced on the agent.",
+  "start": 362.7,
+  "end": 374.65,
+  "hold": 1.5
+ },
+ {
+  "n": 48,
+  "beat": "a2-signoff",
+  "text": "With the issue reopened, Bob posts the same sign-off: verified; Alice resolved it; for any questions, reach Alice at her email. And then qa-signoff should close the issue.",
+  "start": 376.75,
+  "end": 388.025,
+  "hold": 2.8
+ },
+ {
+  "n": 49,
+  "beat": "a2-signoff",
+  "text": "This is allowed too, and still yellow. The agent is only concerned with its own job; data governance and company policy have to be enforced on the agent.",
+  "start": 391.125,
+  "end": 401.225,
+  "hold": 1.5
+ },
+ {
+  "n": 50,
+  "beat": "act2end",
+  "text": "Now let's address access control and data governance in a company policy that applies to all agents in the system.",
+  "start": 403.325,
+  "end": 410.975,
+  "hold": 0.5
+ },
+ {
+  "n": 51,
+  "beat": "policy",
+  "text": "An operator writes the company security policy once, in plain language, on DAM's operator page.",
+  "start": 412.075,
+  "end": 418.975,
+  "hold": 0.0
+ },
+ {
+  "n": 52,
+  "beat": "policy-text",
+  "text": "Developers and testers may read issues, comment on them and label them. Only testers close an issue, and the QA sign-off agent is used by testers only. Personal data and restricted data must not be sent to an untrusted external destination.",
+  "start": 419.575,
+  "end": 436.475,
+  "hold": 0.0
+ },
+ {
+  "n": 53,
+  "beat": "split",
+  "text": "Sentry takes in the security policy and builds the corresponding rules: access control rules, for developers and testers, and data governance rules, for personal data.",
+  "start": 437.075,
+  "end": 448.05,
+  "hold": 0.0
+ },
+ {
+  "n": 54,
+  "beat": "split",
+  "text": "On the right, the same rules as OPA evaluates them, in Rego. The roles come from Keycloak, and no agent or gateway restarts.",
+  "start": 448.35,
+  "end": 457.475,
+  "hold": 2.0
+ },
+ {
+  "n": 55,
+  "beat": "act3",
+  "text": "Act three: Sentry, with the company security policy.",
+  "start": 460.075,
+  "end": 463.95,
+  "hold": 0.0
+ },
+ {
+  "n": 56,
+  "beat": "a3-handover",
+  "text": "Alice hands the issue over to Bob again: the fix is in PR twelve, ready for testing.",
+  "start": 464.55,
+  "end": 470.4,
+  "hold": 5.0
+ },
+ {
+  "n": 57,
+  "beat": "a3-handover",
+  "text": "That still works.",
+  "start": 475.7,
+  "end": 477.4,
+  "hold": 1.0
+ },
+ {
+  "n": 58,
+  "beat": "a3-sendback",
+  "text": "And Bob sends it back: it still fails on Safari seventeen, so the label is needs a fix.",
+  "start": 479.0,
+  "end": 485.3,
+  "hold": 3.5
+ },
+ {
+  "n": 59,
+  "beat": "a3-sendback",
+  "text": "That works too, as it should.",
+  "start": 489.1,
+  "end": 491.3,
+  "hold": 1.0
+ },
+ {
+  "n": 60,
+  "beat": "a3-close",
+  "text": "After one more fix, Alice asks qa-signoff to close the issue.",
+  "start": 492.9,
+  "end": 497.45,
+  "hold": 2.5
+ },
+ {
+  "n": 61,
+  "beat": "a3-close",
+  "text": "This time, it is denied. The user is Alice, a developer, and the company security policy states that only testers close an issue, and that the QA sign-off agent is used by testers only.",
+  "start": 500.25,
+  "end": 513.075,
+  "hold": 2.0
+ },
+ {
+  "n": 62,
+  "beat": "a3-signoff-email",
+  "text": "Bob verifies the fix and tries the same sign-off: verified; Alice resolved it; for any questions, reach Alice at her email; and then close the issue.",
+  "start": 515.675,
+  "end": 525.625,
+  "hold": 4.1
+ },
+ {
+  "n": 63,
+  "beat": "a3-signoff-email",
+  "text": "Denied: the company security policy states that personal data must not be sent to an untrusted external destination, such as GitHub.",
+  "start": 530.025,
+  "end": 539.575,
+  "hold": 2.0
+ },
+ {
+  "n": 64,
+  "beat": "a3-signoff",
+  "text": "Bob writes the sign-off without the personal data: verified on Safari seventeen and eighteen, fixed in PR twelve. And then close the issue.",
+  "start": 542.175,
+  "end": 551.525,
+  "hold": 1.4
+ },
+ {
+  "n": 65,
+  "beat": "a3-signoff",
+  "text": "Now the comment is posted, and the issue is closed as completed. Green: the right agent, the right user and role, and no personal data.",
+  "start": 553.225,
+  "end": 562.475,
+  "hold": 1.5
+ },
+ {
+  "n": 66,
+  "beat": "summary",
+  "text": "Here is every request, act by act.",
+  "start": 564.575,
+  "end": 567.375,
+  "hold": 0.0
+ },
+ {
+  "n": 67,
+  "beat": "summary",
+  "text": "With DAM as it is, every request goes through, the yellow ones included.",
+  "start": 567.675,
+  "end": 572.4,
+  "hold": 0.0
+ },
+ {
+  "n": 68,
+  "beat": "summary",
+  "text": "With Sentry and each agent's description, each agent keeps to its job.",
+  "start": 572.7,
+  "end": 577.45,
+  "hold": 0.0
+ },
+ {
+  "n": 69,
+  "beat": "summary",
+  "text": "With the company security policy, the user and role, and the data, are decided too.",
+  "start": 577.75,
+  "end": 583.325,
+  "hold": 2.0
+ },
+ {
+  "n": 70,
+  "beat": "close",
+  "text": "A call goes through only when the agent's intent and the company's policy both allow it.",
+  "start": 586.925,
+  "end": 592.475,
+  "hold": 0.0
+ },
+ {
+  "n": 71,
+  "beat": "close",
+  "text": "DAM with granular security: control every tool call, and every piece of data.",
+  "start": 592.775,
+  "end": 598.475,
+  "hold": 0.0
+ },
+ {
+  "n": 72,
+  "beat": "close",
+  "text": "Sentry, on DAM.",
+  "start": 598.775,
+  "end": 600.525,
+  "hold": 0.0
+ }
+]

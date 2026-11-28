@@ -1,0 +1,315 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Sentry on DAM, intent and policy film</title>
+<style>
+@font-face { font-family: "Fira Sans"; font-weight: 400; src: url(../overlays/fonts/FiraSans-Regular.ttf); }
+@font-face { font-family: "Fira Sans"; font-weight: 500; src: url(../overlays/fonts/FiraSans-Medium.ttf); }
+@font-face { font-family: "Fira Sans"; font-weight: 600; src: url(../overlays/fonts/FiraSans-SemiBold.ttf); }
+@font-face { font-family: "Fira Sans"; font-weight: 700; src: url(../overlays/fonts/FiraSans-Bold.ttf); }
+@font-face { font-family: "Fira Sans"; font-weight: 800; src: url(../overlays/fonts/FiraSans-ExtraBold.ttf); }
+@font-face { font-family: "Fira Mono"; font-weight: 400; src: url(../overlays/fonts/FiraMono-Regular.ttf); }
+@font-face { font-family: "Fira Mono"; font-weight: 500; src: url(../overlays/fonts/FiraMono-Medium.ttf); }
+
+/* The pitch film's system (Sentry pitch, film.html), extended for a recorded UI, an architecture
+   diagram whose paths light up stage by stage, and side bubbles (tools, generated Rego). */
+:root {
+  --ink: #0b1d22;
+  --cream: #f6e7c8;
+  --gold: #e9c46a;
+  --blue: #6fb6ff;
+  --red: #ef6351;
+  --green: #5cc98a;
+  --muted: #a9b8b9;
+  --dam: #8fb3c9;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { width: 1920px; height: 1080px; overflow: hidden; background: #000; }
+body { font-family: "Fira Sans", sans-serif; color: var(--cream); }
+
+#stage { position: absolute; inset: 0; overflow: hidden; background: var(--ink); }
+.scene { position: absolute; inset: 0; opacity: 0; }
+.bg { position: absolute; inset: 0; background-size: cover; background-position: center; background-repeat: no-repeat; }
+.dim { position: absolute; inset: 0; background: #06121a; opacity: 0; }
+.el { position: absolute; opacity: 0; }
+
+.chip {
+  font-weight: 700; font-size: 30px; padding: 12px 28px 12px 18px; border-radius: 999px;
+  border: 2px solid var(--gold); background: rgba(11, 29, 34, .88); display: flex; align-items: center; gap: 14px;
+  white-space: nowrap;
+}
+.chip .n { min-width: 40px; height: 40px; padding: 0 10px; border-radius: 999px; background: var(--red); color: #fff;
+  font-size: 20px; display: grid; place-items: center; }
+.chip .n.aiac { background: #7b5cd6; }
+.chip .n.dg { background: #c9862b; }
+.chip .n.none { background: #546b72; }
+.tag { font-family: "Fira Mono"; font-size: 17px; letter-spacing: .14em; text-transform: uppercase; }
+.box {
+  border-radius: 22px; border: 2px solid var(--gold); background: rgba(11, 29, 34, .9);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, .45);
+}
+.callout {
+  white-space: nowrap; font-weight: 700; font-size: 30px; padding: 12px 22px; border-radius: 12px; color: #1b1405; background: var(--gold);
+  box-shadow: 0 14px 40px rgba(0, 0, 0, .45); line-height: 1.15;
+}
+.callout small { display: block; font-weight: 500; font-size: 19px; }
+.callout.red { background: var(--red); color: #fff; }
+.stamp {
+  font-weight: 800; font-size: 76px; letter-spacing: .06em; padding: 2px 34px; border: 9px solid currentColor;
+  border-radius: 20px; background: rgba(11, 29, 34, .55); white-space: nowrap; line-height: 1.1;
+}
+.stamp small { display: block; font-size: 26px; letter-spacing: .12em; font-weight: 700; text-align: center; padding-bottom: 6px; }
+.stamp.block { color: var(--red); }
+.stamp.allow { color: var(--green); }
+.stamp.warn { color: #f2b25c; }
+
+.caption {
+  left: 0; right: 0; text-align: center; bottom: 64px; font-weight: 700; font-size: 44px; color: var(--cream);
+  text-shadow: 0 3px 18px rgba(0, 0, 0, .85), 0 0 2px rgba(0, 0, 0, .9); white-space: nowrap;
+}
+.caption small { display: block; font-weight: 500; font-size: 28px; color: #e7dcc4; margin-top: 6px; }
+.pills { right: 96px; top: 34px; display: flex; gap: 10px; }
+.pill { font-family: "Fira Mono"; font-size: 17px; padding: 7px 14px; border-radius: 999px; border: 1.5px solid rgba(246, 231, 200, .35);
+  color: rgba(246, 231, 200, .55); background: rgba(11, 29, 34, .6); }
+.pill.on { color: var(--ink); background: var(--cream); border-color: var(--cream); font-weight: 500; }
+
+/* ---- the recorded DAM UI ---- */
+#ui-frame { position: absolute; left: 96px; top: 96px; width: 1728px; height: 972px; overflow: hidden;
+  border-radius: 14px; border: 2px solid var(--gold); box-shadow: 0 24px 60px rgba(0, 0, 0, .55); background: #fff; }
+#cam { position: absolute; left: 0; top: 0; width: 1920px; height: 1080px; transform-origin: 0 0; }
+#vid { width: 1920px; height: 1080px; display: block; }
+.ff { right: 16px; top: 14px; font-family: "Fira Mono"; font-weight: 500; font-size: 22px; padding: 6px 14px; border-radius: 10px;
+  background: rgba(11, 29, 34, .82); color: var(--gold); border: 1.5px solid var(--gold); }
+#ui-head { left: 96px; top: 18px; display: flex; gap: 16px; align-items: center; }
+#ui-head .what { font-size: 26px; font-weight: 600; color: var(--cream); }
+#panel { left: 1360px; top: 112px; width: 512px; display: flex; flex-direction: column; gap: 16px; }
+
+.bubble { padding: 20px 22px; border-radius: 18px; border: 2px solid var(--gold); background: rgba(11, 29, 34, .94);
+  box-shadow: 0 20px 50px rgba(0, 0, 0, .45); }
+.bubble .tag { color: var(--gold); margin-bottom: 10px; display: block; }
+.bubble .tag.aiac { color: #b3a2ff; }
+.bubble .tag.dg { color: #f0b45c; }
+.tools { display: flex; flex-direction: column; gap: 6px; font-family: "Fira Mono"; font-size: 21px; }
+.tools .t { display: flex; align-items: center; gap: 10px; }
+.tools .t::before { content: ""; width: 12px; height: 12px; border-radius: 50%; flex: none; }
+.tools .t.ok { color: #c9f0d6; } .tools .t.ok::before { background: var(--green); }
+.tools .t.no { color: #ffd2cb; } .tools .t.no::before { background: var(--red); }
+.tools .more { color: var(--muted); font-size: 18px; padding-left: 22px; }
+.tools .sum { margin-top: 8px; font-family: "Fira Sans"; font-size: 22px; color: var(--cream); }
+pre.rego { font-family: "Fira Mono"; font-size: 16.5px; line-height: 1.42; color: #d9e4e6; white-space: pre; overflow: hidden; }
+pre.rego .c { color: #7f9497; } pre.rego .k { color: #b3a2ff; } pre.rego .s { color: #c9f0d6; } pre.rego .d { color: #ffd2cb; }
+pre.rego .hl { background: rgba(92, 201, 138, .22); border-radius: 4px; box-shadow: 0 0 0 2px rgba(92, 201, 138, .5); }
+.reason { font-size: 22px; line-height: 1.38; color: var(--cream); }
+.reason b { color: var(--gold); font-weight: 600; }
+
+/* ---- summary table ---- */
+.sum { width: 100%; border-collapse: separate; border-spacing: 14px 12px; font-size: 26px; }
+.sum th { font-weight: 700; text-align: center; padding: 14px 10px; border-radius: 14px; background: rgba(11, 29, 34, .9); border: 2px solid rgba(246, 231, 200, .3); }
+.sum th small { display: block; font-weight: 500; font-size: 18px; color: var(--muted); margin-top: 4px; }
+.sum th.row { text-align: left; background: none; border: none; font-size: 26px; padding-left: 0; }
+.sum td { text-align: center; padding: 18px 10px; border-radius: 14px; font-weight: 700; border: 2.5px solid currentColor; }
+.sum td.ok { color: var(--green); } .sum td.no { color: var(--red); } .sum td.leak { color: #f2b25c; }
+.sum td.shown.ok { background: rgba(92, 201, 138, .16); } .sum td.shown.no { background: rgba(239, 99, 81, .18); } .sum td.shown.leak { background: rgba(242, 178, 92, .16); }
+.sum td:not(.shown) { border-style: dashed; opacity: .8; }
+.sum td small { display: block; font-weight: 500; font-size: 17px; margin-top: 3px; }
+
+/* ---- architecture ---- */
+.arch text { font-family: "Fira Sans"; fill: var(--cream); }
+.arch .node rect { fill: rgba(11, 29, 34, .92); stroke: rgba(246, 231, 200, .45); stroke-width: 2; }
+.arch .node.dam rect { stroke: var(--dam); }
+.arch .node.sentry rect { stroke: var(--gold); }
+.arch .node.new rect { stroke: var(--gold); stroke-dasharray: 10 7; }
+.arch .label { font-weight: 700; font-size: 26px; }
+.arch .sub { font-size: 18px; fill: var(--muted); }
+.arch .newtag rect { fill: var(--gold); stroke: none; }
+.arch .newtag text { font-family: "Fira Mono"; font-size: 14px; letter-spacing: .12em; fill: #1b1405; font-weight: 500; }
+.arch .wire { fill: none; stroke: rgba(246, 231, 200, .22); stroke-width: 4; }
+.arch .wire.cfg { stroke: var(--gold); stroke-dasharray: 10 8; stroke-width: 3; }
+.arch .lit { fill: none; stroke: #ffd36a; stroke-width: 6; stroke-linecap: round; filter: url(#glow); }
+.arch .arrowhead { fill: rgba(246, 231, 200, .3); }
+.arch .tok { fill: #ffd36a; filter: url(#glow); }
+.arch-big { left: 160px; top: 150px; width: 1600px; height: 760px; }
+.arch-mini { width: 512px; height: 243px; }
+
+.card-title { font-weight: 800; font-size: 96px; text-align: center; letter-spacing: -.01em; }
+.card-sub { font-size: 34px; color: var(--muted); text-align: center; margin-top: 14px; }
+.duo { display: flex; gap: 28px; justify-content: center; margin-top: 44px; }
+.duo .bubble { width: 520px; }
+.duo h3 { font-size: 34px; font-weight: 700; margin-top: 6px; }
+.duo p { font-size: 23px; color: #d4dcd9; margin-top: 8px; line-height: 1.35; }
+
+/* ---- the second film: people, acts, rules ---- */
+.who { display: flex; align-items: center; gap: 12px; font-size: 24px; font-weight: 600; padding: 8px 18px 8px 8px; border-radius: 999px;
+  background: rgba(11, 29, 34, .88); border: 2px solid rgba(246, 231, 200, .35); }
+.who .av { width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; font-weight: 800; font-size: 20px; color: #071419; }
+.who .av.alice { background: #8fb3c9; } .who .av.bob { background: #f0b45c; } .who .av.dev { background: #b3a2ff; }
+.who small { font-weight: 500; font-size: 18px; color: var(--muted); }
+.actcard { left: 460px; right: 460px; top: 360px; text-align: center; padding: 34px 40px 38px; border-radius: 26px; background: rgba(11, 29, 34, .94); border: 2px solid var(--gold); box-shadow: 0 24px 70px rgba(0, 0, 0, .55); }
+.actcard .tag { color: var(--gold); font-size: 22px; }
+.actcard .t { font-weight: 800; font-size: 64px; margin-top: 10px; line-height: 1.1; }
+.actcard .s { font-size: 32px; color: #e7dcc4; margin-top: 10px; }
+.castrow { display: flex; gap: 28px; justify-content: center; }
+.person { width: 420px; padding: 26px 28px; border-radius: 22px; border: 2px solid var(--gold); background: rgba(11, 29, 34, .92); display: flex; gap: 22px; align-items: center; }
+.person .av { width: 86px; height: 86px; border-radius: 50%; display: grid; place-items: center; font-weight: 800; font-size: 40px; color: #071419; flex: none; }
+.person .av.alice { background: #8fb3c9; } .person .av.bob { background: #f0b45c; }
+.person h3 { font-size: 34px; font-weight: 700; } .person p { font-size: 22px; color: var(--muted); margin-top: 4px; }
+.person code { font-family: "Fira Mono"; font-size: 18px; color: var(--cream); }
+.agentcard { width: 640px; padding: 22px 26px; border-radius: 20px; border: 2px solid rgba(246, 231, 200, .4); background: rgba(11, 29, 34, .92); }
+.agentcard h3 { font-family: "Fira Mono"; font-size: 28px; font-weight: 500; color: var(--cream); }
+.agentcard p { font-size: 21px; line-height: 1.38; color: #d4dcd9; margin-top: 10px; }
+.agentcard p b { color: var(--gold); font-weight: 600; }
+.rules { display: flex; flex-direction: column; gap: 12px; }
+.rule { display: grid; grid-template-columns: 1fr auto; gap: 6px 18px; padding: 14px 18px; border-radius: 14px; background: rgba(0,0,0,.25); border: 1.5px solid rgba(246,231,200,.2); }
+.rule .q { font-size: 22px; color: var(--cream); font-style: italic; }
+.rule .who2 { font-family: "Fira Mono"; font-size: 18px; color: var(--gold); text-align: right; white-space: nowrap; }
+.rule .on { grid-column: 1 / -1; font-family: "Fira Mono"; font-size: 16px; color: var(--muted); }
+.ops2 { display: flex; gap: 26px; }
+.pane { position: absolute; overflow: hidden; border-radius: 14px; border: 2px solid rgba(246, 231, 200, .35); background: #fff; box-shadow: 0 24px 60px rgba(0, 0, 0, .55); }
+.pane.active { border-color: var(--gold); }
+.pane .cam { position: absolute; left: 0; top: 0; width: 1920px; height: 1080px; transform-origin: 0 0; }
+.pane video { width: 1920px; height: 1080px; display: block; }
+.plabel { position: absolute; display: flex; align-items: center; gap: 10px; font-size: 22px; font-weight: 600; white-space: nowrap; }
+.plabel .av { width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; font-weight: 800; font-size: 17px; color: #071419; }
+.plabel .av.alice { background: #8fb3c9; } .plabel .av.bob { background: #f0b45c; } .plabel .av.dev { background: #b3a2ff; } .plabel .av.kc { background: #d4dcd9; }
+.plabel small { font-weight: 500; font-size: 18px; color: var(--muted); }
+.agentcard.big { width: 760px; }
+.agentcard.big p { font-size: 25px; }
+.rego2 { font-family: "Fira Mono"; font-size: 15px; line-height: 1.45; color: #d9e4e6; white-space: pre; }
+.rego2 .c { color: #7f9497; } .rego2 .k { color: #b3a2ff; } .rego2 .s { color: #c9f0d6; } .rego2 .d { color: #ffd2cb; }
+.ops2 .bubble { width: 520px; }
+</style>
+</head>
+<body>
+<div id="stage">
+
+  <!-- the recorded DAM session sits under every scene; stills fade in over it -->
+  <section class="scene" id="s-ui">
+    <div class="bg" style="background:radial-gradient(1400px 900px at 30% 40%, #12303a 0%, #0b1d22 60%, #071419 100%)"></div>
+    <div class="pane" id="pane-alice"><div class="cam" id="cam-alice"><video id="vid-alice" muted preload="auto" playsinline></video></div></div>
+    <div class="pane" id="pane-bob"><div class="cam" id="cam-bob"><video id="vid-bob" muted preload="auto" playsinline></video></div></div>
+    <div class="pane" id="pane-full"><div class="cam" id="cam-full"><video id="vid-kc" muted preload="auto" playsinline></video><video id="vid-dev" muted preload="auto" playsinline style="position:absolute; left:0; top:0"></video></div></div>
+    <div class="plabel" id="lab-alice"><span class="av alice">A</span><span>Alice Mayer <small>developer</small></span></div>
+    <div class="plabel" id="lab-bob"><span class="av bob">B</span><span>Bob Segal <small>tester</small></span></div>
+    <div class="plabel" id="lab-full"><span class="av kc" id="lab-full-av">K</span><span id="lab-full-t">Keycloak <small>realm admin</small></span></div>
+    <div class="el ff" id="ff" style="right:auto">▶▶ <span id="ff-x">10</span>×</div>
+    <div class="el" id="ui-head" style="left:96px; top:18px; display:flex; gap:16px; align-items:center">
+      <div class="chip" id="ui-chip"><span class="n none" id="ui-chip-n">1</span><span id="ui-chip-t">DAM as it is</span></div>
+      <span class="what" id="ui-what"></span>
+    </div>
+    <div class="el stamp allow" id="st-allow"><small id="st-allow-by">GOES THROUGH</small>ALLOWED</div>
+    <div class="el stamp block" id="st-block"><small id="st-block-by">DENIED BY SENTRY</small>DENIED</div>
+    <div class="el stamp warn" id="st-warn"><small id="st-warn-by">PERSONAL DATA LEAVES</small>ALLOWED</div>
+    <div class="el bubble" id="b-reason" style="width:560px">
+      <span class="tag" style="color:var(--gold)" id="reason-tag">Sentry · reason given</span>
+      <div class="reason" id="reason"></div>
+    </div>
+    <div class="el pills" id="pills">
+      <span class="pill" data-p="1">ACT 1 · DAM AS IT IS</span><span class="pill" data-p="2">ACT 2 · DESCRIPTIONS</span><span class="pill" data-p="3">ACT 3 · + COMPANY POLICY</span>
+    </div>
+  </section>
+
+  <section class="scene" id="s-act">
+    <div class="bg" id="act-bg" style="background-image:url(../stills/final/d03_unchecked.png)"></div>
+    <div class="dim" style="opacity:.45"></div>
+    <div class="el actcard" id="act-card"><div class="tag" id="act-tag">Act one</div><div class="t" id="act-t">DAM as it is</div><div class="s" id="act-s">no Sentry</div></div>
+  </section>
+
+  <section class="scene" id="s-title">
+    <div class="bg" style="background-image:url(../stills/final/d01_citadel.png)"></div>
+    <div class="dim"></div>
+    <div class="el" id="title-card" style="left:96px; top:150px">
+      <div class="tag" style="color:var(--gold)">Sentry · granular security for agents</div>
+      <div style="font-weight:800; font-size:104px; line-height:1; margin-top:14px">Sentry on DAM</div>
+      <div style="font-size:36px; color:#e7dcc4; margin-top:18px; max-width:900px; line-height:1.3">Every tool call, by the agent's intent and the company's policy.</div>
+    </div>
+  </section>
+
+  <section class="scene" id="s-arch">
+    <div class="bg" style="background-image:url(../stills/final/d02_wardens.png)"></div>
+    <div class="dim"></div>
+    <div class="el arch-big" id="arch-big"></div>
+    <div class="el caption" id="arch-cap">How DAM works at the moment<small>each agent's gateway holds its credentials and enforces its owner's network rules</small></div>
+  </section>
+
+  <section class="scene" id="s-cast">
+    <div class="bg" style="background-image:url(../stills/final/d05_scribe.png)"></div>
+    <div class="dim" style="opacity:.6"></div>
+    <div class="el" id="cast-head" style="left:0; right:0; top:110px; text-align:center">
+      <div class="tag" style="color:var(--gold)">two agents · owned by Alice · Bob an editor on both</div>
+      <div style="font-weight:800; font-size:56px; margin-top:10px">Each agent, in its owner's words</div>
+    </div>
+    <div class="el" id="cast-agents" style="left:0; right:0; top:330px"><div class="castrow">
+      <div class="agentcard big" id="cast-w"><h3>issue-workbench</h3><p>Helps the team work on issues in the s-and-p-team demo repositories. It reads and summarizes issues, posts comments, and hands an issue back and forth between the developer and the tester with its labels, ready for testing or needs a fix. <b>It never closes issues.</b></p><p class="job" id="job-w" style="color:var(--gold); margin-top:16px">The job: Alice hands a fix to Bob for testing; Bob sends it back if it still fails.</p></div>
+      <div class="agentcard big" id="cast-q"><h3>qa-signoff</h3><p>Final QA review. It reads an issue and its history, posts the sign-off comment, and closes the issue as completed, or as not planned. <b>It never relabels issues and never changes what an issue says.</b></p><p class="job" id="job-q" style="color:var(--gold); margin-top:16px">The job: once a fix is verified, the tester signs it off and closes the issue.</p></div>
+    </div></div>
+  </section>
+
+  <section class="scene" id="s-unchecked">
+    <div class="bg" style="background-image:url(../stills/final/d03_unchecked.png)"></div>
+    <div class="dim"></div>
+    <div class="el caption" id="unchecked-cap">Act one: every request went through<small>no restrictions on agent activity, by intent or by security</small></div>
+  </section>
+
+  <section class="scene" id="s-plug">
+    <div class="bg" style="background-image:url(../stills/final/d04_knight_arrives.png)"></div>
+    <div class="dim"></div>
+    <div class="el arch-big" id="arch-plug"></div>
+    <div class="el caption" id="plug-cap" style="bottom:40px">A policy enforcement point in DAM's gateway<small>each MCP tool call checked by Sentry, before the credential is attached</small></div>
+  </section>
+
+  <section class="scene" id="s-onboard">
+    <div class="bg" style="background-image:url(../stills/final/d05_scribe.png)"></div>
+    <div class="dim"></div>
+    <div class="el" id="onboard-ops" style="left:0; right:0; top:70px"><div class="ops2" style="justify-content:center">
+      <div class="bubble"><span class="tag">issue-workbench · from its description</span><div class="tools" id="ops-w"></div></div>
+      <div class="bubble"><span class="tag">qa-signoff · from its description</span><div class="tools" id="ops-q"></div></div>
+    </div></div>
+    <div class="el" id="onboard-rego" style="left:0; right:0; top:470px"><div class="ops2" style="justify-content:center">
+      <div class="bubble"><span class="tag">issue-workbench · generated Rego, in OPA</span><pre class="rego2" id="rego-w" style="font-size:14px"></pre></div>
+      <div class="bubble"><span class="tag">qa-signoff · generated Rego, in OPA</span><pre class="rego2" id="rego-q" style="font-size:14px"></pre></div>
+    </div></div>
+  </section>
+
+  <section class="scene" id="s-split">
+    <div class="bg" style="background-image:url(../stills/final/d06_knight_stops.png)"></div>
+    <div class="dim"></div>
+    <div class="el bubble" id="split-rules" style="left:70px; top:90px; width:860px">
+      <span class="tag">The company security policy, as Sentry's rules</span>
+      <div class="rules" id="rules"></div>
+    </div>
+    <div class="el bubble" id="split-rego" style="left:960px; top:90px; width:890px">
+      <span class="tag">The same rules, in Rego · OPA evaluates them on every call</span>
+      <pre class="rego2" id="rego-rules"></pre>
+    </div>
+  </section>
+
+  <section class="scene" id="s-summary">
+    <div class="bg" style="background-image:url(../stills/final/d01_citadel.png)"></div>
+    <div class="dim" style="opacity:.72"></div>
+    <div class="el" id="sum-title" style="left:0; right:0; top:60px; text-align:center">
+      <div class="tag" style="color:var(--gold)">two agents · two people · every request in this demo</div>
+      <div style="font-weight:800; font-size:62px; margin-top:10px">Three acts, side by side</div>
+    </div>
+    <div class="el" id="sum-table" style="left:120px; top:230px; width:1680px"></div>
+    <div class="el" id="sum-key" style="left:120px; top:975px; font-size:22px; color:var(--muted)">Solid: run in this demo &nbsp;·&nbsp; Dashed: not run here, decided by the same configuration</div>
+  </section>
+
+  <section class="scene" id="s-close">
+    <div class="bg" style="background-image:url(../stills/final/d01_citadel.png)"></div>
+    <div class="dim" style="opacity:.62"></div>
+    <div class="el" id="close-card" style="left:0; right:0; top:170px">
+      <div style="display:flex; justify-content:center"><img src="../stills/final/logo.png" style="width:220px; height:220px; border-radius:36px; box-shadow:0 20px 60px rgba(0,0,0,.5)"></div>
+      <div class="card-title" style="margin-top:28px">Sentry, on DAM</div>
+      <div class="card-sub">A call goes through only when the agent's intent and the company's policy both allow it</div>
+    </div>
+  </section>
+
+  <div id="fade" style="position:absolute; inset:0; background:#000; opacity:0"></div>
+</div>
+<script src="cues.js"></script>
+<script src="data/film-data.js"></script>
+<script src="arch.js"></script>
+<script src="timeline.js"></script>
+</body>
+</html>

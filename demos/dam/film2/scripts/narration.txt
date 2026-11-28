@@ -1,0 +1,72 @@
+title|DAM runs AI agents for the long haul.
+arch|This is how DAM works at the moment.
+arch|Each agent works in its own secure micro-VM, and everything it does goes through a gateway that holds its credentials and enforces its owner's network rules. {hold=1}
+keycloak|Our demo has two people, who sign in to DAM through its Keycloak.
+keycloak|Alice Mayer is a developer. {hold=1}
+keycloak|Bob Segal is a tester. {hold=1}
+cast|They share two agents. Alice owns them, and Bob is an editor on both.
+cast|The first, issue-workbench, is where they work on issues together.
+desc-w|Its description reads: Helps the team work on issues in the team's demo repositories. It reads and summarizes issues, posts comments, and hands an issue back and forth between the developer and the tester with its labels, ready for testing or needs a fix. It never closes issues.
+cast|So Alice fixes an issue and hands it to Bob for testing, and Bob sends it back if it still fails.
+cast|The second, qa-signoff, is for the final review.
+desc-q|Its description reads: Final QA review. It reads an issue and its history, posts the sign-off comment, and closes the issue as completed, or as not planned. It never relabels issues and never changes what an issue says.
+cast|So once a fix is verified, the tester signs it off and closes the issue there. {hold=0.5}
+login|Alice and Bob each sign in to DAM. From here on, we follow them side by side. {hold=1}
+intro|In DAM, each agent shows its description, and Bob, added to its people as an editor. {hold=1}
+act1|Act one: DAM as it is, with no Sentry.
+a1-handover|Alice asks the workbench, using the GitHub tool, on issue one: comment that the fix is in PR twelve, ready for testing, and label the issue ready for testing. {hold=0.1}
+a1-handover|Both calls go through, as they should. {hold=1.5}
+a1-sendback|Bob tests it, and it still fails on Safari seventeen. So Bob asks the workbench to comment just that, and to label the issue needs a fix. {hold=0.4}
+a1-sendback|That works too: this back and forth is what the workbench is for. {hold=1.5}
+a1-closehere|Alice pushes another fix, and this time it works. So Bob asks the workbench to close the issue as completed, because it works now.
+a1-closehere|It closes, but it is marked yellow: Bob used the wrong agent. The workbench is for the back and forth between developer and tester, and its description says it never closes issues. The close belongs in qa-signoff. {hold=1.5}
+reopen|For the sake of the demo, we reopen the issue after each close, so we can try each way of closing it.
+a1-close|Next, Alice asks qa-signoff to close the issue as completed. {hold=2.4}
+a1-close|It closes, and it is yellow again. Alice is the developer, and proper procedure has the tester verify a fix and close the issue, not the developer who made it. {hold=1.5}
+a1-signoff|Then Bob asks qa-signoff, on issue one, to comment: sign-off, verified; Alice resolved it; for any questions, reach Alice at her email. And then to close the issue. {hold=2.9}
+a1-signoff|It is posted to a public GitHub issue, personal data and all. Yellow: this data should not leave the company. {hold=1.5}
+act1end|Every request went through. There are no restrictions on agent activity, either by intent or by security considerations. {hold=0.5}
+plug|This is where Sentry comes in.
+plug|We've added an MCP policy enforcement point to DAM's gateway: every MCP tool call an agent makes is checked there, before its credential is attached.
+plug|Sentry's capabilities cover both the agent's intent and the company's policy, for access control and for data governance.
+plug|We first turn Sentry on without any company policy in place, and see the effect.
+plug|Alice turns Sentry on for both agents. Each gateway restarts, with the policy check in place.
+onboard|Sentry reads each agent's description and decides its operations, down to what a single tool does.
+onboard|The workbench may comment and relabel, but not close. qa-signoff may comment and close, but not relabel.
+onboard|Sentry writes each agent's rules as Rego, which OPA evaluates on every call, before the call leaves the gateway. {hold=1.5}
+act2|Act two: Sentry, from each agent's description, starting again from the open issue.
+a2-handover|Alice asks for the same hand-over: comment that the fix is in PR twelve, and label the issue ready for testing. {hold=3.3}
+a2-handover|Sentry checks both calls against the workbench's description, and allows them. {hold=1.5}
+a2-sendback|Bob sends the issue back the same way: it still fails on Safari seventeen, so the label is needs a fix. {hold=2.6}
+a2-sendback|That is allowed too. {hold=1.5}
+a2-closehere|Again, after another fix, Bob asks the workbench to close the issue as completed, because it works now. {hold=0.8}
+a2-closehere|This time, it is denied. The reason quotes the agent's own description: it never closes issues. {hold=2}
+a2-relabel|Bob then tries to send it back through qa-signoff instead, setting the label back to needs a fix. {hold=1.3}
+a2-relabel|This is denied as well: qa-signoff never relabels issues. {hold=2}
+a2-close|Then Alice asks qa-signoff to close the issue as completed. {hold=2.7}
+a2-close|This is allowed, but it is still yellow. Proper procedure has the tester verify a fix and close the issue, not the developer. That is company procedure, and it has to be enforced on the agent. {hold=1.5}
+a2-signoff|With the issue reopened, Bob posts the same sign-off: verified; Alice resolved it; for any questions, reach Alice at her email. And then qa-signoff should close the issue. {hold=2.8}
+a2-signoff|This is allowed too, and still yellow. The agent is only concerned with its own job; data governance and company policy have to be enforced on the agent. {hold=1.5}
+act2end|Now let's address access control and data governance in a company policy that applies to all agents in the system. {hold=0.5}
+policy|An operator writes the company security policy once, in plain language, on DAM's operator page.
+policy-text|Developers and testers may read issues, comment on them and label them. Only testers close an issue, and the QA sign-off agent is used by testers only. Personal data and restricted data must not be sent to an untrusted external destination.
+split|Sentry takes in the security policy and builds the corresponding rules: access control rules, for developers and testers, and data governance rules, for personal data.
+split|On the right, the same rules as OPA evaluates them, in Rego. The roles come from Keycloak, and no agent or gateway restarts. {hold=2}
+act3|Act three: Sentry, with the company security policy.
+a3-handover|Alice hands the issue over to Bob again: the fix is in PR twelve, ready for testing. {hold=5.0}
+a3-handover|That still works. {hold=1}
+a3-sendback|And Bob sends it back: it still fails on Safari seventeen, so the label is needs a fix. {hold=3.5}
+a3-sendback|That works too, as it should. {hold=1}
+a3-close|After one more fix, Alice asks qa-signoff to close the issue. {hold=2.5}
+a3-close|This time, it is denied. The user is Alice, a developer, and the company security policy states that only testers close an issue, and that the QA sign-off agent is used by testers only. {hold=2}
+a3-signoff-email|Bob verifies the fix and tries the same sign-off: verified; Alice resolved it; for any questions, reach Alice at her email; and then close the issue. {hold=4.1}
+a3-signoff-email|Denied: the company security policy states that personal data must not be sent to an untrusted external destination, such as GitHub. {hold=2}
+a3-signoff|Bob writes the sign-off without the personal data: verified on Safari seventeen and eighteen, fixed in PR twelve. And then close the issue. {hold=1.4}
+a3-signoff|Now the comment is posted, and the issue is closed as completed. Green: the right agent, the right user and role, and no personal data. {hold=1.5}
+summary|Here is every request, act by act.
+summary|With DAM as it is, every request goes through, the yellow ones included.
+summary|With Sentry and each agent's description, each agent keeps to its job.
+summary|With the company security policy, the user and role, and the data, are decided too. {hold=2}
+close|A call goes through only when the agent's intent and the company's policy both allow it.
+close|DAM with granular security: control every tool call, and every piece of data.
+close|Sentry, on DAM.

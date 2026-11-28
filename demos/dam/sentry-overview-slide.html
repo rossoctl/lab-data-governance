@@ -105,50 +105,51 @@ h1 { margin: .5cqw 0 0; font-weight: 800; font-size: 3.5cqw; line-height: 1.05; 
   <div class="in">
     <header>
       <div class="kicker">Sentry · granular security for agents proposed for DAM</div>
-      <h1>Control every tool call, and every piece of data</h1>
-      <p class="lede">Sentry has two components. Each turns policy into Rego, decided in OPA on every tool call the agent makes.</p>
+      <h1>Intent and policy, on every tool call</h1>
+      <p class="lede">A call goes through only when both allow it, decided at DAM's gateway before the credential is attached.</p>
     </header>
 
     <div class="cols">
       <section class="comp aiac">
-        <div class="comp-head"><span class="badge">aiac</span><h2>Automated access control management</h2><span class="q">Which tools may run?</span></div>
+        <div class="comp-head"><span class="badge">Intent</span><h2>The agent's own description</h2><span class="q">What is this agent for?</span></div>
         <div class="cards">
           <article class="card">
-            <h3>Intent-based</h3><span class="demo">Demo 2</span>
-            <p class="what">The agent's tools follow its own description.</p>
-            <div class="eg">Issue-triage agent, <span class="q">“…it never closes issues.”</span><br>
-              Close issue <span class="no">denied</span> · comment <span class="yes">allowed</span> once the description permits it</div>
+            <h3>Operations from the description</h3><span class="demo">In the demo</span>
+            <p class="what">Each operation, down to what one tool does, from the owner's words.</p>
+            <div class="eg">issue-workbench, <span class="q">“…it never closes issues.”</span><br>
+              Relabel <span class="yes">allowed</span> · close <span class="no">denied</span>, both through <code>issue_write</code></div>
           </article>
           <article class="card">
-            <h3>Role-based (RBAC)</h3><span class="demo d1">Demo 1</span>
-            <p class="what">The role of the person prompting decides.</p>
-            <div class="eg">Same agent, same prompt: <span class="q">“Fix the typo in README.md and commit it.”</span><br>
-              Developer: commit <span class="yes">allowed</span> · Reviewer: <code>write_file</code> <span class="no">blocked</span></div>
+            <h3>Same tool, another agent's job</h3><span class="demo">In the demo</span>
+            <p class="what">Two agents with the same tools keep to different jobs.</p>
+            <div class="eg">qa-signoff, <span class="q">“…closes the issue… never relabels issues.”</span><br>
+              Close <span class="yes">allowed</span> · relabel <span class="no">denied</span></div>
           </article>
         </div>
       </section>
 
       <section class="comp dg">
-        <div class="comp-head"><span class="badge">dg</span><h2>Data governance</h2><span class="q">Which data may leave?</span></div>
+        <div class="comp-head"><span class="badge">Policy</span><h2>The company security policy</h2><span class="q">Who may ask, and which data may leave?</span></div>
         <div class="cards">
           <article class="card">
-            <h3>Classification-based enforcement</h3><span class="demo">Demo 2</span>
-            <p class="what">The data is classified; company policy decides where it may go.</p>
-            <div class="eg">Name and social security number, classified <code>PII</code><br>
-              Search sent to GitHub <span class="no">blocked</span> by rule DG-001, as an untrusted destination</div>
+            <h3>Who may ask, by role</h3><span class="demo">In the demo</span>
+            <p class="what">Written once, in plain language, in DAM; roles come from Keycloak.</p>
+            <div class="eg"><span class="q">“Only testers close an issue.”</span><br>
+              Alice (developer) closes <span class="no">denied</span> · Bob (tester) closes <span class="yes">allowed</span></div>
           </article>
-          <article class="card later">
-            <h3>Data lineage</h3><span class="demo none">Not in demos</span>
-            <p class="what">Tracks where data came from and where it flows, across the agent's steps.</p>
-            <div class="eg">Not shown today.</div>
+          <article class="card">
+            <h3>Which data may leave, by classification</h3><span class="demo">In the demo</span>
+            <p class="what">The data in each call is classified; the policy decides where it may go.</p>
+            <div class="eg">A sign-off with Alice's name and email, classified <code>PII</code><br>
+              Comment to GitHub <span class="no">denied</span>: an untrusted destination</div>
           </article>
         </div>
       </section>
     </div>
 
     <footer class="foot">
-      <span class="k"><span class="demo d1">Demo 1</span><b>Software Developer Plus</b> dev vs. reviewer</span>
-      <span class="k"><span class="demo">Demo 2</span><b>Sentry on DAM</b> issue triage, aiac then aiac + dg</span>
+      <span class="k"><span class="demo">Demo</span><b>Sentry on DAM</b> two agents, a developer and a tester, three acts</span>
+      <span class="k"><span class="demo none">Next</span><b>Data lineage</b> where data came from and where it flows</span>
     </footer>
   </div>
 </main>
